@@ -7,6 +7,10 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
+pandas = "^2.2.2"
+numpy = "^2.0.1"
+ta-lib = "^0.4.32"
+pandas-ta = "^0.3.14b0"
 
 
 [build-system]
