@@ -10,8 +10,8 @@ import yfinance as yf
 from dateutil.parser import parse
 from dateutil.relativedelta import relativedelta
 
-from .util.logging import Logger
 from .util.functions import clear_terminal, debug  # noqa
+from .util.logger import Logger
 
 
 class DataLoader(ABC):
