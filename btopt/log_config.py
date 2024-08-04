@@ -11,7 +11,7 @@ DEFAULT_CONSOLE_LEVEL = "warning"
 
 
 # Create a pre-configured logger
-logger = get_logger(
+logger_main = get_logger(
     name="main",
     file_location=DEFAULT_LOG_FILE,
     level=DEFAULT_LOG_LEVEL,

@@ -1,6 +1,8 @@
 from enum import Enum
 from typing import Union
 
+from ..log_config import logger_main
+
 
 class TimeframeUnit(Enum):
     MINUTE = 1
@@ -21,7 +23,8 @@ class TimeframeUnit(Enum):
         }
         normalized_value = value.lower()
         if normalized_value not in mapping:
-            raise ValueError(f"Unrecognized timeframe unit: {value}")
+            error = ValueError(f"Unrecognized timeframe unit: {value}")
+            logger_main.log_and_raise(error, level="error")
         return mapping[normalized_value]
 
     @classmethod
@@ -44,7 +47,8 @@ class Timeframe:
             self.multiplier = 1
             self.unit = value
         else:
-            raise ValueError(f"Invalid timeframe value: {value}")
+            error = ValueError(f"Invalid timeframe value: {value}")
+            logger_main.log_and_raise(error, level="error")
 
     @staticmethod
     def _parse_string(value: str) -> tuple[int, TimeframeUnit]:
@@ -94,4 +98,5 @@ if __name__ == "__main__":
     # Test cases
     print(Timeframe("1mo"))  # Timeframe(1m)
     print(Timeframe(60))  # Timeframe(60m)
+    print(Timeframe(TimeframeUnit.HOUR))  # Timeframe(1h)
     print(Timeframe(TimeframeUnit.HOUR))  # Timeframe(1h)

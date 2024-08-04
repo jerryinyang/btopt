@@ -55,6 +55,23 @@ class Logger(logging.Logger):
     def _parse_level(cls, level: str) -> int:
         return cls.LEVEL_MAP.get(level.lower(), logging.WARNING)
 
+    def log_and_raise(
+        self, error: Exception, level: Literal["error", "critical"] = "error"
+    ):
+        """
+        Log the error message and then raise the exception.
+
+        Args:
+            error (Exception): The exception to be logged and raised.
+            level (Literal["error", "critical"]): The log level to use. Defaults to "error".
+
+        Raises:
+            The provided exception after logging it.
+        """
+        log_method = getattr(self, level)
+        log_method(str(error))
+        raise error
+
 
 def get_logger(
     name: str = __name__,
