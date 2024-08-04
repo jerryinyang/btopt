@@ -71,14 +71,33 @@ class Timeframe:
     def in_minutes(self) -> int:
         return self.multiplier * self.unit.value
 
-    def __eq__(self, other: "Timeframe") -> bool:
+    def __hash__(self):
+        return hash((self.multiplier, self.unit))
+
+    def __eq__(self, other):
+        if not isinstance(other, Timeframe):
+            return False
         return self.in_minutes == other.in_minutes
 
-    def __lt__(self, other: "Timeframe") -> bool:
+    def __lt__(self, other):
+        if not isinstance(other, Timeframe):
+            return NotImplemented
         return self.in_minutes < other.in_minutes
 
-    def __gt__(self, other: "Timeframe") -> bool:
+    def __le__(self, other):
+        if not isinstance(other, Timeframe):
+            return NotImplemented
+        return self.in_minutes <= other.in_minutes
+
+    def __gt__(self, other):
+        if not isinstance(other, Timeframe):
+            return NotImplemented
         return self.in_minutes > other.in_minutes
+
+    def __ge__(self, other):
+        if not isinstance(other, Timeframe):
+            return NotImplemented
+        return self.in_minutes >= other.in_minutes
 
     def __str__(self) -> str:
         unit_str = {

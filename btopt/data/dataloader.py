@@ -66,6 +66,9 @@ class BaseDataLoader(ABC):
         self._raw_dataframes: Dict[str, pd.DataFrame] = {}
         self.__dataframes: Dict[str, pd.DataFrame] = {}
 
+        # Load that data
+        self._load_data()
+
     @property
     def dataframes(self) -> Dict[str, pd.DataFrame]:
         """
@@ -76,7 +79,11 @@ class BaseDataLoader(ABC):
         """
         return self.__dataframes
 
-    def load_data(self) -> Dict[str, pd.DataFrame]:
+    @property
+    def tickers(self):
+        return self.dataframes.keys()
+
+    def _load_data(self) -> Dict[str, pd.DataFrame]:
         """
         Load and process data for all symbols.
 
@@ -395,8 +402,8 @@ class CSVDataLoader(BaseDataLoader):
     def __init__(
         self, symbol: Union[str, List[str]], timeframe: str, **period_kwargs
     ) -> None:
-        super().__init__(symbol, timeframe, **period_kwargs)
         self.data_dir = self._get_data_directory()
+        super().__init__(symbol, timeframe, **period_kwargs)
 
     @staticmethod
     def _get_data_directory() -> Path:
@@ -516,4 +523,4 @@ class MySQLDataLoader(BaseDataLoader):
 if __name__ == "__main__":
     data = CSVDataLoader(["EURUSD", "MGBP"], "1m")
 
-    print(data.load_data())
+    print(data._load_data())

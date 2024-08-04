@@ -72,6 +72,23 @@ class Logger(logging.Logger):
         log_method(str(error))
         raise error
 
+    def log_and_print(
+        self, message: str, level: Literal["info", "debug", "warning"] = "info"
+    ):
+        """
+        Log and print the message.
+
+        Args:
+            message (str): The message to be logged and printed.
+            level (Literal["error", "critical"]): The log level to use. Defaults to "error".
+
+        Raises:
+            The provided exception after logging it.
+        """
+        log_method = getattr(self, level)
+        log_method(message)
+        print(message)
+
 
 def get_logger(
     name: str = __name__,
