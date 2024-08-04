@@ -90,7 +90,6 @@ class Engine:
         """
         self._dataview.align_all_data()
         self.optimized_dataview = OptimizedDataView(self._dataview)
-        logger_main.log_and_print("Built optimized dataview.")
 
     def add_strategy(self, strategy):
         """
@@ -198,6 +197,7 @@ class Engine:
         """
         results = self.portfolio.get_results()
         logger_main.log_and_print("Backtest completed. Generating results...")
+        print(results)
         # Add code to save or display results
 
 
