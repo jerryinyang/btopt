@@ -10,10 +10,13 @@ import pandas as pd
 import yfinance as yf
 from dateutil.parser import parse
 from dateutil.relativedelta import relativedelta
+from dotenv import load_dotenv
 from pandas.api.types import is_datetime64_any_dtype
 
 from ..log_config import logger_main
 from .timeframe import Timeframe
+
+load_dotenv()
 
 
 class BaseDataLoader(ABC):
@@ -418,15 +421,34 @@ class CSVDataLoader(BaseDataLoader):
 
     def _get_ticker_data(self, symbol: str) -> Optional[pd.DataFrame]:
         file_name = f"{symbol}.parquet"
-        file_path = self.data_dir / file_name
 
-        if file_path.exists():
-            data = pd.read_parquet(file_path)
-            data = data[["time"] + self.OHLC_COLUMNS]
-            data.set_index("time", inplace=True)
-            return data
+        # Search for the file recursively in data_dir and its subfolders
+        for file_path in self.data_dir.rglob(file_name):
+            if file_path.is_file():
+                try:
+                    data = pd.read_parquet(file_path)
+                    if "time" in data.columns and all(
+                        col in data.columns for col in self.OHLC_COLUMNS
+                    ):
+                        data = data[["time"] + self.OHLC_COLUMNS]
+                        data.set_index("time", inplace=True)
+                        logger_main.info(
+                            f"Found and loaded data for {symbol} from {file_path}"
+                        )
+                        return data
+                    else:
+                        logger_main.warning(
+                            f"File found for {symbol} at {file_path}, but it doesn't contain the required columns."
+                        )
+                except Exception as e:
+                    logger_main.error(
+                        f"Error reading parquet file for {symbol} at {file_path}: {e}"
+                    )
+                    continue
 
-        logger_main.warning(f"No file found for {symbol} at {file_path}.")
+        logger_main.warning(
+            f"No valid file found for {symbol} in {self.data_dir} or its subfolders."
+        )
         return None
 
 
@@ -492,4 +514,6 @@ class MySQLDataLoader(BaseDataLoader):
 
 
 if __name__ == "__main__":
-    ...
+    data = CSVDataLoader(["EURUSD", "MGBP"], "1m")
+
+    print(data.load_data())
