@@ -501,7 +501,7 @@ class DataView:
             yield timestamp, data_point
 
 
-class OptimizedDataView:
+class DataViewNumpy:
     """
     A class that provides an optimized view of financial data using numpy arrays.
 
@@ -521,7 +521,7 @@ class OptimizedDataView:
 
     def __init__(self, data_instance: DataView):
         """
-        Initialize the OptimizedDataView with a DataView instance.
+        Initialize the DataViewNumpy with a DataView instance.
 
         Args:
             data_instance (DataView): An aligned DataView instance to optimize.
