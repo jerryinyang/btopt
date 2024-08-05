@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Union
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -8,8 +9,10 @@ from .data.dataloader import BaseDataLoader
 from .data.dataview import DataView, DataViewNumpy
 from .data.timeframe import Timeframe
 from .log_config import logger_main
+from .order import Order
 from .portfolio import Portfolio
-from .strategy import Strategy
+from .strategy.strategy import Strategy
+from .trade import Trade
 
 
 class Engine:
@@ -109,7 +112,7 @@ class Engine:
         self._dataview = DataView()
         self._optimized_dataview = None
         self._portfolio = Portfolio()
-        self._strategies = []
+        self._strategies: List[Strategy] = []
         self._current_timestamp = None
         self._is_running = False
         self._config = {}
@@ -167,10 +170,15 @@ class Engine:
 
         This method prepares the optimized dataview and initializes all strategies.
         """
-        self._init_dataview_numpy()
+        default_timeframe = min(self._optimized_dataview.timeframes)
         for strategy in self._strategies:
+            primary_timeframe = self._strategy_timeframes.get(
+                strategy, default_timeframe
+            )
             strategy.initialize(
-                self._optimized_dataview.symbols, self._optimized_dataview.timeframes
+                self._optimized_dataview.symbols,
+                self._optimized_dataview.timeframes,
+                primary_timeframe,
             )
         logger_main.info("Backtest initialized.")
 
@@ -186,19 +194,35 @@ class Engine:
         """
         market_data = self._get_market_data(timestamp)
         signals = []
-        for symbol in self._optimized_dataview.symbols:
-            for timeframe in self._optimized_dataview.timeframes:
+
+        for strategy in self._strategies:
+            strategy_bars = {}
+            for symbol in self._optimized_dataview.symbols:
                 if self._optimized_dataview.is_original_data_point(
-                    symbol, timeframe, timestamp
+                    symbol, strategy.primary_timeframe, timestamp
                 ):
-                    ohlcv_data = market_data[symbol][timeframe]
-                    bar = self._create_bar(symbol, timeframe, ohlcv_data)
+                    ohlcv_data = market_data[symbol][strategy.primary_timeframe]
+                    strategy_bars[symbol] = self._create_bar(
+                        symbol, strategy.primary_timeframe, ohlcv_data
+                    )
+
+            if strategy_bars:
+                strategy.on_bar(timestamp, strategy_bars)
+                for symbol, bar in strategy_bars.items():
                     signals.extend(
-                        self._generate_signals(symbol, timeframe, timestamp, bar)
+                        strategy.generate_signals(
+                            symbol, strategy.primary_timeframe, timestamp, bar
+                        )
                     )
 
         standardized_signals = self._standardize_signals(signals)
         self._portfolio.process_signals(standardized_signals, timestamp, market_data)
+
+        # Process order and trade updates
+        for order in self._portfolio.get_updated_orders():
+            self._process_order_update(order)
+        for trade in self._portfolio.get_updated_trades():
+            self._process_trade_update(trade)
 
     def _check_termination_condition(self) -> bool:
         """
@@ -237,6 +261,139 @@ class Engine:
             "trade_history": self._portfolio.get_trade_history(),
             "equity_curve": self._portfolio.get_equity_curve(),
         }
+
+    def register_strategy(self, strategy: Strategy) -> None:
+        """
+        Register a strategy with the engine and assign the engine reference to the strategy.
+
+        Args:
+            strategy (Strategy): The strategy to register.
+        """
+        strategy._engine = self
+        self._strategies.append(strategy)
+        logger_main.info(f"Registered strategy: {strategy.name} (ID: {strategy._id})")
+
+    def create_order(
+        self,
+        strategy: Strategy,
+        symbol: str,
+        direction: Order.Direction,
+        size: float,
+        price: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Optional[Order]:
+        """
+        Create an order based on a strategy's request.
+
+        Args:
+            strategy (Strategy): The strategy initiating the order.
+            symbol (str): The symbol to trade.
+            direction (Order.Direction): The direction of the trade (LONG or SHORT).
+            size (float): The size of the order.
+            price (Optional[float]): The price for limit orders. If None, a market order is created.
+            **kwargs: Additional order parameters.
+
+        Returns:
+            Optional[Order]: The created Order object, or None if order creation failed.
+        """
+        order_type = (
+            Order.ExecType.LIMIT if price is not None else Order.ExecType.MARKET
+        )
+        order = self._portfolio.create_order(
+            symbol,
+            direction,
+            size,
+            order_type,
+            price,
+            strategy_id=strategy._id,
+            **kwargs,
+        )
+
+        if order:
+            strategy.on_order(order)
+        return order
+
+    def cancel_order(self, strategy: Strategy, order: Order) -> bool:
+        """
+        Cancel an existing order.
+
+        Args:
+            strategy (Strategy): The strategy requesting the cancellation.
+            order (Order): The order to cancel.
+
+        Returns:
+            bool: True if the order was successfully cancelled, False otherwise.
+        """
+        if order.strategy_id != strategy._id:
+            logger_main.warning(
+                f"Strategy {strategy.name} attempted to cancel an order it didn't create."
+            )
+            return False
+
+        success = self._portfolio.cancel_order(order)
+        if success:
+            strategy.on_order(order)  # Notify the strategy of the order cancellation
+        return success
+
+    def close_positions(self, strategy: Strategy, symbol: Optional[str] = None) -> bool:
+        """
+        Close all positions for a strategy, or for a specific symbol if provided.
+
+        Args:
+            strategy (Strategy): The strategy requesting to close positions.
+            symbol (Optional[str]): The symbol to close positions for. If None, close all positions for the strategy.
+
+        Returns:
+            bool: True if the closing operation was successful, False otherwise.
+        """
+        success = self._portfolio.close_positions(
+            strategy_id=strategy._id, symbol=symbol
+        )
+        if success:
+            # Notify the strategy of closed positions
+            closed_trades = self._portfolio.get_closed_trades(
+                strategy_id=strategy._id, symbol=symbol
+            )
+            for trade in closed_trades:
+                strategy.on_trade(trade)
+        return success
+
+    def _process_order_update(self, order: Order) -> None:
+        """
+        Process updates to an order and notify the relevant strategy.
+
+        Args:
+            order (Order): The updated order.
+        """
+        strategy = self._get_strategy_by_id(order.strategy_id)
+        if strategy:
+            strategy.on_order(order)
+
+    def _process_trade_update(self, trade: Trade) -> None:
+        """
+        Process updates to a trade and notify the relevant strategy.
+
+        Args:
+            trade (Trade): The updated trade.
+        """
+        strategy = self._get_strategy_by_id(trade.strategy_id)
+        if strategy:
+            strategy.on_trade(trade)
+
+    def _get_strategy_by_id(self, strategy_id: str) -> Optional[Strategy]:
+        """
+        Get a strategy by its ID.
+
+        Args:
+            strategy_id (str): The ID of the strategy to retrieve.
+
+        Returns:
+            Optional[Strategy]: The strategy with the given ID, or None if not found.
+        """
+        for strategy in self._strategies:
+            if strategy._id == strategy_id:
+                return strategy
+        return None
 
     # endregion
 
@@ -357,14 +514,20 @@ class Engine:
     # endregion
 
     # region Strategy Management
-    def add_strategy(self, strategy: Strategy) -> None:
+    def add_strategy(
+        self, strategy: Strategy, primary_timeframe: Optional[Timeframe] = None
+    ) -> None:
         """
         Add a trading strategy to the engine.
 
         Args:
             strategy (Strategy): The strategy to be added.
+            primary_timeframe (Optional[Timeframe]): The primary timeframe for strategy updates.
+                If None, the lowest timeframe in the data will be used.
         """
         self._strategies.append(strategy)
+        if primary_timeframe is not None:
+            self._strategy_timeframes[strategy] = primary_timeframe
         logger_main.info(f"Added strategy: {strategy.__class__.__name__}")
 
     def remove_strategy(self, strategy: Strategy) -> None:
@@ -445,6 +608,48 @@ class Engine:
                     standardized_signal[field] = signal[field]
             standardized_signals.append(standardized_signal)
         return standardized_signals
+
+    def get_trades_for_strategy(self, strategy: Strategy) -> List[Trade]:
+        """
+        Get all trades for a specific strategy.
+
+        Args:
+            strategy (Strategy): The strategy object.
+
+        Returns:
+            List[Trade]: A list of Trade objects associated with the strategy.
+        """
+        return self._portfolio.get_trades_for_strategy(strategy._id)
+
+    def get_account_value(self) -> Decimal:
+        """
+        Get the current total account value (equity).
+
+        Returns:
+            Decimal: The current account value.
+        """
+        return self._portfolio.get_account_value()
+
+    def get_position_size(self, symbol: str) -> Decimal:
+        """
+        Get the current position size for a given symbol.
+
+        Args:
+            symbol (str): The symbol to check.
+
+        Returns:
+            Decimal: The current position size. Positive for long positions, negative for short positions.
+        """
+        return self._portfolio.get_position_size(symbol)
+
+    def get_available_margin(self) -> Decimal:
+        """
+        Get the available margin for new trades.
+
+        Returns:
+            Decimal: The available margin.
+        """
+        return self._portfolio.get_available_margin()
 
     # endregion
 

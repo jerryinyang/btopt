@@ -57,6 +57,7 @@ class Trade:
         entry_order: Order,
         entry_bar: Bar,
         commission_rate: Optional[Decimal] = None,
+        strategy_id: Optional[str] = None,
     ):
         """
         Initialize a new Trade instance.
@@ -66,6 +67,7 @@ class Trade:
             entry_order (Order): The order that opened this trade.
             entry_bar (Bar): The price bar at which the trade was entered.
             commission_rate (Optional[Decimal]): The commission rate for the trade, if applicable.
+            strategy_id (Optional[str]): The ID of the strategy that created this trade.
         """
         self.id: int = trade_id
         self.ticker: str = entry_order.details.ticker
@@ -94,6 +96,7 @@ class Trade:
         self.exit_orders: List[Order] = []
 
         self.commission_rate: Optional[Decimal] = commission_rate
+        self.strategy_id: Optional[str] = strategy_id or entry_order.details.strategy_id
         self._calculate_entry_commission_and_slippage()
 
     def _calculate_entry_commission_and_slippage(self):
@@ -299,6 +302,7 @@ class Trade:
             "max_drawdown": str(self.metrics.max_drawdown),
             "max_drawdown_percent": str(self.metrics.max_drawdown_percent),
             "alpha_name": self.alpha_name,
+            "strategy_id": self.strategy_id,
         }
 
     @classmethod
@@ -322,6 +326,7 @@ class Trade:
                 exectype=Order.ExecType.MARKET,  # Assuming market order for simplicity
                 timestamp=datetime.fromisoformat(data["entry_timestamp"]),
                 timeframe=Timeframe("1m"),  # Assuming 1-minute timeframe for simplicity
+                strategy_id=data.get("strategy_id"),
             ),
         )
         entry_bar = Bar(
@@ -334,7 +339,9 @@ class Trade:
             timeframe=Timeframe("1m"),
             ticker=data["ticker"],
         )
-        trade = cls(data["id"], entry_order, entry_bar)
+        trade = cls(
+            data["id"], entry_order, entry_bar, strategy_id=data.get("strategy_id")
+        )
         trade.current_size = Decimal(data["current_size"])
         trade.metrics = TradeMetrics(
             pnl=Decimal(data["pnl"]),

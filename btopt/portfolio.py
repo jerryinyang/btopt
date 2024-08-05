@@ -8,6 +8,7 @@ import pandas as pd
 from .data.timeframe import Timeframe
 from .log_config import logger_main
 from .order import Order, OrderDetails
+from .strategy.strategy import Strategy
 from .trade import Trade
 
 
@@ -133,8 +134,8 @@ class Portfolio:
         pyramiding: int = 1,
         margin_ratio: Decimal = Decimal(
             "0.5"
-        ),  # New: Margin ratio (e.g., 0.5 for 2:1 leverage)
-        margin_call_threshold: Decimal = Decimal("0.3"),  # New: Margin call threshold
+        ),  # Margin ratio (e.g., 0.5 for 2:1 leverage)
+        margin_call_threshold: Decimal = Decimal("0.3"),  # Margin call threshold
     ):
         """
         Initialize the Portfolio.
@@ -177,6 +178,12 @@ class Portfolio:
         )
         self.peak_equity = initial_capital
         self.max_drawdown = Decimal("0")
+
+        # Order Management
+        self.orders_by_strategy: Dict[str, List[Order]] = {}
+        self.trades_by_strategy: Dict[str, List[Trade]] = {}
+        self.updated_orders: List[Order] = []
+        self.updated_trades: List[Trade] = []
 
     # region Portfolio Update and Signal Processing
     def update(
@@ -355,8 +362,18 @@ class Portfolio:
             self.open_trades[symbol] = []
         self.open_trades[symbol].append(trade)
 
+        success = True
+        if success:
+            self.updated_orders.append(order)
+            if trade:
+                self.updated_trades.append(trade)
+                if order.details.strategy_id:
+                    if order.details.strategy_id not in self.trades_by_strategy:
+                        self.trades_by_strategy[order.details.strategy_id] = []
+                    self.trades_by_strategy[order.details.strategy_id].append(trade)
+
         logger_main.info(f"Executed order: {order}, resulting trade: {trade}")
-        return True, trade
+        return success, trade
 
     def close_trade(self, trade: Trade, close_price: Decimal) -> Trade:
         """
@@ -399,8 +416,64 @@ class Portfolio:
         else:  # SHORT
             self.cash -= close_cost + commission
 
+        self.updated_trades.append(trade)
+
         logger_main.info(f"Closed trade: {trade}")
         return trade
+
+    def create_order(
+        self,
+        symbol: str,
+        direction: Order.Direction,
+        size: float,
+        order_type: Order.ExecType,
+        price: Optional[float] = None,
+        strategy_id: str = None,
+        **kwargs: Any,
+    ) -> Optional[Order]:
+        """Create an order and associate it with a strategy."""
+        order_details = OrderDetails(
+            ticker=symbol,
+            direction=direction,
+            size=size,
+            price=Decimal(str(price)) if price is not None else None,
+            exectype=order_type,
+            timestamp=datetime.now(),
+            timeframe=kwargs.get("timeframe"),
+            strategy_id=strategy_id,
+            **kwargs,
+        )
+        order = Order(order_id=self.generate_order_id(), details=order_details)
+
+        self.add_pending_order(order)
+        if strategy_id:
+            if strategy_id not in self.orders_by_strategy:
+                self.orders_by_strategy[strategy_id] = []
+            self.orders_by_strategy[strategy_id].append(order)
+
+        return order
+
+    def cancel_order(self, order: Order) -> bool:
+        """Cancel an order and update its status."""
+        if order in self.pending_orders:
+            self.pending_orders.remove(order)
+            order.status = Order.Status.CANCELED
+            self.updated_orders.append(order)
+            return True
+        return False
+
+    def close_positions(
+        self, strategy_id: str = None, symbol: Optional[str] = None
+    ) -> bool:
+        """Close positions for a specific strategy and/or symbol."""
+        closed_any = False
+        trades_to_close = self.get_open_trades(strategy_id, symbol)
+
+        for trade in trades_to_close:
+            self.close_trade(trade, trade.current_price)
+            closed_any = True
+
+        return closed_any
 
     def _process_pending_orders(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
@@ -435,7 +508,17 @@ class Portfolio:
             if self.check_margin_call():
                 self.handle_margin_call()
 
+        for result in results:
+            order, executed, trade = result
+            self.updated_orders.append(order)
+            if trade:
+                self.updated_trades.append(trade)
+
         return results
+
+    def generate_order_id(self) -> int:
+        """Generate a unique order ID."""
+        return hash(f"order_{datetime.now().timestamp()}_{len(self.pending_orders)}")
 
     def _update_open_trades(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
@@ -526,6 +609,52 @@ class Portfolio:
 
         logger_main.warning(f"Order with ID {order_id} not found in pending orders.")
         return False
+
+    def get_open_trades(
+        self, strategy_id: Optional[str] = None, symbol: Optional[str] = None
+    ) -> List[Trade]:
+        """Get open trades filtered by strategy ID and/or symbol."""
+        trades = []
+        for sym, sym_trades in self.open_trades.items():
+            if symbol is None or sym == symbol:
+                for trade in sym_trades:
+                    if strategy_id is None or trade.strategy_id == strategy_id:
+                        trades.append(trade)
+        return trades
+
+    def get_closed_trades(
+        self, strategy_id: Optional[str] = None, symbol: Optional[str] = None
+    ) -> List[Trade]:
+        """Get closed trades filtered by strategy ID and/or symbol."""
+        return [
+            trade
+            for trade in self.closed_trades
+            if (strategy_id is None or trade.strategy_id == strategy_id)
+            and (symbol is None or trade.ticker == symbol)
+        ]
+
+    def get_pending_orders(
+        self, strategy_id: Optional[str] = None, symbol: Optional[str] = None
+    ) -> List[Order]:
+        """Get pending orders filtered by strategy ID and/or symbol."""
+        return [
+            order
+            for order in self.pending_orders
+            if (strategy_id is None or order.details.strategy_id == strategy_id)
+            and (symbol is None or order.details.ticker == symbol)
+        ]
+
+    def get_updated_orders(self) -> List[Order]:
+        """Get and clear the list of updated orders."""
+        updated = self.updated_orders.copy()
+        self.updated_orders.clear()
+        return updated
+
+    def get_updated_trades(self) -> List[Trade]:
+        """Get and clear the list of updated trades."""
+        updated = self.updated_trades.copy()
+        self.updated_trades.clear()
+        return updated
 
     # endregion
 
@@ -620,6 +749,48 @@ class Portfolio:
             pd.DataFrame: A DataFrame containing the equity curve data.
         """
         return self.metrics[["timestamp", "equity"]]
+
+    def get_trades_for_strategy(self, strategy: Strategy) -> List[Trade]:
+        """
+        Get all trades for a specific strategy.
+
+        Args:
+            strategy (Strategy): The strategy object.
+
+        Returns:
+            List[Trade]: A list of Trade objects associated with the strategy.
+        """
+        return self._portfolio.get_trades_for_strategy(strategy._id)
+
+    def get_account_value(self) -> Decimal:
+        """
+        Get the current total account value (equity).
+
+        Returns:
+            Decimal: The current account value.
+        """
+        return self._portfolio.get_account_value()
+
+    def get_position_size(self, symbol: str) -> Decimal:
+        """
+        Get the current position size for a given symbol.
+
+        Args:
+            symbol (str): The symbol to check.
+
+        Returns:
+            Decimal: The current position size. Positive for long positions, negative for short positions.
+        """
+        return self._portfolio.get_position_size(symbol)
+
+    def get_available_margin(self) -> Decimal:
+        """
+        Get the available margin for new trades.
+
+        Returns:
+            Decimal: The available margin.
+        """
+        return self._portfolio.get_available_margin()
 
     def calculate_total_return(self) -> Decimal:
         """

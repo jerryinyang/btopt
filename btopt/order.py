@@ -31,6 +31,7 @@ class OrderDetails:
         exit_loss_percent (Optional[Decimal]): The stop loss as a percentage.
         trailing_percent (Optional[Decimal]): The trailing stop percentage, if applicable.
         slippage (Optional[Decimal]): The slippage to apply to the order execution, if any.
+        strategy_id (Optional[str]): The ID of the strategy that created this order.
     """
 
     ticker: str
@@ -49,6 +50,7 @@ class OrderDetails:
     exit_loss_percent: Optional[Decimal] = None
     trailing_percent: Optional[Decimal] = None
     slippage: Optional[Decimal] = None
+    strategy_id: Optional[str] = None
 
 
 class Order:
