@@ -8,7 +8,6 @@ import pandas as pd
 from .data.timeframe import Timeframe
 from .log_config import logger_main
 from .order import Order, OrderDetails
-from .strategy.strategy import Strategy
 from .trade import Trade
 
 
@@ -198,7 +197,6 @@ class Portfolio:
         """
         self._process_pending_orders(timestamp, market_data)
         self._update_open_trades(timestamp, market_data)
-        self._check_exit_conditions(timestamp, market_data)
         self._update_metrics(timestamp, market_data)
 
     def process_signals(
@@ -537,30 +535,6 @@ class Portfolio:
             for trade in trades:
                 trade.update(current_price)
 
-    def _check_exit_conditions(
-        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
-    ) -> List[Trade]:
-        """
-        Check and execute exit conditions for open trades.
-
-        Args:
-            timestamp (datetime): The current timestamp.
-            market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
-
-        Returns:
-            List[Trade]: A list of trades that were closed.
-        """
-        closed_trades = []
-        for symbol, trades in list(self.open_trades.items()):
-            current_price = market_data[symbol][Timeframe("1m")][
-                3
-            ]  # Assuming close price is at index 3
-            for trade in trades[:]:  # Create a copy to iterate over
-                if trade.should_exit(current_price):
-                    closed_trade = self.close_trade(trade, current_price)
-                    closed_trades.append(closed_trade)
-        return closed_trades
-
     def add_pending_order(self, order: Order) -> None:
         """
         Add an order to the list of pending orders.
@@ -749,48 +723,6 @@ class Portfolio:
             pd.DataFrame: A DataFrame containing the equity curve data.
         """
         return self.metrics[["timestamp", "equity"]]
-
-    def get_trades_for_strategy(self, strategy: Strategy) -> List[Trade]:
-        """
-        Get all trades for a specific strategy.
-
-        Args:
-            strategy (Strategy): The strategy object.
-
-        Returns:
-            List[Trade]: A list of Trade objects associated with the strategy.
-        """
-        return self._portfolio.get_trades_for_strategy(strategy._id)
-
-    def get_account_value(self) -> Decimal:
-        """
-        Get the current total account value (equity).
-
-        Returns:
-            Decimal: The current account value.
-        """
-        return self._portfolio.get_account_value()
-
-    def get_position_size(self, symbol: str) -> Decimal:
-        """
-        Get the current position size for a given symbol.
-
-        Args:
-            symbol (str): The symbol to check.
-
-        Returns:
-            Decimal: The current position size. Positive for long positions, negative for short positions.
-        """
-        return self._portfolio.get_position_size(symbol)
-
-    def get_available_margin(self) -> Decimal:
-        """
-        Get the available margin for new trades.
-
-        Returns:
-            Decimal: The available margin.
-        """
-        return self._portfolio.get_available_margin()
 
     def calculate_total_return(self) -> Decimal:
         """

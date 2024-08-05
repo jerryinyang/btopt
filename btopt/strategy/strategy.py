@@ -138,6 +138,7 @@ class Strategy(ABC):
         self._initialized: bool = False
         self._primary_symbol: Optional[str] = None
         self._engine = None
+        self._strategy_timeframes = {}
         self._id: str = generate_unique_id()
 
     def initialize(

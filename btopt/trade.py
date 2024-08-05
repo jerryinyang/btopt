@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 from typing import List, Optional
@@ -249,7 +249,7 @@ class Trade:
         # so we don't need to do much here unless there are any final calculations.
         pass
 
-    def duration(self) -> datetime.timedelta:
+    def duration(self) -> timedelta:
         """
         Calculates the duration of the trade.
 

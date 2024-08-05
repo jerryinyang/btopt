@@ -51,6 +51,7 @@ class DataView:
         self.master_timeline: pd.DatetimeIndex = None
         self.lowest_timeframe: Timeframe = None
         self.is_aligned: bool = False
+        self.__dataframes = {}
 
     def add_data(
         self,

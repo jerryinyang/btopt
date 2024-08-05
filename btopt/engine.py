@@ -111,11 +111,12 @@ class Engine:
         """Initialize the Engine instance."""
         self._dataview = DataView()
         self._optimized_dataview = None
-        self._portfolio = Portfolio()
+        self.portfolio = Portfolio()
         self._strategies: List[Strategy] = []
         self._current_timestamp = None
         self._is_running = False
         self._config = {}
+        self._strategy_timeframes = {}
 
     # region Backtest Execution
     def run(self) -> Dict[str, Any]:
@@ -216,12 +217,12 @@ class Engine:
                     )
 
         standardized_signals = self._standardize_signals(signals)
-        self._portfolio.process_signals(standardized_signals, timestamp, market_data)
+        self.portfolio.process_signals(standardized_signals, timestamp, market_data)
 
         # Process order and trade updates
-        for order in self._portfolio.get_updated_orders():
+        for order in self.portfolio.get_updated_orders():
             self._process_order_update(order)
-        for trade in self._portfolio.get_updated_trades():
+        for trade in self.portfolio.get_updated_trades():
             self._process_trade_update(trade)
 
     def _check_termination_condition(self) -> bool:
@@ -233,7 +234,7 @@ class Engine:
         """
         # Implement your termination conditions here
         # For example, you might want to stop if the portfolio value drops below a certain threshold
-        if self._portfolio.calculate_equity() < self._config.get("min_equity", 0):
+        if self.portfolio.calculate_equity() < self._config.get("min_equity", 0):
             logger_main.warning(
                 "Portfolio value dropped below minimum equity. Terminating backtest."
             )
@@ -244,7 +245,7 @@ class Engine:
         """
         Perform final operations after the backtest is complete.
         """
-        self._portfolio.close_all_trades(
+        self.portfolio.close_all_trades(
             self._current_timestamp, self._optimized_dataview
         )
         logger_main.info("Finalized backtest. Closed all remaining trades.")
@@ -257,9 +258,9 @@ class Engine:
             Dict[str, Any]: A dictionary containing the backtest results and performance metrics.
         """
         return {
-            "performance_metrics": self._portfolio.get_performance_metrics(),
-            "trade_history": self._portfolio.get_trade_history(),
-            "equity_curve": self._portfolio.get_equity_curve(),
+            "performance_metrics": self.portfolio.get_performance_metrics(),
+            "trade_history": self.portfolio.get_trade_history(),
+            "equity_curve": self.portfolio.get_equity_curve(),
         }
 
     def register_strategy(self, strategy: Strategy) -> None:
@@ -299,7 +300,7 @@ class Engine:
         order_type = (
             Order.ExecType.LIMIT if price is not None else Order.ExecType.MARKET
         )
-        order = self._portfolio.create_order(
+        order = self.portfolio.create_order(
             symbol,
             direction,
             size,
@@ -330,7 +331,7 @@ class Engine:
             )
             return False
 
-        success = self._portfolio.cancel_order(order)
+        success = self.portfolio.cancel_order(order)
         if success:
             strategy.on_order(order)  # Notify the strategy of the order cancellation
         return success
@@ -346,12 +347,12 @@ class Engine:
         Returns:
             bool: True if the closing operation was successful, False otherwise.
         """
-        success = self._portfolio.close_positions(
+        success = self.portfolio.close_positions(
             strategy_id=strategy._id, symbol=symbol
         )
         if success:
             # Notify the strategy of closed positions
-            closed_trades = self._portfolio.get_closed_trades(
+            closed_trades = self.portfolio.get_closed_trades(
                 strategy_id=strategy._id, symbol=symbol
             )
             for trade in closed_trades:
@@ -619,7 +620,7 @@ class Engine:
         Returns:
             List[Trade]: A list of Trade objects associated with the strategy.
         """
-        return self._portfolio.get_trades_for_strategy(strategy._id)
+        return self.portfolio.get_trades_for_strategy(strategy._id)
 
     def get_account_value(self) -> Decimal:
         """
@@ -628,7 +629,7 @@ class Engine:
         Returns:
             Decimal: The current account value.
         """
-        return self._portfolio.get_account_value()
+        return self.portfolio.get_account_value()
 
     def get_position_size(self, symbol: str) -> Decimal:
         """
@@ -640,7 +641,7 @@ class Engine:
         Returns:
             Decimal: The current position size. Positive for long positions, negative for short positions.
         """
-        return self._portfolio.get_position_size(symbol)
+        return self.portfolio.get_position_size(symbol)
 
     def get_available_margin(self) -> Decimal:
         """
@@ -649,7 +650,7 @@ class Engine:
         Returns:
             Decimal: The available margin.
         """
-        return self._portfolio.get_available_margin()
+        return self.portfolio.get_available_margin()
 
     # endregion
 
@@ -662,7 +663,7 @@ class Engine:
             config (Dict[str, Any]): A dictionary containing configuration parameters.
         """
         self._config = config
-        self._portfolio.set_config(config)  # Pass configuration to portfolio
+        self.portfolio.set_config(config)  # Pass configuration to portfolio
         logger_main.info("Backtest configuration set.")
 
     def validate_data(self) -> bool:
@@ -698,7 +699,7 @@ class Engine:
         """
         self._dataview = DataView()
         self._optimized_dataview = None
-        self._portfolio = Portfolio()
+        self.portfolio = Portfolio()
         self._strategies = []
         self._current_timestamp = None
         self._is_running = False
@@ -714,7 +715,7 @@ class Engine:
         """
         return {
             "current_timestamp": self._current_timestamp,
-            "portfolio_state": self._portfolio.get_portfolio_state(),
+            "portfolio_state": self.portfolio.get_portfolio_state(),
             "is_running": self._is_running,
         }
 

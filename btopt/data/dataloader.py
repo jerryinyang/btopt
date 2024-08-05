@@ -434,19 +434,40 @@ class CSVDataLoader(BaseDataLoader):
             if file_path.is_file():
                 try:
                     data = pd.read_parquet(file_path)
-                    if "time" in data.columns and all(
-                        col in data.columns for col in self.OHLC_COLUMNS
-                    ):
-                        data = data[["time"] + self.OHLC_COLUMNS]
-                        data.set_index("time", inplace=True)
-                        logger_main.info(
-                            f"Found and loaded data for {symbol} from {file_path}"
-                        )
-                        return data
-                    else:
+
+                    # Check if all required OHLC columns are present
+                    if not all(col in data.columns for col in self.OHLC_COLUMNS):
                         logger_main.warning(
-                            f"File found for {symbol} at {file_path}, but it doesn't contain the required columns."
+                            f"File found for {symbol} at {file_path}, but it doesn't contain all required OHLC columns."
                         )
+                        continue
+
+                    # Identify the timestamp column
+                    timestamp_columns = [
+                        col
+                        for col in data.columns
+                        if "time" in col.lower() or "date" in col.lower()
+                    ]
+                    if not timestamp_columns:
+                        logger_main.warning(
+                            f"File found for {symbol} at {file_path}, but it doesn't contain a recognizable timestamp column."
+                        )
+                        continue
+
+                    timestamp_column = timestamp_columns[0]
+
+                    # Select and rename columns
+                    selected_columns = [timestamp_column] + self.OHLC_COLUMNS
+                    data = data[selected_columns]
+                    data.rename(columns={timestamp_column: "time"}, inplace=True)
+
+                    # Set the index
+                    data.set_index("time", inplace=True)
+
+                    logger_main.info(
+                        f"Found and loaded data for {symbol} from {file_path}"
+                    )
+                    return data
                 except Exception as e:
                     logger_main.error(
                         f"Error reading parquet file for {symbol} at {file_path}: {e}"
