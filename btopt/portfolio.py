@@ -237,6 +237,30 @@ class Portfolio:
 
         self.metrics = pd.concat([self.metrics, new_row], ignore_index=True)
 
+    def _get_current_price(self, symbol: str) -> Decimal:
+        """
+        Get the current price for a symbol.
+
+        Args:
+            symbol (str): The symbol to get the price for.
+
+        Returns:
+            Decimal: The current price of the symbol.
+        """
+        if self.engine and hasattr(self.engine, "_dataview"):
+            # Assuming the engine has a _dataview attribute with market data
+            current_data = self.engine._dataview.get_last_data(symbol)
+            if current_data is not None:
+                return Decimal(str(current_data["close"]))
+
+        # If we can't get the current price, use the last known price
+        for trade in self.open_trades.get(symbol, []):
+            return trade.current_price
+
+        logger_main.log_and_raise(
+            ValueError(f"Unable to get current price for {symbol}")
+        )
+
     # endregion
 
     # region Order and Trade Management
@@ -271,7 +295,6 @@ class Portfolio:
             price=Decimal(str(price)) if price is not None else None,
             exectype=order_type,
             timestamp=datetime.now(),
-            timeframe=kwargs.get("timeframe"),
             **kwargs,
         )
         order = Order(order_id=self._generate_order_id(), details=order_details)
@@ -435,6 +458,23 @@ class Portfolio:
 
         return closed_any
 
+    def close_all_positions(self, current_timestamp: datetime) -> None:
+        """
+        Close all open positions in the portfolio.
+
+        Args:
+            current_timestamp (datetime): The current timestamp to use for closing trades.
+        """
+        symbols_to_close = list(self.open_trades.keys())
+
+        for symbol in symbols_to_close:
+            trades_to_close = self.open_trades[symbol][:]  # Create a copy of the list
+            for trade in trades_to_close:
+                current_price = self._get_current_price(symbol)
+                self.close_trade(trade, current_price)
+
+        logger_main.log_and_print("Closed all open positions.", level="info")
+
     def _get_open_trades(
         self, strategy_id: str, symbol: Optional[str] = None
     ) -> List[Trade]:
@@ -463,7 +503,10 @@ class Portfolio:
             current_price (Decimal): The current market price to close the trade at.
         """
         trade.close(None, current_price)
-        self.open_trades[trade.ticker].remove(trade)
+        if trade.ticker in self.open_trades:
+            self.open_trades[trade.ticker].remove(trade)
+            if not self.open_trades[trade.ticker]:
+                del self.open_trades[trade.ticker]
         self.closed_trades.append(trade)
         self._update_position(trade.ticker, -trade.current_size, current_price)
         logger_main.log_and_print(f"Closed trade: {trade}", level="info")
@@ -474,39 +517,81 @@ class Portfolio:
         """
         Process all pending orders based on the current market data.
 
+        This method handles cases where an order's timeframe might be None by using
+        the lowest available timeframe for that symbol in the market data.
+
         Args:
             timestamp (datetime): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
         """
-        for order in (
+        orders_to_process: List[Order] = (
             self.pending_orders[:] + self.limit_exit_orders[:]
-        ):  # Create copies to iterate over
+        )
+
+        for order in orders_to_process:
             symbol = order.details.ticker
-            current_price = market_data[symbol][order.details.timeframe][
-                3
-            ]  # Close price
+            timeframe = order.details.timeframe
+
+            # Handle case where order timeframe is None
+            if timeframe is None:
+                available_timeframes = list(market_data[symbol].keys())
+                if not available_timeframes:
+                    logger_main.log_and_print(
+                        f"No market data available for symbol {symbol}. Skipping order processing.",
+                        level="warning",
+                    )
+                    continue
+                timeframe = min(available_timeframes)
+                logger_main.log_and_print(
+                    f"Order for {symbol} has no timeframe. Using lowest available: {timeframe}",
+                    level="warning",
+                )
+
+            try:
+                current_price = market_data[symbol][timeframe][3]  # Close price
+            except KeyError:
+                logger_main.log_and_print(
+                    f"No market data for {symbol} at timeframe {timeframe}. Skipping order.",
+                    level="warning",
+                )
+                continue
+
+            logger_main.log_and_print(
+                f"current_price : {current_price}",
+                level="error",
+            )
+
             is_filled, fill_price = order.is_filled(current_price)
             if is_filled:
                 executed, trade = self.execute_order(order, fill_price)
                 if executed:
-                    if order in self.pending_orders:
-                        self.pending_orders.remove(order)
-                    elif order in self.limit_exit_orders:
-                        self.limit_exit_orders.remove(order)
+                    self._remove_executed_order(order)
                     self.updated_orders.append(order)
                     if trade:
                         self.updated_trades.append(trade)
             elif order.is_expired(timestamp):
-                if order in self.pending_orders:
-                    self.pending_orders.remove(order)
-                elif order in self.limit_exit_orders:
-                    self.limit_exit_orders.remove(order)
-                order.status = Order.Status.CANCELED
-                self.updated_orders.append(order)
+                self._cancel_expired_order(order)
 
         # Check for margin call after processing orders
         if self._check_margin_call():
             self._handle_margin_call()
+
+    def _remove_executed_order(self, order: Order) -> None:
+        """Remove an executed order from the appropriate list."""
+        if order in self.pending_orders:
+            self.pending_orders.remove(order)
+        elif order in self.limit_exit_orders:
+            self.limit_exit_orders.remove(order)
+
+    def _cancel_expired_order(self, order: Order) -> None:
+        """Cancel an expired order and update its status."""
+        self._remove_executed_order(order)
+        order.status = Order.Status.CANCELED
+        self.updated_orders.append(order)
+        logger_main.log_and_print(
+            f"Order {order.id} for {order.details.ticker} has expired and been canceled.",
+            level="info",
+        )
 
     def _update_position(
         self, symbol: str, position_change: Decimal, price: Decimal
