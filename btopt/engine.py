@@ -10,6 +10,7 @@ from .data.timeframe import Timeframe
 from .log_config import logger_main
 from .order import Order
 from .portfolio import Portfolio
+from .reporter import Reporter
 from .strategy.strategy import Strategy
 from .trade import Trade
 
@@ -342,13 +343,12 @@ class Engine:
 
     # region Backtesting Execution
 
-    def run(self) -> Dict[str, Any]:
+    def run(self) -> Reporter:
         """
-        Execute the backtest and return the results.
+        Execute the backtest and return the Reporter object for analysis.
 
         Returns:
-            Dict[str, Any]: A dictionary containing the backtest results, including performance metrics,
-            trade history, and equity curve.
+            Reporter: The Reporter object containing all performance metrics and analysis tools.
 
         Raises:
             ValueError: If data validation fails.
@@ -356,7 +356,7 @@ class Engine:
         """
         if self._is_running:
             logger_main.log_and_print("Backtest is already running.", level="warning")
-            return {}
+            return self.portfolio.reporter
         try:
             self._dataview.align_all_data()
 
@@ -383,7 +383,7 @@ class Engine:
             self._is_running = False
 
         logger_main.log_and_print("Backtest completed.", level="info")
-        return self._generate_results()
+        return self.portfolio.reporter
 
     def _initialize_backtest(self) -> None:
         """
