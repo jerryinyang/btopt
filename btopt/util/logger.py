@@ -1,39 +1,47 @@
 import logging
 import sys
 from pathlib import Path
-from typing import Literal, Union
+from typing import Any, Literal, Union
 
 
-class LogFormatter(logging.Formatter):
+class CustomFormatter(logging.Formatter):
     """
-    Custom formatter class to format log messages differently based on their level.
+    A custom formatter that applies different formats based on the log level.
+    This formatter attempts to create clickable links for both filename and line number.
     """
 
-    FORMAT_DEBUG_INFO = "%(asctime)s - %(levelname)s [%(name)s] - %(message)s"
-    FORMAT_WARNING_ERROR = (
-        "%(asctime)s - %(levelname)s [%(name)s]\n%(message)s - %(pathname)s:%(lineno)d"
-    )
+    def __init__(self):
+        super().__init__()
+        self.formats = {
+            logging.DEBUG: "%(asctime)s - %(levelname)s [%(name)s] - %(message)s",
+            logging.INFO: "%(asctime)s - %(levelname)s [%(name)s] - %(message)s",
+            logging.WARNING: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
+            logging.ERROR: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
+            logging.CRITICAL: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
+        }
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
         """
-        Format the specified record as text.
+        Format the specified record based on its level.
 
         Args:
-            record: A LogRecord instance containing logged information.
+            record (logging.LogRecord): The log record to format.
 
         Returns:
-            str: A formatted log message.
+            str: The formatted log message.
         """
-        if record.levelno <= logging.INFO:
-            self._style._fmt = self.FORMAT_DEBUG_INFO
-        else:
-            self._style._fmt = self.FORMAT_WARNING_ERROR
-        return super().format(record)
+        log_fmt = self.formats.get(record.levelno)
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
 
 
 class Logger(logging.Logger):
     """
-    Custom Logger class with additional functionality for logging and raising exceptions.
+    A custom Logger class that extends the functionality of the standard logging.Logger.
+
+    This Logger provides additional methods for logging and raising exceptions,
+    as well as logging and printing messages. It attempts to create clickable links
+    for both filename and line number in error messages.
     """
 
     LEVEL_MAP = {
@@ -46,12 +54,10 @@ class Logger(logging.Logger):
 
     def __init__(
         self,
-        name: str = __name__,
-        file_location: Union[str, Path] = "logs.log",
-        level: Literal["debug", "info", "warning", "error", "critical"] = "warning",
-        console_level: Literal[
-            "debug", "info", "warning", "error", "critical"
-        ] = "warning",
+        name: str,
+        file_location: Union[str, Path],
+        level: Literal["debug", "info", "warning", "error", "critical"],
+        console_level: Literal["debug", "info", "warning", "error", "critical"],
     ):
         """
         Initialize the Logger instance.
@@ -64,18 +70,19 @@ class Logger(logging.Logger):
         """
         super().__init__(name, self._parse_level(level))
 
-        formatter = LogFormatter()
+        self.file_location = Path(file_location)
+        self.formatter = CustomFormatter()
 
-        # Console handler
+        # Set up console handler
         console_handler = logging.StreamHandler()
         console_handler.setLevel(self._parse_level(console_level))
-        console_handler.setFormatter(formatter)
+        console_handler.setFormatter(self.formatter)
         self.addHandler(console_handler)
 
-        # File handler
-        file_handler = logging.FileHandler(file_location)
+        # Set up file handler
+        file_handler = logging.FileHandler(self.file_location)
         file_handler.setLevel(self.level)
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(self.formatter)
         self.addHandler(file_handler)
 
     @classmethod
@@ -92,119 +99,62 @@ class Logger(logging.Logger):
         return cls.LEVEL_MAP.get(level.lower(), logging.WARNING)
 
     def log_and_raise(
-        self, error: Exception, level: Literal["error", "critical"] = "error"
-    ):
+        self,
+        error: Exception,
+        level: Literal["error", "critical"] = "error",
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         """
         Log the error message and then raise the exception.
+
+        This method attempts to create a clickable link for both the filename and line number
+        in the logged error message.
 
         Args:
             error (Exception): The exception to be logged and raised.
             level (Literal["error", "critical"]): The log level to use. Defaults to "error".
+            *args: Additional positional arguments for the log message.
+            **kwargs: Additional keyword arguments for the log message.
 
         Raises:
             The provided exception after logging it.
         """
         log_method = getattr(self, level)
 
-        # Get the caller's frame information
-        frame = sys._getframe(2)  # Use 2 to get the caller of the caller
-        filename = frame.f_code.co_filename
-        lineno = frame.f_lineno
+        # Get caller information
+        caller_frame = sys._getframe(1)
+        filename = caller_frame.f_code.co_filename
+        lineno = caller_frame.f_lineno
 
-        # Create a custom record with the correct file and line information
-        record = self.makeRecord(
-            self.name,
-            self.LEVEL_MAP[level],
-            filename,
-            lineno,
-            str(error),
-            None,
-            None,
-            func=frame.f_code.co_name,
-        )
+        # Create a message with potentially clickable filename and line number
+        message = f'{str(error)}\n  File "{filename}", line {lineno}'
 
-        # Log the custom record
-        log_method(str(error), extra={"custom_record": record}, exc_info=True)
-
-        raise
+        log_method(message, exc_info=True, stack_info=True, *args, **kwargs)
+        raise error
 
     def log_and_print(
-        self, message: str, level: Literal["info", "debug", "warning"] = "info"
-    ):
+        self,
+        message: str,
+        level: Literal["debug", "info", "warning"] = "info",
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         """
-        Log and print the message if the level is at or above the console level.
+        Log the message and print it to the console if the level is appropriate.
 
         Args:
-            message (str): The message to be logged and printed.
-            level (Literal["info", "debug", "warning"]): The log level to use. Defaults to "info".
+            message (str): The message to be logged and potentially printed.
+            level (Literal["debug", "info", "warning"]): The log level to use. Defaults to "info".
+            *args: Additional positional arguments for the log message.
+            **kwargs: Additional keyword arguments for the log message.
         """
         log_method = getattr(self, level)
+        log_method(message, *args, **kwargs)
 
-        # Get the caller's frame information
-        frame = sys._getframe(2)  # Use 2 to get the caller of the caller
-        filename = frame.f_code.co_filename
-        lineno = frame.f_lineno
-
-        # Create a custom record with the correct file and line information
-        record = self.makeRecord(
-            self.name,
-            self.LEVEL_MAP[level],
-            filename,
-            lineno,
-            message,
-            None,
-            None,
-            func=frame.f_code.co_name,
-        )
-
-        # Log the custom record
-        log_method(message, extra={"custom_record": record})
-
-        # Only print if the level is at or above the console level
+        # Print to console if the level is at or above the console handler's level
         if self.LEVEL_MAP[level] >= self.handlers[0].level:
-            print(message)
-
-    def _log(
-        self,
-        level,
-        msg,
-        args,
-        exc_info=None,
-        extra=None,
-        stack_info=False,
-        stacklevel=1,
-    ):
-        """
-        Override the internal _log method to use our custom record when available.
-
-        Args:
-            level: The logging level.
-            msg: The message to log.
-            args: Arguments to be applied to the message.
-            exc_info: Exception information to be added to the logging message.
-            extra: Extra information to be added to the logging message.
-            stack_info: Whether to add stack information.
-            stacklevel: Determines which caller's frame is used for the location information.
-        """
-        if extra and "custom_record" in extra:
-            record = extra["custom_record"]
-        else:
-            record = self.makeRecord(
-                self.name,
-                level,
-                self.findCaller(stack_info, stacklevel)[0],
-                self.findCaller(stack_info, stacklevel)[1],
-                msg,
-                args,
-                exc_info,
-                func=self.findCaller(stack_info, stacklevel)[2],
-                extra=extra,
-                sinfo=self.findCaller(stack_info, stacklevel)[3]
-                if stack_info
-                else None,
-            )
-
-        self.handle(record)
+            print(f"{level.upper()}: {message}")
 
 
 def get_logger(
@@ -214,13 +164,16 @@ def get_logger(
     console_level: Literal["debug", "info", "warning", "error", "critical"] = "warning",
 ) -> Logger:
     """
-    Factory function to create and configure a Logger instance.
+    Create and return a configured Logger instance.
+
+    This function creates a Logger instance with potentially clickable links
+    for both filename and line number in error messages.
 
     Args:
-        name (str): The name of the logger.
-        file_location (Union[str, Path]): The location of the log file.
-        level (Literal["debug", "info", "warning", "error", "critical"]): The logging level for the file handler.
-        console_level (Literal["debug", "info", "warning", "error", "critical"]): The logging level for the console handler.
+        name (str): The name of the logger. Defaults to the calling module's name.
+        file_location (Union[str, Path]): The location of the log file. Defaults to "logs.log".
+        level (Literal["debug", "info", "warning", "error", "critical"]): The logging level for the file handler. Defaults to "warning".
+        console_level (Literal["debug", "info", "warning", "error", "critical"]): The logging level for the console handler. Defaults to "warning".
 
     Returns:
         Logger: A configured Logger instance.
@@ -228,11 +181,19 @@ def get_logger(
     return Logger(name, file_location, level, console_level)
 
 
+# Example usage
 if __name__ == "__main__":
-    # Example usage
     logger = get_logger(level="debug", console_level="info")
+
     logger.debug("This is a debug message")
     logger.info("This is an info message")
     logger.warning("This is a warning message")
     logger.error("This is an error message")
     logger.critical("This is a critical message")
+
+    logger.log_and_print("This message will be logged and printed", level="info")
+
+    try:
+        logger.log_and_raise(ValueError("This is a test error"), level="error")
+    except ValueError as e:
+        print(f"Caught exception: {e}")

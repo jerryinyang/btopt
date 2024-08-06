@@ -1,4 +1,4 @@
-from collections import deque
+from collections import defaultdict, deque
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -10,159 +10,72 @@ from ..log_config import logger_main
 
 
 class Data:
-    """
-    A class to manage and provide access to financial data for a specific symbol and timeframe.
-
-    This class stores historical bar data and provides efficient access to OHLCV
-    (Open, High, Low, Close, Volume) information. It uses a combination of a deque
-    for storing Bar objects and numpy arrays for fast numerical operations on OHLCV data.
-
-    Attributes:
-        symbol (str): The financial instrument symbol (e.g., 'AAPL' for Apple Inc.).
-        timeframe (Timeframe): The timeframe of the data (e.g., '1m' for 1-minute bars).
-        max_length (int): Maximum number of historical bars to store.
-    """
-
-    def __init__(self, symbol: str, timeframe: Timeframe, max_length: int = 1000):
-        """
-        Initialize the Data object.
-
-        Args:
-            symbol (str): The financial instrument symbol.
-            timeframe (Timeframe): The timeframe of the data.
-            max_length (int, optional): Maximum number of historical bars to store. Defaults to 1000.
-        """
+    def __init__(self, symbol: str, max_length: int = 1000):
         self.symbol: str = symbol
-        self.timeframe: Timeframe = timeframe
         self.max_length: int = max_length
-        self._bars: deque = deque(maxlen=max_length)
-
-        # Initialize numpy arrays for OHLCV data
-        self._open: np.ndarray = np.array([], dtype=float)
-        self._high: np.ndarray = np.array([], dtype=float)
-        self._low: np.ndarray = np.array([], dtype=float)
-        self._close: np.ndarray = np.array([], dtype=float)
-        self._volume: np.ndarray = np.array([], dtype=float)
-
-    def __getitem__(self, index: int) -> Bar:
-        """
-        Allow indexing to access historical bars.
-
-        Args:
-            index (int): The index of the bar to retrieve. 0 is the most recent bar,
-                         -1 is the previous bar, and so on.
-
-        Returns:
-            Bar: The requested historical bar.
-
-        Raises:
-            IndexError: If the requested index is out of range.
-        """
-        if abs(index) >= len(self._bars):
-            logger_main.log_and_raise(IndexError("Data index out of range"))
-        return self._bars[index]
+        self._data: Dict[Timeframe, Dict[str, np.ndarray]] = defaultdict(
+            lambda: {
+                "open": np.array([], dtype=float),
+                "high": np.array([], dtype=float),
+                "low": np.array([], dtype=float),
+                "close": np.array([], dtype=float),
+                "volume": np.array([], dtype=float),
+            }
+        )
 
     def add_bar(self, bar: Bar) -> None:
-        """
-        Add a new bar to the data and update the OHLCV arrays.
-
-        This method adds the new bar to the front of the deque and updates
-        the numpy arrays with the new data.
-
-        Args:
-            bar (Bar): The new bar to add to the data.
-        """
-        self._bars.appendleft(bar)
-        self._update_arrays(bar)
-
-    def _update_arrays(self, bar: Bar) -> None:
-        """
-        Update the OHLCV numpy arrays with the new bar data.
-
-        This private method is called by add_bar to keep the numpy arrays
-        in sync with the _bars deque.
-
-        Args:
-            bar (Bar): The new bar containing the data to add to the arrays.
-        """
         for attr in ["open", "high", "low", "close", "volume"]:
-            arr = getattr(self, f"_{attr}")
             value = getattr(bar, attr)
-
-            # Insert the new value at the beginning and trim to max_length
-            setattr(
-                self, f"_{attr}", np.concatenate(([value], arr[: self.max_length - 1]))
+            self._data[bar.timeframe][attr] = np.concatenate(
+                ([value], self._data[bar.timeframe][attr][: self.max_length - 1])
             )
+
+    def __getitem__(self, timeframe: Timeframe) -> Dict[str, np.ndarray]:
+        # Ensure the timeframe exists in the data
+        if timeframe not in self._data:
+            self._data[timeframe] = {
+                "open": np.array([], dtype=float),
+                "high": np.array([], dtype=float),
+                "low": np.array([], dtype=float),
+                "close": np.array([], dtype=float),
+                "volume": np.array([], dtype=float),
+            }
+        return self._data[timeframe]
+
+    def get(
+        self, timeframe: Timeframe, attr: str, default: Optional[float] = None
+    ) -> np.ndarray:
+        return self[timeframe].get(attr, default)
+
+    @property
+    def timeframes(self):
+        return list(self._data.keys())
+
+
+class DataTimeframe:
+    def __init__(self, data: Data, timeframe: Timeframe):
+        self.data = data
+        self.timeframe = timeframe
 
     @property
     def open(self) -> np.ndarray:
-        """np.ndarray: Array of historical open prices."""
-        return self._open
+        return self.data._arrays[self.timeframe]["open"]
 
     @property
     def high(self) -> np.ndarray:
-        """np.ndarray: Array of historical high prices."""
-        return self._high
+        return self.data._arrays[self.timeframe]["high"]
 
     @property
     def low(self) -> np.ndarray:
-        """np.ndarray: Array of historical low prices."""
-        return self._low
+        return self.data._arrays[self.timeframe]["low"]
 
     @property
     def close(self) -> np.ndarray:
-        """np.ndarray: Array of historical close prices."""
-        return self._close
+        return self.data._arrays[self.timeframe]["close"]
 
     @property
     def volume(self) -> np.ndarray:
-        """np.ndarray: Array of historical volume data."""
-        return self._volume
-
-    def fetch_data(self, by: str = "close", size: int = 1) -> np.ndarray:
-        """
-        Fetch a specified amount of historical data.
-
-        Args:
-            by (str, optional): The type of data to fetch. Must be one of
-                                'open', 'high', 'low', 'close', or 'volume'.
-                                Defaults to 'close'.
-            size (int, optional): The number of historical data points to fetch.
-                                  Defaults to 1.
-
-        Returns:
-            np.ndarray: Array of requested historical data.
-
-        Raises:
-            ValueError: If an invalid 'by' parameter is provided.
-        """
-        if by not in ["open", "high", "low", "close", "volume"]:
-            logger_main.log_and_raise(
-                ValueError(
-                    "Invalid 'by' parameter. Must be one of 'open', 'high', 'low', 'close', or 'volume'."
-                )
-            )
-        return getattr(self, by)[:size]
-
-    def __len__(self) -> int:
-        """
-        Get the number of bars currently stored in the data.
-
-        Returns:
-            int: The number of bars in the data.
-        """
-        return len(self._bars)
-
-    def __repr__(self) -> str:
-        """
-        Get a string representation of the Data object.
-
-        Returns:
-            str: A string representation of the Data object.
-        """
-        return (
-            f"Data(symbol={self.symbol}, timeframe={self.timeframe}, bars={len(self)})"
-        )
+        return self.data._arrays[self.timeframe]["volume"]
 
 
 class BarManager:
@@ -342,4 +255,5 @@ class BarManager:
         """
         symbol_count = len(self.get_symbols())
         total_bars = len(self)
+        return f"BarManager(symbols={symbol_count}, total_bars={total_bars})"
         return f"BarManager(symbols={symbol_count}, total_bars={total_bars})"

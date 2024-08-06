@@ -7,7 +7,7 @@ from .data.bar import Bar
 from .data.dataloader import BaseDataLoader
 from .data.dataview import DataView
 from .data.timeframe import Timeframe
-from .log_config import logger_main
+from .log_config import clear_log_file, logger_main
 from .order import Order
 from .portfolio import Portfolio
 from .strategy.strategy import Strategy
@@ -367,6 +367,9 @@ class Engine:
             ValueError: If data validation fails.
             Exception: If an error occurs during the backtest.
         """
+        # Clear log file
+        clear_log_file()
+
         if self._is_running:
             logger_main.log_and_print("Backtest is already running.", level="warning")
             return self.portfolio.reporter
@@ -653,9 +656,9 @@ class Engine:
         This method is called after processing each timestamp to inform strategies
         of any changes to their orders or trades.
         """
-        for order in self.portfolio.get_updated_orders():
+        for order in self.portfolio.updated_orders:
             self._notify_order_fill(order, None)
-        for trade in self.portfolio.get_updated_trades():
+        for trade in self.portfolio.updated_trades:
             self._notify_trade_update(trade)
 
     def _notify_trade_update(self, trade: Trade) -> None:

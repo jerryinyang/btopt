@@ -10,6 +10,25 @@ DEFAULT_LOG_LEVEL = "info"
 DEFAULT_CONSOLE_LEVEL = "warning"
 
 
+def clear_log_file():
+    """
+    Clears the content of the specified log file.
+
+    :param log_file_path: Path to the log file to be cleared.
+    """
+    log_file_path = DEFAULT_LOG_FILE
+    try:
+        # Ensure the directory exists
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Open the file in write mode to clear its content
+        with open(log_file_path, "w") as file:
+            file.truncate(0)
+        print(f"Log file '{log_file_path}' has been cleared successfully.")
+    except Exception as e:
+        print(f"An error occurred while clearing the log file: {e}")
+
+
 # Create a pre-configured logger
 logger_main = get_logger(
     name="main",

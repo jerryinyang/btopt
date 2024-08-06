@@ -124,7 +124,7 @@ class Strategy(ABC):
         self.name: str = name
         self._parameters: Parameters = Parameters(parameters or {})
         self.primary_timeframe: Optional[Timeframe] = primary_timeframe
-        self._datas: Dict[str, Dict[Timeframe, Data]] = defaultdict(dict)
+        self._datas: Dict[str, Data] = {}
         self._bar_manager: BarManager = BarManager()
         self._initialized: bool = False
         self._primary_symbol: Optional[str] = None
@@ -167,9 +167,10 @@ class Strategy(ABC):
             self.primary_timeframe = default_timeframe
 
         for symbol in symbols:
-            for timeframe in timeframes:
-                self._datas[symbol][timeframe] = Data(symbol, timeframe)
-            self._positions[symbol] = 0.0
+            self._datas[symbol] = Data(symbol)
+
+        self._primary_symbol = symbols[0] if symbols else None
+        self._initialized = True
 
         self._primary_symbol = symbols[0] if symbols else None
         self._initialized = True
@@ -202,14 +203,7 @@ class Strategy(ABC):
             logger_main.log_and_raise(
                 StrategyError("No primary symbol set for the strategy.")
             )
-        try:
-            return self._datas[self._primary_symbol][self.primary_timeframe]
-        except KeyError:
-            logger_main.log_and_raise(
-                StrategyError(
-                    f"Data for primary symbol {self._primary_symbol} and timeframe {self.primary_timeframe} not found."
-                )
-            )
+        return self._datas[self._primary_symbol]
 
     @property
     def parameters(self) -> Parameters:
@@ -244,9 +238,10 @@ class Strategy(ABC):
         Args:
             bar (Bar): The new price bar data.
         """
-        symbol, timeframe = bar.ticker, bar.timeframe
-        self._datas[symbol][timeframe].add_bar(bar)
-        self._bar_manager.add_bar(bar)
+        symbol, timeframe = bar.ticker, bar.timeframe  # noqa
+        self._datas[symbol].add_bar(bar)
+
+        logger_main.log_and_print(f"DATA POINT: {repr(self._engine)}", level="error")
         self.on_bar(bar)
 
     # endregion
@@ -878,7 +873,7 @@ class Strategy(ABC):
             KeyError: If the requested symbol or timeframe is not found.
         """
         if isinstance(key, str):
-            return self._datas[key][self.primary_timeframe]
+            return self._datas[key]
         elif isinstance(key, tuple) and len(key) == 2:
             symbol, timeframe = key
             return self._datas[symbol][timeframe]
@@ -901,7 +896,7 @@ class Strategy(ABC):
             KeyError: If the requested symbol or timeframe is not found.
         """
         if timeframe is None:
-            timeframe = self.primary_timeframe
+            return self._datas[symbol]
         return self._datas[symbol][timeframe]
 
     def get_pending_orders(self) -> List[Order]:

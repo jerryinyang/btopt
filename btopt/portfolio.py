@@ -219,20 +219,23 @@ class Portfolio:
         self.max_drawdown = max(self.max_drawdown, drawdown)
         self.peak_equity = max(self.peak_equity, equity)
 
-        self.metrics = self.metrics.append(
-            {
-                "timestamp": timestamp,
-                "cash": self.cash,
-                "equity": equity,
-                "open_pnl": open_pnl,
-                "closed_pnl": closed_pnl,
-                "commission": commission,
-                "slippage": slippage,
-                "drawdown": drawdown,
-                "max_drawdown": self.max_drawdown,
-            },
-            ignore_index=True,
+        new_row = pd.DataFrame(
+            [
+                {
+                    "timestamp": timestamp,
+                    "cash": self.cash,
+                    "equity": equity,
+                    "open_pnl": open_pnl,
+                    "closed_pnl": closed_pnl,
+                    "commission": commission,
+                    "slippage": slippage,
+                    "drawdown": drawdown,
+                    "max_drawdown": self.max_drawdown,
+                }
+            ]
         )
+
+        self.metrics = pd.concat([self.metrics, new_row], ignore_index=True)
 
     # endregion
 
