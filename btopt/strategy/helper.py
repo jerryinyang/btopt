@@ -6,6 +6,7 @@ import pandas as pd
 
 from ..data.bar import Bar
 from ..data.timeframe import Timeframe
+from ..log_config import logger_main
 
 
 class Data:
@@ -58,7 +59,7 @@ class Data:
             IndexError: If the requested index is out of range.
         """
         if abs(index) >= len(self._bars):
-            raise IndexError("Data index out of range")
+            logger_main.log_and_raise(IndexError("Data index out of range"))
         return self._bars[index]
 
     def add_bar(self, bar: Bar) -> None:
@@ -136,8 +137,10 @@ class Data:
             ValueError: If an invalid 'by' parameter is provided.
         """
         if by not in ["open", "high", "low", "close", "volume"]:
-            raise ValueError(
-                "Invalid 'by' parameter. Must be one of 'open', 'high', 'low', 'close', or 'volume'."
+            logger_main.log_and_raise(
+                ValueError(
+                    "Invalid 'by' parameter. Must be one of 'open', 'high', 'low', 'close', or 'volume'."
+                )
             )
         return getattr(self, by)[:size]
 
@@ -235,7 +238,9 @@ class BarManager:
         except KeyError:
             return None
         except IndexError:
-            raise IndexError(f"Bar index {index} out of range for {symbol} {timeframe}")
+            logger_main.log_and_raise(
+                IndexError(f"Bar index {index} out of range for {symbol} {timeframe}")
+            )
 
     def get_latest_bars(
         self, symbol: str, timeframe: Timeframe, n: int = 1

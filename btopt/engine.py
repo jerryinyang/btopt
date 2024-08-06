@@ -10,9 +10,9 @@ from .data.timeframe import Timeframe
 from .log_config import logger_main
 from .order import Order
 from .portfolio import Portfolio
-from .reporter import Reporter
 from .strategy.strategy import Strategy
 from .trade import Trade
+from .types import ReporterType
 
 
 class Engine:
@@ -188,17 +188,30 @@ class Engine:
                 ValueError("Dataloader does not contain any data.")
             )
 
-        for ticker, data in dataloader.dataframes.items():
-            self._dataview.resample_data(
-                symbol=ticker,
-                from_timeframe=dataloader.timeframe,
-                to_timeframe=timeframe,
-                df=data,
-            )
+        def resampling_modifier(
+            dataframes: Dict[str, pd.DataFrame],
+        ) -> Dict[str, pd.DataFrame]:
+            resampled_dataframes = {}
+            for ticker, data in dataframes.items():
+                resampled_df = self._dataview.resample_data(
+                    symbol=ticker,
+                    from_timeframe=dataloader.timeframe,
+                    to_timeframe=timeframe,
+                    df=data,
+                )
+                resampled_dataframes[ticker] = resampled_df
+            return resampled_dataframes
 
-        self.add_data(dataloader)
+        resampled_dataloader = dataloader.create_modified(resampling_modifier)
+        resampled_dataloader.timeframe = (
+            timeframe if isinstance(timeframe, Timeframe) else Timeframe(timeframe)
+        )
+
+        # Add the resampled dataloader to the engine
+        self.add_data(resampled_dataloader)
+
         logger_main.log_and_print(
-            f"Resampled data for {len(dataloader.dataframes)} symbols to {timeframe}.",
+            f"Resampled data for {len(resampled_dataloader.dataframes)} symbols to {timeframe}.",
             level="info",
         )
 
@@ -343,7 +356,7 @@ class Engine:
 
     # region Backtesting Execution
 
-    def run(self) -> Reporter:
+    def run(self) -> ReporterType:
         """
         Execute the backtest and return the Reporter object for analysis.
 

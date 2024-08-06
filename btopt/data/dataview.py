@@ -301,15 +301,18 @@ class DataView:
         from_timeframe: Union[str, Timeframe],
         to_timeframe: Union[str, Timeframe],
         df: pd.DataFrame,
-    ) -> None:
+    ) -> pd.DataFrame:
         """
-        Resample data from one timeframe to another (higher) timeframe and add it to the dataset.
+        Resample data from one timeframe to another (higher) timeframe.
 
         Args:
             symbol (str): The symbol for which data is being resampled.
             from_timeframe (Union[str, Timeframe]): The original timeframe of the data.
             to_timeframe (Union[str, Timeframe]): The target timeframe for resampling.
             df (pd.DataFrame): The dataframe containing the data to be resampled.
+
+        Returns:
+            pd.DataFrame: The resampled dataframe.
 
         Raises:
             ValueError: If to_timeframe is lower than from_timeframe, or if the dataframe is invalid.
@@ -334,13 +337,12 @@ class DataView:
         # Resample the data
         resampled_df = self._resample_dataframe(df, to_timeframe)
 
-        # Add the resampled data using add_data method
-        self.add_data(symbol, to_timeframe, resampled_df)
-
         logger_main.log_and_print(
-            f"Data resampled and added for {symbol} from {from_timeframe} to {to_timeframe} timeframe.",
+            f"Data resampled for {symbol} from {from_timeframe} to {to_timeframe} timeframe.",
             level="info",
         )
+
+        return resampled_df
 
     def _validate_dataframe(
         self, df: pd.DataFrame, symbol: str, timeframe: Timeframe
@@ -428,7 +430,9 @@ class DataView:
         elif timeframe.unit == TimeframeUnit.MONTH:
             return f"{timeframe.multiplier}M"
         else:
-            raise ValueError(f"Unsupported timeframe unit: {timeframe.unit}")
+            logger_main.log_and_raise(
+                ValueError(f"Unsupported timeframe unit: {timeframe.unit}")
+            )
 
     def get_data_range(self) -> Tuple[pd.Timestamp, pd.Timestamp]:
         """
@@ -589,7 +593,9 @@ class DataViewNumpy:
             ValueError: If the provided DataView instance is not aligned.
         """
         if not data_instance.is_aligned:
-            raise ValueError("Data must be aligned before creating optimized view.")
+            logger_main.log_and_raise(
+                ValueError("Data must be aligned before creating optimized view.")
+            )
         self.original_data = data_instance
         self.data_array = None
         self.master_timeline = None
@@ -706,7 +712,7 @@ class DataViewNumpy:
             timeframe_idx = self.timeframe_to_index[timeframe]
             timestamp_idx = self.timestamp_to_index[timestamp]
         except KeyError as e:
-            raise KeyError(f"Invalid key: {e}")
+            logger_main.log_and_raise(KeyError(f"Invalid key: {e}"))
         return self.get_data_point(symbol_idx, timeframe_idx, timestamp_idx)
 
     def is_original_data_point(

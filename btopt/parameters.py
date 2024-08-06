@@ -1,5 +1,7 @@
 from typing import Any, Dict, Optional, Type
 
+from .log_config import logger_main
+
 
 class Parameters:
     """
@@ -51,7 +53,7 @@ class Parameters:
         """
         if name in self._params:
             return self._params[name]
-        raise AttributeError(f"Parameter '{name}' does not exist")
+        logger_main.log_and_raise(AttributeError(f"Parameter '{name}' does not exist"))
 
     def __setattr__(self, name: str, value: Any) -> None:
         """
@@ -71,8 +73,10 @@ class Parameters:
         elif name in self._params:
             self.set(name, value)
         else:
-            raise AttributeError(
-                f"Cannot set new parameter '{name}' using dot notation. Use set() method instead."
+            logger_main.log_and_raise(
+                AttributeError(
+                    f"Cannot set new parameter '{name}' using dot notation. Use set() method instead."
+                )
             )
 
     def __repr__(self) -> str:
@@ -100,8 +104,10 @@ class Parameters:
             param_type = type(value)
 
         if name in self._types and not isinstance(value, self._types[name]):
-            raise TypeError(
-                f"Parameter '{name}' must be of type {self._types[name].__name__}"
+            logger_main.log_and_raise(
+                TypeError(
+                    f"Parameter '{name}' must be of type {self._types[name].__name__}"
+                )
             )
 
         self._params[name] = value
@@ -132,8 +138,10 @@ class Parameters:
         """
         for name, value in self._params.items():
             if not isinstance(value, self._types[name]):
-                raise TypeError(
-                    f"Parameter '{name}' must be of type {self._types[name].__name__}"
+                logger_main.log_and_raise(
+                    TypeError(
+                        f"Parameter '{name}' must be of type {self._types[name].__name__}"
+                    )
                 )
         return True
 
@@ -180,4 +188,5 @@ class Parameters:
         Returns:
             Dict[str, Any]: A dictionary representation of the parameters.
         """
+        return self._params.copy()
         return self._params.copy()

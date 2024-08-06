@@ -124,9 +124,9 @@ class Logger(logging.Logger):
         )
 
         # Log the custom record
-        log_method(str(error), extra={"custom_record": record})
+        log_method(str(error), extra={"custom_record": record}, exc_info=True)
 
-        raise error
+        raise
 
     def log_and_print(
         self, message: str, level: Literal["info", "debug", "warning"] = "info"

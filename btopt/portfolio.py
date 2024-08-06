@@ -6,11 +6,11 @@ import numpy as np
 import pandas as pd
 
 from .data.timeframe import Timeframe
-from .engine import Engine
 from .log_config import logger_main
 from .order import Order, OrderDetails
 from .reporter import Reporter
 from .trade import Trade
+from .types import EngineType
 
 
 class Portfolio:
@@ -69,7 +69,7 @@ class Portfolio:
         pyramiding: int = 1,
         margin_ratio: Decimal = Decimal("0.5"),
         margin_call_threshold: Decimal = Decimal("0.3"),
-        engine: Engine = None,
+        engine: EngineType = None,
     ):
         """
         Initialize the Portfolio with given parameters.
@@ -465,6 +465,46 @@ class Portfolio:
         self._update_position(trade.ticker, -trade.current_size, current_price)
         logger_main.log_and_print(f"Closed trade: {trade}", level="info")
 
+    def _process_pending_orders(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
+    ) -> None:
+        """
+        Process all pending orders based on the current market data.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
+        """
+        for order in (
+            self.pending_orders[:] + self.limit_exit_orders[:]
+        ):  # Create copies to iterate over
+            symbol = order.details.ticker
+            current_price = market_data[symbol][order.details.timeframe][
+                3
+            ]  # Close price
+            is_filled, fill_price = order.is_filled(current_price)
+            if is_filled:
+                executed, trade = self.execute_order(order, fill_price)
+                if executed:
+                    if order in self.pending_orders:
+                        self.pending_orders.remove(order)
+                    elif order in self.limit_exit_orders:
+                        self.limit_exit_orders.remove(order)
+                    self.updated_orders.append(order)
+                    if trade:
+                        self.updated_trades.append(trade)
+            elif order.is_expired(timestamp):
+                if order in self.pending_orders:
+                    self.pending_orders.remove(order)
+                elif order in self.limit_exit_orders:
+                    self.limit_exit_orders.remove(order)
+                order.status = Order.Status.CANCELED
+                self.updated_orders.append(order)
+
+        # Check for margin call after processing orders
+        if self._check_margin_call():
+            self._handle_margin_call()
+
     def _update_position(
         self, symbol: str, position_change: Decimal, price: Decimal
     ) -> None:
@@ -559,9 +599,10 @@ class Portfolio:
             bool: True if a margin call should be triggered, False otherwise.
         """
         equity = self.calculate_equity()
-        if equity / self.margin_used < self.margin_call_threshold:
-            logger_main.log_and_print("Margin call triggered!", level="warning")
-            return True
+        if self.margin_used:
+            if equity / self.margin_used < self.margin_call_threshold:
+                logger_main.log_and_print("Margin call triggered!", level="warning")
+                return True
         return False
 
     def _handle_margin_call(self) -> None:

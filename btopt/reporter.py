@@ -8,9 +8,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from .engine import Engine
 from .log_config import logger_main
-from .portfolio import Portfolio
+from .types import EngineType, PortfolioType
 
 
 class Reporter:
@@ -78,7 +77,7 @@ class Reporter:
     and live trading environments.
     """
 
-    def __init__(self, portfolio: Portfolio, engine: Engine):
+    def __init__(self, portfolio: PortfolioType, engine: EngineType):
         """
         Initialize the Reporter instance.
 

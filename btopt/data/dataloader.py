@@ -1,9 +1,10 @@
 import os
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
 import mysql.connector as connector
 import pandas as pd
@@ -83,6 +84,33 @@ class BaseDataLoader(ABC):
     def tickers(self):
         return self.dataframes.keys()
 
+    def create_modified(
+        self,
+        modifier_func: Callable[[Dict[str, pd.DataFrame]], Dict[str, pd.DataFrame]],
+    ) -> "BaseDataLoader":
+        """
+        Create a new dataloader instance with modified dataframes.
+
+        Args:
+            modifier_func (Callable[[Dict[str, pd.DataFrame]], Dict[str, pd.DataFrame]]):
+                A function that takes the current dataframes dictionary and returns a modified version.
+
+        Returns:
+            BaseDataLoader: A new instance of the dataloader with modified data.
+
+        Raises:
+            ValueError: If the dataloader does not contain any data.
+        """
+        if not self.has_data:
+            logger_main.log_and_raise(
+                ValueError("Dataloader does not contain any data.")
+            )
+
+        new_instance = deepcopy(self)
+        new_instance._raw_dataframes = None
+        new_instance.__dataframes = modifier_func(self.dataframes)
+        return new_instance
+
     def _load_data(self) -> Dict[str, pd.DataFrame]:
         """
         Load and process data for all symbols.
@@ -124,14 +152,18 @@ class BaseDataLoader(ABC):
             TypeError: If symbol is neither a string nor a list.
         """
         if symbol is None:
-            raise ValueError("`symbol` is a required argument. Cannot be of NoneType")
+            logger_main.log_and_raise(
+                ValueError("`symbol` is a required argument. Cannot be of NoneType")
+            )
 
         if isinstance(symbol, str):
             return [symbol.upper()]
         elif isinstance(symbol, list):
             return [str(s).upper() for s in symbol]
         else:
-            raise TypeError(f"Unsupported data type for symbol: {type(symbol)}")
+            logger_main.log_and_raise(
+                TypeError(f"Unsupported data type for symbol: {type(symbol)}")
+            )
 
     def _set_date_range(self, period_kwargs: dict) -> tuple:
         """
@@ -201,7 +233,7 @@ class BaseDataLoader(ABC):
             ValueError: If the fetched data is empty or missing required columns.
         """
         if data.empty:
-            raise ValueError("Fetched data is empty.")
+            logger_main.log_and_raise(ValueError("Fetched data is empty."))
 
         # Ensure column names are lowercase
         data.columns = data.columns.str.lower()
@@ -209,8 +241,10 @@ class BaseDataLoader(ABC):
         # Check for missing columns
         missing_columns = set(self.OHLC_COLUMNS) - set(data.columns)
         if missing_columns:
-            raise ValueError(
-                f"Fetched data is missing columns: {missing_columns}. Got these columns: {data.columns}"
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Fetched data is missing columns: {missing_columns}. Got these columns: {data.columns}"
+                )
             )
 
         # Ensure the index is a datetime index and standardize its format
@@ -218,7 +252,9 @@ class BaseDataLoader(ABC):
             try:
                 data.index = pd.to_datetime(data.index)
             except Exception as e:
-                raise ValueError(f"Unable to convert index to datetime: {e}")
+                logger_main.log_and_raise(
+                    ValueError(f"Unable to convert index to datetime: {e}")
+                )
 
         # # Standardize the datetime format
         # data.index = data.index.strftime(self.DATETIME_FORMAT)
@@ -319,9 +355,11 @@ class YFDataloader(BaseDataLoader):
         parsed_tf = f"{tf.multiplier}{tf.unit.name[0].lower()}"
 
         if parsed_tf not in self.VALID_TIMEFRAMES:
-            raise ValueError(
-                f"Unsupported timeframe: {timeframe}. "
-                f"Supported timeframes are: {', '.join(self.VALID_TIMEFRAMES.keys())}"
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Unsupported timeframe: {timeframe}. "
+                    f"Supported timeframes are: {', '.join(self.VALID_TIMEFRAMES.keys())}"
+                )
             )
 
         return self.VALID_TIMEFRAMES[parsed_tf]
@@ -354,7 +392,7 @@ class YFDataloader(BaseDataLoader):
             return results
         except Exception as e:
             logger_main.error(f"Error in data fetching process: {e}")
-            raise RuntimeError(f"Failed to fetch data: {e}")
+            logger_main.log_and_raise(RuntimeError(f"Failed to fetch data: {e}"))
 
     def _fetch_symbol_data(self, symbol: str) -> Union[pd.DataFrame, None]:
         """
@@ -538,7 +576,9 @@ class MySQLDataLoader(BaseDataLoader):
 
         except connector.Error as err:
             logger_main.error(f"MySQL Error: {err}")
-            raise RuntimeError(f"Failed to fetch data from MySQL: {err}")
+            logger_main.log_and_raise(
+                RuntimeError(f"Failed to fetch data from MySQL: {err}")
+            )
 
 
 if __name__ == "__main__":
