@@ -156,7 +156,7 @@ class Strategy(ABC):
             StrategyError: If the strategy is already initialized.
         """
         if self._initialized:
-            raise StrategyError("Strategy is already initialized.")
+            logger_main.log_and_raise(StrategyError("Strategy is already initialized."))
 
         if self.primary_timeframe is None:
             self.primary_timeframe = default_timeframe
@@ -195,14 +195,20 @@ class Strategy(ABC):
             StrategyError: If the strategy hasn't been initialized or if there's no primary symbol.
         """
         if not self._initialized:
-            raise StrategyError("Strategy has not been initialized.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy has not been initialized.")
+            )
         if self._primary_symbol is None:
-            raise StrategyError("No primary symbol set for the strategy.")
+            logger_main.log_and_raise(
+                StrategyError("No primary symbol set for the strategy.")
+            )
         try:
             return self._datas[self._primary_symbol][self.primary_timeframe]
         except KeyError:
-            raise StrategyError(
-                f"Data for primary symbol {self._primary_symbol} and timeframe {self.primary_timeframe} not found."
+            logger_main.log_and_raise(
+                StrategyError(
+                    f"Data for primary symbol {self._primary_symbol} and timeframe {self.primary_timeframe} not found."
+                )
             )
 
     @property
@@ -228,7 +234,7 @@ class Strategy(ABC):
             f"Updated parameters for strategy {self.name}: {new_parameters}"
         )
 
-    def process_bar(self, bar: Bar) -> None:
+    def _process_bar(self, bar: Bar) -> None:
         """
         Process a new bar and update the strategy's state.
 
@@ -275,7 +281,9 @@ class Strategy(ABC):
             StrategyError: If the strategy is not connected to an engine.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
 
         parent_order, child_orders = self._engine.create_order(
             self._id,
@@ -323,7 +331,9 @@ class Strategy(ABC):
             StrategyError: If the strategy is not connected to an engine.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
 
         parent_order, child_orders = self._engine.create_order(
             self._id,
@@ -358,11 +368,13 @@ class Strategy(ABC):
             StrategyError: If the strategy is not connected to an engine or if there's no open position.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
 
         position = self.get_current_position(symbol)
         if position == 0:
-            raise StrategyError(f"No open position for {symbol}")
+            logger_main.log_and_raise(StrategyError(f"No open position for {symbol}"))
 
         direction = Order.Direction.SHORT if position > 0 else Order.Direction.LONG
         order = self._engine.create_order(
@@ -389,11 +401,13 @@ class Strategy(ABC):
             StrategyError: If the strategy is not connected to an engine or if there's no open position.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
 
         position = self.get_current_position(symbol)
         if position == 0:
-            raise StrategyError(f"No open position for {symbol}")
+            logger_main.log_and_raise(StrategyError(f"No open position for {symbol}"))
 
         direction = Order.Direction.SHORT if position > 0 else Order.Direction.LONG
         order = self._engine.create_order(
@@ -424,18 +438,22 @@ class Strategy(ABC):
             StrategyError: If the strategy is not connected to an engine.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
         success = self._engine.cancel_order(self._id, order)
         if success:
             self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
         return success
 
-    def close(self, symbol: Optional[str] = None) -> bool:
+    def close(self, symbol: Optional[str] = None, size: Optional[float] = None) -> bool:
         """
         Close all positions for this strategy, or for a specific symbol if provided.
+        If size is specified, it performs a partial close.
 
         Args:
             symbol (Optional[str]): The symbol to close positions for. If None, close all positions.
+            size (Optional[float]): The size of the position to close. If None, close the entire position.
 
         Returns:
             bool: True if the closing operation was successful, False otherwise.
@@ -444,7 +462,17 @@ class Strategy(ABC):
             StrategyError: If the strategy is not connected to an engine.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
+
+        if size is not None:
+            if symbol is None:
+                logger_main.log_and_raise(
+                    StrategyError("Symbol must be specified for partial close.")
+                )
+            return self._partial_close(symbol, size) is not None
+
         success = self._engine.close_positions(self._id, symbol)
         if success and symbol:
             self._positions[symbol] = 0.0
@@ -452,7 +480,7 @@ class Strategy(ABC):
             self._positions = {s: 0.0 for s in self._positions}
         return success
 
-    def partial_close(self, symbol: str, size: float) -> Optional[Order]:
+    def _partial_close(self, symbol: str, size: float) -> Optional[Order]:
         """
         Partially close an existing position.
 
@@ -466,16 +494,15 @@ class Strategy(ABC):
         Raises:
             StrategyError: If the strategy is not connected to an engine or if there's no open position.
         """
-        if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
-
         position = self.get_current_position(symbol)
         if position == 0:
-            raise StrategyError(f"No open position for {symbol}")
+            logger_main.log_and_raise(StrategyError(f"No open position for {symbol}"))
 
         if abs(size) > abs(position):
-            raise StrategyError(
-                f"Requested size {size} is larger than current position {position}"
+            logger_main.log_and_raise(
+                StrategyError(
+                    f"Requested size {size} is larger than current position {position}"
+                )
             )
 
         direction = Order.Direction.SHORT if position > 0 else Order.Direction.LONG
@@ -505,13 +532,13 @@ class Strategy(ABC):
         return self._engine.get_position_size(symbol)
 
     def calculate_position_size(
-        self, symbol: str, risk_percent: float, stop_loss: float
+        self, fill_price: float, risk_percent: float, stop_loss: float
     ) -> float:
         """
-        Calculate the position size based on risk percentage and stop loss.
+        Calculate the position size based on fill_price, risk percentage and stop loss.
 
         Args:
-            symbol (str): The symbol to trade.
+            fill_price (float): The fill price.
             risk_percent (float): The percentage of account to risk on this trade.
             stop_loss (float): The stop loss price.
 
@@ -522,20 +549,21 @@ class Strategy(ABC):
             StrategyError: If the strategy is not connected to an engine or if the risk per share is zero.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
 
         account_value = self._engine.get_account_value()
         risk_amount = account_value * (risk_percent / 100)
-        current_price = self._datas[symbol][self.primary_timeframe].close[-1]
-        risk_per_share = abs(current_price - stop_loss)
+        risk_per_share = abs(fill_price - stop_loss)
 
         if risk_per_share == 0:
-            raise StrategyError(
-                "Risk per share is zero. Cannot calculate position size."
+            logger_main.log_and_raise(
+                StrategyError("Risk per share is zero. Cannot calculate position size.")
             )
 
         available_margin = self._engine.get_available_margin()
-        max_position_size = available_margin / current_price
+        max_position_size = available_margin / fill_price
 
         position_size = min(risk_amount / risk_per_share, max_position_size)
         return position_size
@@ -563,7 +591,7 @@ class Strategy(ABC):
 
     # region Order and Trade Update Handling
 
-    def on_order_update(self, order: Order) -> None:
+    def _on_order_update(self, order: Order) -> None:
         """
         Handle updates to orders created by this strategy.
 
@@ -574,13 +602,13 @@ class Strategy(ABC):
             self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
             self._update_position(order)
         elif order.status == Order.Status.PARTIALLY_FILLED:
-            self.handle_partial_fill(order)
+            self._handle_partial_fill(order)
         elif order.status == Order.Status.CANCELED:
             self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
 
-        self._handle_order_update(order)
+        self.on_order_update(order)
 
-    def on_trade_update(self, trade: Trade) -> None:
+    def _on_trade_update(self, trade: Trade) -> None:
         """
         Handle updates to trades associated with this strategy.
 
@@ -596,9 +624,9 @@ class Strategy(ABC):
         elif trade.status == Trade.Status.PARTIALLY_CLOSED:
             self._update_position(trade)
 
-        self._handle_trade_update(trade)
+        self.on_trade_update(trade)
 
-    def handle_partial_fill(self, order: Order) -> None:
+    def _handle_partial_fill(self, order: Order) -> None:
         """
         Handle a partial fill of an order.
 
@@ -616,50 +644,7 @@ class Strategy(ABC):
                 break
 
         # Implement strategy-specific logic for handling partial fills
-        self._handle_partial_fill(order, filled_size, remaining_size)
-
-    @abstractmethod
-    def _handle_partial_fill(
-        self, order: Order, filled_size: float, remaining_size: float
-    ) -> None:
-        """
-        Handle strategy-specific logic for partial fills.
-
-        This method should be implemented by concrete strategy classes to define
-        how the strategy responds to partial fills.
-
-        Args:
-            order (Order): The partially filled Order object.
-            filled_size (float): The size that was filled.
-            remaining_size (float): The remaining size to be filled.
-        """
-        pass
-
-    @abstractmethod
-    def _handle_order_update(self, order: Order) -> None:
-        """
-        Handle strategy-specific logic for order updates.
-
-        This method should be implemented by concrete strategy classes to define
-        how the strategy responds to order updates.
-
-        Args:
-            order (Order): The updated Order object.
-        """
-        pass
-
-    @abstractmethod
-    def _handle_trade_update(self, trade: Trade) -> None:
-        """
-        Handle strategy-specific logic for trade updates.
-
-        This method should be implemented by concrete strategy classes to define
-        how the strategy responds to trade updates.
-
-        Args:
-            trade (Trade): The updated Trade object.
-        """
-        pass
+        self.on_partial_fill(order, filled_size, remaining_size)
 
     def _update_position(self, transaction: Union[Order, Trade]) -> None:
         """
@@ -698,11 +683,13 @@ class Strategy(ABC):
             StrategyError: If the strategy is not connected to an engine or if there's no open position.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
 
         position = self.get_current_position(symbol)
         if position == 0:
-            raise StrategyError(f"No open position for {symbol}")
+            logger_main.log_and_raise(StrategyError(f"No open position for {symbol}"))
 
         for order in self._pending_orders:
             if (
@@ -735,11 +722,13 @@ class Strategy(ABC):
             StrategyError: If the strategy is not connected to an engine or if there's no open position.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
 
         position = self.get_current_position(symbol)
         if position == 0:
-            raise StrategyError(f"No open position for {symbol}")
+            logger_main.log_and_raise(StrategyError(f"No open position for {symbol}"))
 
         for order in self._pending_orders:
             if (
@@ -769,7 +758,9 @@ class Strategy(ABC):
             Dict[str, Any]: A dictionary containing various performance metrics.
         """
         if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+            logger_main.log_and_raise(
+                StrategyError("Strategy is not connected to an engine.")
+            )
 
         open_trades = self._engine.get_open_trades(self._id)
         closed_trades = self._engine.get_closed_trades(self._id)
@@ -827,6 +818,46 @@ class Strategy(ABC):
         """
         pass
 
+    def on_partial_fill(
+        self, order: Order, filled_size: float, remaining_size: float
+    ) -> None:
+        """
+        Handle strategy-specific logic for partial fills.
+
+        This method should be implemented by concrete strategy classes to define
+        how the strategy responds to partial fills.
+
+        Args:
+            order (Order): The partially filled Order object.
+            filled_size (float): The size that was filled.
+            remaining_size (float): The remaining size to be filled.
+        """
+        pass
+
+    def on_order_update(self, order: Order) -> None:
+        """
+        Handle strategy-specific logic for order updates.
+
+        This method should be implemented by concrete strategy classes to define
+        how the strategy responds to order updates.
+
+        Args:
+            order (Order): The updated Order object.
+        """
+        pass
+
+    def on_trade_update(self, trade: Trade) -> None:
+        """
+        Handle strategy-specific logic for trade updates.
+
+        This method should be implemented by concrete strategy classes to define
+        how the strategy responds to trade updates.
+
+        Args:
+            trade (Trade): The updated Trade object.
+        """
+        pass
+
     # endregion
 
     # region Utility Methods
@@ -852,7 +883,7 @@ class Strategy(ABC):
             symbol, timeframe = key
             return self._datas[symbol][timeframe]
         else:
-            raise KeyError(f"Invalid key: {key}")
+            logger_main.log_and_raise(KeyError(f"Invalid key: {key}"))
 
     def get_data(self, symbol: str, timeframe: Optional[Timeframe] = None) -> Data:
         """

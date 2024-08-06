@@ -431,7 +431,7 @@ class Engine:
                     bar = self._create_bar(
                         symbol, strategy.primary_timeframe, ohlcv_data
                     )
-                    strategy.process_bar(bar)
+                    strategy._process_bar(bar)
 
         # Update portfolio
         self.portfolio.update(timestamp, data_point)
@@ -654,7 +654,7 @@ class Engine:
         """
         strategy = self.get_strategy_by_id(trade.strategy_id)
         if strategy:
-            strategy.on_trade_update(trade)
+            strategy._on_trade_update(trade)
 
     # endregion
 
