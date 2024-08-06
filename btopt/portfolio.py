@@ -22,107 +22,79 @@ class Portfolio:
     of trading decisions.
 
     Key Responsibilities:
-    1. Trade Execution: Simulates the execution of trades based on strategy signals,
-       accounting for factors such as available capital, position sizing, and market conditions.
-    2. Position Management: Tracks and updates open positions across multiple symbols,
-       handling partial closes, pyramiding, and position consolidation.
-    3. Order Management: Maintains a queue of pending orders, processes their execution
-       based on market data, and handles various order types (market, limit, stop, etc.).
-    4. Risk Management: Implements risk control measures such as position sizing,
-       maximum drawdown limits, and exposure constraints.
-    5. Performance Tracking: Continuously calculates and records a wide range of
-       performance metrics, providing a detailed view of the portfolio's health and profitability.
-    6. Capital Management: Tracks available capital, calculates required margin,
-       and ensures trading activities adhere to capital constraints.
+    1. Trade Execution:
+       - Simulates the execution of trades based on strategy signals.
+       - Accounts for available capital, position sizing, and current market conditions.
+       - Applies commission and slippage to trades for realistic cost modeling.
+       - Handles different order types (market, limit, stop, etc.) with appropriate execution logic.
+
+    2. Position Management:
+       - Tracks and updates open positions across multiple symbols in real-time.
+       - Handles partial position closes and additions (pyramiding).
+       - Manages position consolidation when multiple trades exist for the same symbol.
+       - Calculates and updates unrealized P&L for open positions.
+
+    3. Order Management:
+       - Maintains a queue of pending orders awaiting execution.
+       - Processes order execution based on incoming market data and order specifications.
+       - Handles various order types including market, limit, stop, and stop-limit orders.
+       - Manages order expiration and cancellation.
+
+    4. Risk Management:
+       - Implements position sizing rules based on account equity and risk parameters.
+       - Enforces maximum drawdown limits to prevent excessive losses.
+       - Manages exposure constraints across different symbols and strategies.
+       - Implements margin trading rules, including margin calls and forced liquidations.
+
+    5. Performance Tracking:
+       - Continuously calculates and records a wide range of performance metrics.
+       - Tracks key indicators such as total return, Sharpe ratio, and maximum drawdown.
+       - Maintains an equity curve for visualizing portfolio performance over time.
+       - Calculates trade-specific metrics like win rate and profit factor.
+
+    6. Capital Management:
+       - Tracks available capital and cash balance in real-time.
+       - Calculates required margin for leveraged trades.
+       - Ensures all trading activities adhere to capital constraints.
+       - Manages buying power and prevents over-leveraging.
 
     Attributes:
-        initial_capital (Decimal):
-            The starting capital of the portfolio. This value is used as a baseline
-            for calculating returns and other performance metrics.
-
-        cash (Decimal):
-            The current cash balance available for trading. This is dynamically
-            updated as trades are opened and closed, accounting for profits, losses,
-            and trading costs.
-
-        commission_rate (Decimal):
-            The commission rate applied to trades, expressed as a decimal (e.g., 0.001 for 0.1%).
-            This is used to simulate transaction costs and their impact on performance.
-
-        slippage (Decimal):
-            The slippage rate applied to trades, representing the typical difference
-            between expected and actual execution prices. This adds realism to the
-            simulation by accounting for market impact and liquidity issues.
-
-        pyramiding (int):
-            The maximum number of open trades allowed per symbol. This parameter
-            controls the portfolio's ability to scale into positions, balancing
-            between capitalizing on strong trends and managing risk.
-
-        open_trades (Dict[str, List[Trade]]):
-            A dictionary of currently open trades, organized by symbol. Each entry
-            contains a list of Trade objects, allowing for multiple positions per symbol
-            when pyramiding is enabled.
-
-        closed_trades (List[Trade]):
-            A chronological list of all closed trades. This historical record is
-            crucial for post-analysis and performance evaluation.
-
-        pending_orders (List[Order]):
-            A queue of orders waiting to be executed. This list is processed on each
-            update cycle, simulating the behavior of orders in a live trading environment.
-
-        trade_count (int):
-            A running count of the total number of trades executed. This includes
-            both open and closed trades and is used for trade identification and statistics.
-
-        metrics (pd.DataFrame):
-            A DataFrame storing historical performance metrics. This time series data
-            includes values such as equity, cash balance, open/closed P&L, drawdown,
-            and various risk/return ratios, providing a comprehensive view of the
-            portfolio's performance over time.
-
-        peak_equity (Decimal):
-            The highest equity value reached by the portfolio. This is used in
-            drawdown calculations and as a high-water mark for performance evaluation.
-
-        max_drawdown (Decimal):
-            The maximum peak-to-trough decline in portfolio value, expressed as a
-            monetary amount. This is a key risk metric that quantifies the portfolio's
-            largest historical loss.
+        initial_capital (Decimal): The starting capital of the portfolio. Used as a baseline for return calculations.
+        cash (Decimal): The current cash balance available for trading. Updated after each trade execution.
+        commission_rate (Decimal): The commission rate applied to trades, as a decimal (e.g., 0.001 for 0.1%).
+        slippage (Decimal): The slippage rate applied to trades, representing execution quality degradation.
+        pyramiding (int): The maximum number of open trades allowed per symbol, controlling position scaling.
+        margin_ratio (Decimal): The margin ratio for leveraged trading (e.g., 0.5 for 2:1 leverage).
+        margin_call_threshold (Decimal): The equity percentage threshold for triggering a margin call.
+        open_trades (Dict[str, List[Trade]]): Currently open trades, organized by symbol for efficient lookup.
+        closed_trades (List[Trade]): Chronological list of all closed trades, used for performance analysis.
+        pending_orders (List[Order]): Queue of orders waiting to be executed, processed each market update.
+        trade_count (int): Running count of the total number of trades executed, used for trade IDs.
+        metrics (pd.DataFrame): DataFrame storing historical performance metrics for time series analysis.
+        peak_equity (Decimal): The highest equity value reached by the portfolio, used for drawdown calculations.
+        max_drawdown (Decimal): The maximum peak-to-trough decline in portfolio value, a key risk metric.
+        margin_used (Decimal): The amount of margin currently in use, critical for leverage management.
+        buying_power (Decimal): The available buying power for new trades, considering leverage and open positions.
+        updated_orders (List[Order]): List of orders that have been updated in the current cycle, for notifying strategies.
+        updated_trades (List[Trade]): List of trades that have been updated in the current cycle, for notifying strategies.
 
     Methods:
-        The Portfolio class offers a wide array of methods for trade management,
-        performance calculation, and risk assessment. These include methods for
-        executing trades, updating positions, calculating returns and risk metrics,
-        and generating performance reports. Detailed documentation for each method
-        is provided in their respective docstrings.
+        The Portfolio class provides a comprehensive set of methods to manage all aspects
+        of trading simulation and portfolio management. These include methods for order
+        creation and execution, trade management, performance calculation, risk assessment,
+        and portfolio state reporting. Detailed documentation for each method is provided
+        in their respective docstrings.
 
-    Integration:
-        The Portfolio class is designed to work seamlessly with other components
-        of the backtesting system, particularly the Engine and Strategy classes.
-        It receives trading signals from strategies, executes them based on current
-        market data and portfolio state, and provides feedback to the Engine for
-        overall backtest control and reporting.
-
-    Performance Considerations:
-        Given the central role of the Portfolio class in the backtesting process,
-        its methods are optimized for performance, especially for high-frequency
-        trading simulations or when dealing with large numbers of instruments.
-        Efficient data structures and algorithms are employed to minimize
-        computational overhead.
-
-    Extensibility:
-        The class is designed with extensibility in mind, allowing for easy
-        addition of new performance metrics, risk management techniques, or
-        order types. Custom plugins can be developed to extend its functionality
-        for specific trading styles or asset classes.
+    Usage:
+        The Portfolio class is designed to be used in conjunction with the Engine and
+        Strategy classes in a backtesting or live trading system. It receives orders
+        from strategies, executes them based on market conditions, and provides
+        feedback on portfolio state and performance.
 
     Note:
-        While the Portfolio class aims to provide a realistic simulation of
-        trading activities, users should be aware of its limitations in
-        modeling certain real-world factors such as market microstructure
-        effects, complex order routing, or broker-specific behaviors.
+        While this class aims to provide a realistic simulation of portfolio management,
+        users should be aware of its limitations in modeling certain real-world factors
+        such as market impact, complex order routing, or detailed broker-specific behaviors.
     """
 
     def __init__(
@@ -131,37 +103,34 @@ class Portfolio:
         commission_rate: Decimal = Decimal("0.001"),
         slippage: Decimal = Decimal("0"),
         pyramiding: int = 1,
-        margin_ratio: Decimal = Decimal(
-            "0.5"
-        ),  # Margin ratio (e.g., 0.5 for 2:1 leverage)
-        margin_call_threshold: Decimal = Decimal("0.3"),  # Margin call threshold
+        margin_ratio: Decimal = Decimal("0.5"),
+        margin_call_threshold: Decimal = Decimal("0.3"),
     ):
         """
         Initialize the Portfolio.
 
         Args:
-            initial_capital (Decimal, optional): Starting capital. Defaults to 100,000.
-            commission_rate (Decimal, optional): Commission rate for trades. Defaults to 0.1%.
-            slippage (Decimal, optional): Slippage applied to trades. Defaults to 0.
-            pyramiding (int, optional): Maximum open trades per symbol. Defaults to 1.
+            initial_capital (Decimal): Starting capital. Defaults to 100,000.
+            commission_rate (Decimal): Commission rate for trades. Defaults to 0.1%.
+            slippage (Decimal): Slippage applied to trades. Defaults to 0.
+            pyramiding (int): Maximum open trades per symbol. Defaults to 1.
+            margin_ratio (Decimal): Margin ratio (e.g., 0.5 for 2:1 leverage).
+            margin_call_threshold (Decimal): Margin call threshold.
         """
         self.initial_capital = initial_capital
         self.cash = initial_capital
         self.commission_rate = commission_rate
         self.slippage = slippage
         self.pyramiding = pyramiding
+        self.margin_ratio = margin_ratio
+        self.margin_call_threshold = margin_call_threshold
         self.open_trades: Dict[str, List[Trade]] = {}
         self.closed_trades: List[Trade] = []
         self.pending_orders: List[Order] = []
         self.trade_count = 0
-
-        # Margin-related attributes
-        self.margin_ratio = margin_ratio
-        self.margin_call_threshold = margin_call_threshold
         self.margin_used = Decimal("0")
         self.buying_power = initial_capital / margin_ratio
 
-        # Metrics tracking
         self.metrics = pd.DataFrame(
             columns=[
                 "timestamp",
@@ -178,13 +147,11 @@ class Portfolio:
         self.peak_equity = initial_capital
         self.max_drawdown = Decimal("0")
 
-        # Order Management
-        self.orders_by_strategy: Dict[str, List[Order]] = {}
-        self.trades_by_strategy: Dict[str, List[Trade]] = {}
         self.updated_orders: List[Order] = []
         self.updated_trades: List[Trade] = []
 
-    # region Portfolio Update and Signal Processing
+    # region Portfolio Update and Market Data Processing
+
     def update(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
     ) -> None:
@@ -198,60 +165,6 @@ class Portfolio:
         self._process_pending_orders(timestamp, market_data)
         self._update_open_trades(timestamp, market_data)
         self._update_metrics(timestamp, market_data)
-
-    def process_signals(
-        self,
-        signals: List[Dict[str, Any]],
-        timestamp: pd.Timestamp,
-        market_data: Dict[str, Dict[Timeframe, np.ndarray]],
-    ) -> None:
-        """
-        Process trading signals and create orders accordingly.
-
-        Args:
-            signals (List[Dict[str, Any]]): List of trading signals to process.
-            timestamp (pd.Timestamp): Current timestamp.
-            market_data (Dict[str, Dict[Timeframe, np.ndarray]]): Current market data.
-        """
-        for signal in signals:
-            if self.can_open_new_trade(signal):
-                order = self._create_order_from_signal(signal)
-                self.add_pending_order(order)
-
-    def _create_order_from_signal(self, signal: Dict[str, Any]) -> Order:
-        """
-        Create an Order object from a trading signal.
-
-        Args:
-            signal (Dict[str, Any]): The trading signal.
-
-        Returns:
-            Order: The created Order object.
-        """
-        order_details = OrderDetails(
-            ticker=signal["symbol"],
-            direction=signal["direction"],
-            size=signal["size"],
-            price=signal["price"],
-            exectype=signal["order_type"],
-            timestamp=signal["timestamp"],
-            timeframe=signal["timeframe"],
-            expiry=signal.get("expiry"),
-            stoplimit_price=signal.get("stoplimit_price"),
-            parent_id=signal.get("parent_id"),
-            exit_profit=signal.get("exit_profit"),
-            exit_loss=signal.get("exit_loss"),
-            exit_profit_percent=signal.get("exit_profit_percent"),
-            exit_loss_percent=signal.get("exit_loss_percent"),
-            trailing_percent=signal.get("trailing_percent"),
-            slippage=self.slippage,
-        )
-        return Order(
-            order_id=hash(
-                f"{signal['symbol']}_{signal['timestamp']}_{signal['direction']}"
-            ),
-            details=order_details,
-        )
 
     def _update_metrics(
         self,
@@ -270,9 +183,7 @@ class Portfolio:
         slippage = Decimal("0")
 
         for symbol, trades in self.open_trades.items():
-            current_price = market_data[symbol][Timeframe("1m")][
-                3
-            ]  # Assuming close price is at index 3
+            current_price = market_data[symbol][Timeframe("1m")][3]  # Close price
             for trade in trades:
                 trade.update(current_price)
                 open_pnl += trade.metrics.pnl
@@ -303,6 +214,45 @@ class Portfolio:
     # endregion
 
     # region Order and Trade Management
+
+    def create_order(
+        self,
+        symbol: str,
+        direction: Order.Direction,
+        size: float,
+        order_type: Order.ExecType,
+        price: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Order:
+        """
+        Create an order and add it to pending orders.
+
+        Args:
+            symbol (str): The symbol to trade.
+            direction (Order.Direction): The direction of the trade (LONG or SHORT).
+            size (float): The size of the order.
+            order_type (Order.ExecType): The execution type of the order.
+            price (Optional[float]): The price for limit orders. If None, a market order is created.
+            **kwargs: Additional order parameters.
+
+        Returns:
+            Order: The created Order object.
+        """
+        order_details = OrderDetails(
+            ticker=symbol,
+            direction=direction,
+            size=Decimal(str(size)),
+            price=Decimal(str(price)) if price is not None else None,
+            exectype=order_type,
+            timestamp=datetime.now(),
+            timeframe=kwargs.get("timeframe"),
+            **kwargs,
+        )
+        order = Order(order_id=self._generate_order_id(), details=order_details)
+
+        self.add_pending_order(order)
+        return order
+
     def execute_order(
         self, order: Order, execution_price: Decimal
     ) -> Tuple[bool, Optional[Trade]]:
@@ -324,8 +274,9 @@ class Portfolio:
             symbol in self.open_trades
             and len(self.open_trades[symbol]) >= self.pyramiding
         ):
-            logger_main.warning(
-                f"Pyramiding limit reached for {symbol}. Order not executed: {order}"
+            logger_main.log_and_print(
+                f"Pyramiding limit reached for {symbol}. Order not executed: {order}",
+                level="warning",
             )
             return False, None
 
@@ -333,16 +284,20 @@ class Portfolio:
         commission = cost * self.commission_rate
 
         # Check margin requirements
-        if not self.check_margin_requirements(order, cost):
-            logger_main.warning(f"Insufficient margin to execute order: {order}")
+        if not self._check_margin_requirements(order, cost):
+            logger_main.log_and_print(
+                f"Insufficient margin to execute order: {order}", level="warning"
+            )
             return False, None
 
         # Update margin and buying power
-        self.update_margin(order, cost)
+        self._update_margin(order, cost)
 
         if order.details.direction == Order.Direction.LONG:
             if cost + commission > self.cash:
-                logger_main.warning(f"Insufficient funds to execute order: {order}")
+                logger_main.log_and_print(
+                    f"Insufficient funds to execute order: {order}", level="warning"
+                )
                 return False, None
             self.cash -= cost + commission
         else:  # SHORT
@@ -360,18 +315,13 @@ class Portfolio:
             self.open_trades[symbol] = []
         self.open_trades[symbol].append(trade)
 
-        success = True
-        if success:
-            self.updated_orders.append(order)
-            if trade:
-                self.updated_trades.append(trade)
-                if order.details.strategy_id:
-                    if order.details.strategy_id not in self.trades_by_strategy:
-                        self.trades_by_strategy[order.details.strategy_id] = []
-                    self.trades_by_strategy[order.details.strategy_id].append(trade)
+        self.updated_orders.append(order)
+        self.updated_trades.append(trade)
 
-        logger_main.info(f"Executed order: {order}, resulting trade: {trade}")
-        return success, trade
+        logger_main.log_and_print(
+            f"Executed order: {order}, resulting trade: {trade}", level="info"
+        )
+        return True, trade
 
     def close_trade(self, trade: Trade, close_price: Decimal) -> Trade:
         """
@@ -385,7 +335,7 @@ class Portfolio:
             Trade: The closed trade.
         """
         close_order = Order(
-            order_id=hash(f"close_{trade.id}_{datetime.now()}"),
+            order_id=self._generate_order_id(),
             details=OrderDetails(
                 ticker=trade.ticker,
                 direction=Order.Direction.SHORT
@@ -416,60 +366,61 @@ class Portfolio:
 
         self.updated_trades.append(trade)
 
-        logger_main.info(f"Closed trade: {trade}")
+        logger_main.log_and_print(f"Closed trade: {trade}", level="info")
         return trade
 
-    def create_order(
-        self,
-        symbol: str,
-        direction: Order.Direction,
-        size: float,
-        order_type: Order.ExecType,
-        price: Optional[float] = None,
-        strategy_id: str = None,
-        **kwargs: Any,
-    ) -> Optional[Order]:
-        """Create an order and associate it with a strategy."""
-        order_details = OrderDetails(
-            ticker=symbol,
-            direction=direction,
-            size=size,
-            price=Decimal(str(price)) if price is not None else None,
-            exectype=order_type,
-            timestamp=datetime.now(),
-            timeframe=kwargs.get("timeframe"),
-            strategy_id=strategy_id,
-            **kwargs,
-        )
-        order = Order(order_id=self.generate_order_id(), details=order_details)
-
-        self.add_pending_order(order)
-        if strategy_id:
-            if strategy_id not in self.orders_by_strategy:
-                self.orders_by_strategy[strategy_id] = []
-            self.orders_by_strategy[strategy_id].append(order)
-
-        return order
-
     def cancel_order(self, order: Order) -> bool:
-        """Cancel an order and update its status."""
+        """
+        Cancel an order and update its status.
+
+        Args:
+            order (Order): The order to cancel.
+
+        Returns:
+            bool: True if the order was successfully cancelled, False otherwise.
+        """
         if order in self.pending_orders:
             self.pending_orders.remove(order)
             order.status = Order.Status.CANCELED
             self.updated_orders.append(order)
+            logger_main.log_and_print(f"Cancelled order: {order}", level="info")
             return True
+        logger_main.log_and_print(
+            f"Failed to cancel order (not found in pending orders): {order}",
+            level="warning",
+        )
         return False
 
-    def close_positions(
-        self, strategy_id: str = None, symbol: Optional[str] = None
-    ) -> bool:
-        """Close positions for a specific strategy and/or symbol."""
+    def close_positions(self, strategy_id: str, symbol: Optional[str] = None) -> bool:
+        """
+        Close positions for a specific strategy and/or symbol.
+
+        Args:
+            strategy_id (str): The ID of the strategy.
+            symbol (Optional[str]): The symbol to close positions for. If None, close all positions.
+
+        Returns:
+            bool: True if any positions were closed, False otherwise.
+        """
         closed_any = False
-        trades_to_close = self.get_open_trades(strategy_id, symbol)
+        trades_to_close = self._get_open_trades(strategy_id, symbol)
 
         for trade in trades_to_close:
             self.close_trade(trade, trade.current_price)
             closed_any = True
+
+        if closed_any:
+            logger_main.log_and_print(
+                f"Closed positions for strategy {strategy_id}"
+                + (f" and symbol {symbol}" if symbol else ""),
+                level="info",
+            )
+        else:
+            logger_main.log_and_print(
+                f"No positions to close for strategy {strategy_id}"
+                + (f" and symbol {symbol}" if symbol else ""),
+                level="info",
+            )
 
         return closed_any
 
@@ -492,7 +443,7 @@ class Portfolio:
             symbol = order.details.ticker
             current_price = market_data[symbol][order.details.timeframe][
                 3
-            ]  # Assuming close price is at index 3
+            ]  # Close price
             is_filled, fill_price = order.is_filled(current_price)
             if is_filled:
                 executed, trade = self.execute_order(order, fill_price)
@@ -503,20 +454,10 @@ class Portfolio:
                 results.append((order, False, None))
 
             # Check for margin call after processing each order
-            if self.check_margin_call():
-                self.handle_margin_call()
-
-        for result in results:
-            order, executed, trade = result
-            self.updated_orders.append(order)
-            if trade:
-                self.updated_trades.append(trade)
+            if self._check_margin_call():
+                self._handle_margin_call()
 
         return results
-
-    def generate_order_id(self) -> int:
-        """Generate a unique order ID."""
-        return hash(f"order_{datetime.now().timestamp()}_{len(self.pending_orders)}")
 
     def _update_open_trades(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
@@ -529,11 +470,10 @@ class Portfolio:
             market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
         """
         for symbol, trades in self.open_trades.items():
-            current_price = market_data[symbol][Timeframe("1m")][
-                3
-            ]  # Assuming close price is at index 3
+            current_price = market_data[symbol][Timeframe("1m")][3]  # Close price
             for trade in trades:
                 trade.update(current_price)
+                self.updated_trades.append(trade)
 
     def add_pending_order(self, order: Order) -> None:
         """
@@ -543,7 +483,7 @@ class Portfolio:
             order (Order): The order to add to the pending list.
         """
         self.pending_orders.append(order)
-        logger_main.info(f"Added pending order: {order}")
+        logger_main.log_and_print(f"Added pending order: {order}", level="info")
 
     def remove_pending_order(self, order: Order) -> None:
         """
@@ -554,10 +494,11 @@ class Portfolio:
         """
         if order in self.pending_orders:
             self.pending_orders.remove(order)
-            logger_main.info(f"Removed pending order: {order}")
+            logger_main.log_and_print(f"Removed pending order: {order}", level="info")
         else:
-            logger_main.warning(
-                f"Attempted to remove non-existent pending order: {order}"
+            logger_main.log_and_print(
+                f"Attempted to remove non-existent pending order: {order}",
+                level="warning",
             )
 
     def modify_order(self, order_id: int, new_details: Dict[str, Any]) -> bool:
@@ -578,13 +519,16 @@ class Portfolio:
                     if hasattr(order.details, key):
                         setattr(order.details, key, value)
 
-                logger_main.info(f"Modified order: {order}")
+                self.updated_orders.append(order)
+                logger_main.log_and_print(f"Modified order: {order}", level="info")
                 return True
 
-        logger_main.warning(f"Order with ID {order_id} not found in pending orders.")
+        logger_main.log_and_print(
+            f"Order with ID {order_id} not found in pending orders.", level="warning"
+        )
         return False
 
-    def get_open_trades(
+    def _get_open_trades(
         self, strategy_id: Optional[str] = None, symbol: Optional[str] = None
     ) -> List[Trade]:
         """Get open trades filtered by strategy ID and/or symbol."""
@@ -633,7 +577,8 @@ class Portfolio:
     # endregion
 
     # region Margin Related Methods
-    def check_margin_requirements(self, order: Order, cost: Decimal) -> bool:
+
+    def _check_margin_requirements(self, order: Order, cost: Decimal) -> bool:
         """
         Check if there's sufficient margin to execute the order.
         """
@@ -646,7 +591,7 @@ class Portfolio:
 
         return self.buying_power >= required_margin
 
-    def update_margin(self, order: Order, cost: Decimal) -> None:
+    def _update_margin(self, order: Order, cost: Decimal) -> None:
         """
         Update margin and buying power after executing an order.
         """
@@ -659,21 +604,21 @@ class Portfolio:
             self.calculate_equity() - self.margin_used
         ) / self.margin_ratio
 
-    def check_margin_call(self) -> bool:
+    def _check_margin_call(self) -> bool:
         """
         Check if a margin call should be triggered.
         """
         equity = self.calculate_equity()
         if equity / self.margin_used < self.margin_call_threshold:
-            logger_main.warning("Margin call triggered!")
+            logger_main.log_and_print("Margin call triggered!", level="warning")
             return True
         return False
 
-    def handle_margin_call(self) -> None:
+    def _handle_margin_call(self) -> None:
         """
         Handle a margin call by closing positions until margin requirements are met.
         """
-        while self.check_margin_call() and self.open_trades:
+        while self._check_margin_call() and self.open_trades:
             # Close the largest open trade
             largest_trade = max(
                 (trade for trades in self.open_trades.values() for trade in trades),
@@ -684,6 +629,7 @@ class Portfolio:
     # endregion
 
     # region Portfolio Analysis and Reporting
+
     def get_performance_metrics(self) -> Dict[str, Any]:
         """
         Calculate and return various performance metrics for the portfolio.
@@ -824,9 +770,61 @@ class Portfolio:
             "margin_ratio": self.margin_ratio,
         }
 
+    def get_trades_for_strategy(self, strategy_id: str) -> List[Trade]:
+        """
+        Get all trades for a specific strategy.
+
+        Args:
+            strategy_id (str): The ID of the strategy.
+
+        Returns:
+            List[Trade]: A list of Trade objects associated with the strategy.
+        """
+        return [
+            trade for trade in self.closed_trades if trade.strategy_id == strategy_id
+        ] + [
+            trade
+            for trades in self.open_trades.values()
+            for trade in trades
+            if trade.strategy_id == strategy_id
+        ]
+
+    def get_account_value(self) -> Decimal:
+        """
+        Get the current total account value (equity).
+
+        Returns:
+            Decimal: The current account value.
+        """
+        return self.calculate_equity()
+
+    def get_position_size(self, symbol: str) -> Decimal:
+        """
+        Get the current position size for a given symbol.
+
+        Args:
+            symbol (str): The symbol to check.
+
+        Returns:
+            Decimal: The current position size. Positive for long positions, negative for short positions.
+        """
+        if symbol in self.open_trades:
+            return sum(trade.current_size for trade in self.open_trades[symbol])
+        return Decimal("0")
+
+    def get_available_margin(self) -> Decimal:
+        """
+        Get the available margin for new trades.
+
+        Returns:
+            Decimal: The available margin.
+        """
+        return self.buying_power
+
     # endregion
 
     # region Utility Methods
+
     def calculate_equity(self) -> Decimal:
         """
         Calculate the total portfolio equity.
@@ -842,29 +840,6 @@ class Portfolio:
         closed_pnl = sum(trade.metrics.pnl for trade in self.closed_trades)
         return self.cash + open_pnl + closed_pnl
 
-    def can_open_new_trade(self, signal: Dict[str, Any]) -> bool:
-        """
-        Check if a new trade can be opened based on the current portfolio state and the signal.
-
-        Args:
-            signal (Dict[str, Any]): The trading signal.
-
-        Returns:
-            bool: True if the trade can be opened, False otherwise.
-        """
-        symbol = signal["symbol"]
-        if (
-            symbol in self.open_trades
-            and len(self.open_trades[symbol]) >= self.pyramiding
-        ):
-            return False
-
-        if signal["direction"] == Order.Direction.LONG:
-            cost = signal["price"] * signal["size"]
-            commission = cost * self.commission_rate
-            return cost + commission <= self.cash
-        return True  # Assuming no margin requirements for short trades
-
     def close_all_trades(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
     ) -> None:
@@ -876,12 +851,10 @@ class Portfolio:
             market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
         """
         for symbol, trades in list(self.open_trades.items()):
-            current_price = market_data[symbol][Timeframe("1m")][
-                3
-            ]  # Assuming close price is at index 3
+            current_price = market_data[symbol][Timeframe("1m")][3]  # Close price
             for trade in trades[:]:
                 self.close_trade(trade, current_price)
-        logger_main.info("Closed all open trades.")
+        logger_main.log_and_print("Closed all open trades.", level="info")
 
     def set_config(self, config: Dict[str, Any]) -> None:
         """
@@ -898,17 +871,28 @@ class Portfolio:
         )
         self.slippage = Decimal(str(config.get("slippage", self.slippage)))
         self.pyramiding = config.get("pyramiding", self.pyramiding)
-        logger_main.info("Portfolio configuration set.")
+        self.margin_ratio = Decimal(str(config.get("margin_ratio", self.margin_ratio)))
+        self.margin_call_threshold = Decimal(
+            str(config.get("margin_call_threshold", self.margin_call_threshold))
+        )
+        logger_main.log_and_print("Portfolio configuration set.", level="info")
 
     def reset(self) -> None:
         """
         Reset the portfolio to its initial state.
         """
         self.__init__(
-            self.initial_capital, self.commission_rate, self.slippage, self.pyramiding
+            self.initial_capital,
+            self.commission_rate,
+            self.slippage,
+            self.pyramiding,
+            self.margin_ratio,
+            self.margin_call_threshold,
         )
-        self.margin_used = Decimal("0")
-        self.buying_power = self.initial_capital / self.margin_ratio
-        logger_main.info("Portfolio reset to initial state.")
+        logger_main.log_and_print("Portfolio reset to initial state.", level="info")
+
+    def _generate_order_id(self) -> int:
+        """Generate a unique order ID."""
+        return hash(f"order_{datetime.now().timestamp()}_{len(self.pending_orders)}")
 
     # endregion

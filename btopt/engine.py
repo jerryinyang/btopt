@@ -25,380 +25,210 @@ class Engine:
     across multiple financial instruments and timeframes.
 
     Key Responsibilities:
-    1. Data Management: Handles the loading, preprocessing, and efficient storage
-       of financial data using both pandas DataFrames and optimized NumPy arrays.
-    2. Strategy Execution: Coordinates the application of multiple trading strategies
-       across various symbols and timeframes.
-    3. Portfolio Management: Interfaces with the Portfolio class to manage trades,
-       track performance, and calculate risk metrics.
-    4. Backtesting Control: Manages the overall flow of the backtesting process,
-       including initialization, main loop execution, and finalization.
-    5. Performance Analysis: Generates comprehensive performance reports and metrics
-       upon completion of the backtest.
+    1. Data Management:
+       - Handles the loading of financial data from various sources (e.g., CSV files, APIs, databases)
+       - Preprocesses and aligns data across different timeframes and symbols
+       - Efficiently stores data using both pandas DataFrames (for flexibility) and optimized NumPy arrays (for performance)
+       - Supports multiple timeframes and symbols simultaneously
+       - Provides methods for data resampling and interpolation
+       - Ensures data integrity and consistency throughout the backtesting process
 
-    The Engine class is designed to be flexible and extensible, allowing for easy
-    integration of new data sources, trading strategies, and performance metrics.
+    2. Strategy Execution:
+       - Coordinates the application of multiple trading strategies concurrently
+       - Manages strategy initialization, updating, and finalization
+       - Handles strategy-specific parameters and configurations
+       - Provides mechanisms for strategies to access market data and place orders
+       - Supports various types of trading strategies (e.g., trend-following, mean-reversion, machine learning-based)
+       - Allows for strategy performance tracking and dynamic parameter updates
+
+    3. Portfolio Management:
+       - Interfaces with the Portfolio class to manage trades and positions
+       - Tracks open and closed positions across multiple symbols
+       - Calculates and updates portfolio value, cash balance, and margin requirements
+       - Implements risk management features such as position sizing and stop-loss orders
+       - Handles order execution, including various order types (market, limit, stop, etc.)
+       - Simulates realistic trading conditions, including slippage and transaction costs
+
+    4. Backtesting Control:
+       - Manages the overall flow of the backtesting process
+       - Handles initialization of all components (data, strategies, portfolio)
+       - Executes the main event loop, processing market events chronologically
+       - Coordinates interactions between strategies, portfolio, and market data
+       - Implements termination conditions (e.g., end date, minimum equity)
+       - Ensures proper finalization of all components at the end of the backtest
+
+    5. Performance Analysis:
+       - Generates comprehensive performance reports upon backtest completion
+       - Calculates key performance metrics (e.g., total return, Sharpe ratio, maximum drawdown)
+       - Produces trade-by-trade analysis and summary statistics
+       - Creates visualizations of performance, including equity curves and drawdown charts
+       - Supports comparison of multiple strategy variants or parameter sets
+       - Provides tools for analyzing strategy behavior and decision-making process
 
     Attributes:
         _dataview (DataView):
-            An instance of the DataView class that stores and manages financial data.
-            This object handles data alignment across different timeframes and symbols,
-            ensuring consistent and synchronized data access throughout the backtest.
+            Manages and aligns financial data across different timeframes and symbols.
+            Responsible for data storage, retrieval, and preprocessing.
 
         _optimized_dataview (DataViewNumpy):
-            An optimized version of the data view using NumPy arrays for improved
-            performance. This is particularly useful for high-frequency data or
-            when dealing with large datasets.
+            Optimized version of the data view using NumPy arrays for faster data access.
+            Provides high-performance data retrieval for intensive backtesting operations.
 
-        _portfolio (Portfolio):
-            An instance of the Portfolio class that manages all aspects of trade
-            execution, position tracking, and performance measurement. This includes
-            handling of orders, calculation of returns, and risk management.
+        portfolio (Portfolio):
+            Manages trade execution, position tracking, and performance measurement.
+            Handles all aspects of portfolio management, including cash balance and risk metrics.
 
-        _strategies (List[Strategy]):
-            A list of Strategy objects representing the trading strategies to be
-            tested. Each strategy can generate trading signals for multiple symbols
-            and timeframes.
+        _strategies (Dict[str, Strategy]):
+            Dictionary of Strategy objects, keyed by strategy ID.
+            Stores all active strategies in the backtest, allowing for multi-strategy simulations.
 
         _current_timestamp (pd.Timestamp):
-            The current timestamp being processed in the backtest. This is updated
-            at each iteration of the main backtest loop and is used to synchronize
-            data, strategy signals, and portfolio updates.
+            Current timestamp being processed in the backtest.
+            Used to synchronize all components and ensure chronological processing of events.
 
         _is_running (bool):
-            A flag indicating whether a backtest is currently in progress. This is
-            used to prevent multiple concurrent backtests and to manage the backtest
-            state.
+            Flag indicating whether a backtest is currently in progress.
+            Helps prevent concurrent backtest runs and manage the engine's state.
 
         _config (Dict[str, Any]):
-            A configuration dictionary containing various parameters for the backtest.
-            This may include settings such as initial capital, commission rates,
-            slippage models, risk limits, and other customizable aspects of the
-            simulation.
+            Configuration dictionary for backtest parameters.
+            Stores global settings such as initial capital, commission rates, and risk limits.
 
-    Methods:
-        The Engine class provides a wide range of methods for setting up, running,
-        and analyzing backtests. These include methods for data loading and
-        preprocessing, strategy management, backtest execution control, and
-        results generation. Detailed documentation for each method is provided
-        in their respective docstrings.
+        _strategy_timeframes (Dict[str, Timeframe]):
+            Primary timeframes for each strategy, keyed by strategy ID.
+            Allows each strategy to operate on its preferred data frequency.
 
     Usage:
-        The Engine class is typically used as the main entry point for setting up
-        and running a backtest. A typical workflow might involve:
-        1. Instantiating the Engine
-        2. Loading and preprocessing data
-        3. Adding one or more trading strategies
-        4. Configuring backtest parameters
-        5. Running the backtest
-        6. Analyzing and visualizing the results
+        The Engine class is the main entry point for setting up and running a backtest.
+        Typical usage involves the following steps:
+        1. Create an Engine instance
+        2. Load data using add_data() or a DataLoader
+        3. Add one or more strategies using add_strategy()
+        4. Set configuration parameters with set_config()
+        5. Run the backtest using the run() method
+        6. Analyze the results using the generated performance metrics and visualizations
 
     Example:
+        # Create an Engine instance
         engine = Engine()
-        engine.add_data(data_loader)
-        engine.add_strategy(MyStrategy())
-        engine.set_config({"initial_capital": 100000, "commission_rate": 0.001})
-        results = engine.run()
-        engine.plot_results()
 
-    Note:
-        The Engine class is designed to be thread-safe and can be used in
-        multi-threaded environments, although care should be taken when
-        accessing shared resources.
+        # Load data
+        data_loader = YFDataloader(symbols=['AAPL', 'GOOGL'], timeframe='1d', start_date='2020-01-01', end_date='2021-12-31')
+        engine.add_data(data_loader)
+
+        # Create and add a strategy
+        ma_cross_strategy = MovingAverageCrossoverStrategy(short_window=50, long_window=200)
+        engine.add_strategy(ma_cross_strategy)
+
+        # Set configuration
+        engine.set_config({
+            'initial_capital': 100000,
+            'commission_rate': 0.001,
+            'slippage_rate': 0.0005
+        })
+
+        # Run the backtest
+        results = engine.run()
+
+        # Analyze results
+        print(results['performance_metrics'])
+        plot_equity_curve(results['equity_curve'])
+
+    Notes:
+        - The Engine class is designed to be flexible and extensible. Users can easily add
+          custom data loaders, strategies, and performance metrics.
+        - For large datasets or computationally intensive strategies, consider using the
+          optimized NumPy-based data view for improved performance.
+        - The Engine supports multi-threaded execution of strategies, but users should be
+          aware of potential race conditions when implementing custom strategies.
+        - While the Engine simulates many aspects of real trading, including slippage and
+          commission costs, users should always validate backtest results with out-of-sample
+          data and consider real-world factors not captured in the simulation.
+        - The Engine's modular design allows for easy integration with external data sources,
+          risk management tools, and reporting systems.
+        - Regular logging and checkpointing during long backtests is recommended to track
+          progress and allow for resuming in case of interruptions.
+
+    This Engine class provides a sophisticated framework for conducting realistic and flexible
+    backtests of trading strategies. It combines efficient data management, robust strategy
+    execution, and comprehensive performance analysis to enable thorough evaluation and
+    optimization of trading algorithms across various market conditions and instruments.
     """
+
+    # region --- Initialization and Configuration
 
     def __init__(self):
         """Initialize the Engine instance."""
+        self._dataview: DataView = DataView()
+        self._optimized_dataview: Optional[DataViewNumpy] = None
+        self.portfolio: Portfolio = Portfolio()
+        self._strategies: Dict[str, Strategy] = {}
+        self._current_timestamp: Optional[pd.Timestamp] = None
+        self._is_running: bool = False
+        self._config: Dict[str, Any] = {}
+        self._strategy_timeframes: Dict[str, Timeframe] = {}
+
+    def set_config(self, config: Dict[str, Any]) -> None:
+        """
+        Set the configuration for the backtest.
+
+        Args:
+            config (Dict[str, Any]): A dictionary containing configuration parameters.
+        """
+        self._config = config
+        self.portfolio.set_config(config)  # Pass configuration to portfolio
+        logger_main.log_and_print("Backtest configuration set.", level="info")
+
+    def reset(self) -> None:
+        """
+        Reset the engine to its initial state.
+        """
         self._dataview = DataView()
         self._optimized_dataview = None
         self.portfolio = Portfolio()
-        self._strategies: List[Strategy] = []
+        self._strategies = {}
         self._current_timestamp = None
         self._is_running = False
         self._config = {}
         self._strategy_timeframes = {}
+        logger_main.log_and_print("Engine reset to initial state.", level="info")
 
-    # region Backtest Execution
-    def run(self) -> Dict[str, Any]:
+    def validate_data(self) -> bool:
         """
-        Execute the backtest and return the results.
-
-        This method orchestrates the entire backtesting process, including initialization,
-        data processing, and result generation.
+        Validate the loaded data to ensure it's sufficient for backtesting.
 
         Returns:
-            Dict[str, Any]: The final backtest results.
-
-        Raises:
-            ValueError: If data validation fails.
-            Exception: For any errors occurring during the backtest.
+            bool: True if the data is valid, False otherwise.
         """
-        if self._is_running:
-            logger_main.warning("Backtest is already running.")
-            return {}
+        if not self._dataview.has_data:
+            logger_main.log_and_print("No data has been loaded.", level="warning")
+            return False
 
-        if not self.validate_data():
-            logger_main.log_and_raise(
-                ValueError("Data validation failed. Cannot start backtest.")
-            )
-
-        self._is_running = True
-        logger_main.info("Starting backtest...")
-
-        try:
-            self._initialize_backtest()
-
-            for timestamp, data_point in self._optimized_dataview:
-                self._current_timestamp = timestamp
-                self._process_timestamp(timestamp)
-
-                if self._check_termination_condition():
-                    break
-
-            self._finalize_backtest()
-        except Exception as e:
-            logger_main.error(f"Error during backtest: {str(e)}")
-            raise
-        finally:
-            self._is_running = False
-
-        logger_main.info("Backtest completed.")
-        return self._generate_results()
-
-    def _initialize_backtest(self):
-        """
-        Initialize all components for the backtest.
-
-        This method prepares the optimized dataview and initializes all strategies.
-        """
-        default_timeframe = min(self._optimized_dataview.timeframes)
-        for strategy in self._strategies:
-            primary_timeframe = self._strategy_timeframes.get(
-                strategy, default_timeframe
-            )
-            strategy.initialize(
-                self._optimized_dataview.symbols,
-                self._optimized_dataview.timeframes,
-                primary_timeframe,
-            )
-        logger_main.info("Backtest initialized.")
-
-    def _process_timestamp(self, timestamp: pd.Timestamp):
-        """
-        Process a single timestamp across all symbols and timeframes.
-
-        This method generates market data, creates signals from strategies,
-        and passes the information to the portfolio for processing.
-
-        Args:
-            timestamp (pd.Timestamp): The current timestamp being processed.
-        """
-        market_data = self._get_market_data(timestamp)
-        signals = []
-
-        for strategy in self._strategies:
-            strategy_bars = {}
-            for symbol in self._optimized_dataview.symbols:
-                if self._optimized_dataview.is_original_data_point(
-                    symbol, strategy.primary_timeframe, timestamp
-                ):
-                    ohlcv_data = market_data[symbol][strategy.primary_timeframe]
-                    strategy_bars[symbol] = self._create_bar(
-                        symbol, strategy.primary_timeframe, ohlcv_data
-                    )
-
-            if strategy_bars:
-                strategy.on_bar(timestamp, strategy_bars)
-                for symbol, bar in strategy_bars.items():
-                    signals.extend(
-                        strategy.generate_signals(
-                            symbol, strategy.primary_timeframe, timestamp, bar
-                        )
-                    )
-
-        standardized_signals = self._standardize_signals(signals)
-        self.portfolio.process_signals(standardized_signals, timestamp, market_data)
-
-        # Process order and trade updates
-        for order in self.portfolio.get_updated_orders():
-            self._process_order_update(order)
-        for trade in self.portfolio.get_updated_trades():
-            self._process_trade_update(trade)
-
-    def _check_termination_condition(self) -> bool:
-        """
-        Check if the backtest should be terminated based on certain conditions.
-
-        Returns:
-            bool: True if the backtest should be terminated, False otherwise.
-        """
-        # Implement your termination conditions here
-        # For example, you might want to stop if the portfolio value drops below a certain threshold
-        if self.portfolio.calculate_equity() < self._config.get("min_equity", 0):
-            logger_main.warning(
-                "Portfolio value dropped below minimum equity. Terminating backtest."
-            )
-            return True
-        return False
-
-    def _finalize_backtest(self):
-        """
-        Perform final operations after the backtest is complete.
-        """
-        self.portfolio.close_all_trades(
-            self._current_timestamp, self._optimized_dataview
-        )
-        logger_main.info("Finalized backtest. Closed all remaining trades.")
-
-    def _generate_results(self) -> Dict[str, Any]:
-        """
-        Generate and return the final backtest results.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing the backtest results and performance metrics.
-        """
-        return {
-            "performance_metrics": self.portfolio.get_performance_metrics(),
-            "trade_history": self.portfolio.get_trade_history(),
-            "equity_curve": self.portfolio.get_equity_curve(),
-        }
-
-    def register_strategy(self, strategy: Strategy) -> None:
-        """
-        Register a strategy with the engine and assign the engine reference to the strategy.
-
-        Args:
-            strategy (Strategy): The strategy to register.
-        """
-        strategy._engine = self
-        self._strategies.append(strategy)
-        logger_main.info(f"Registered strategy: {strategy.name} (ID: {strategy._id})")
-
-    def create_order(
-        self,
-        strategy: Strategy,
-        symbol: str,
-        direction: Order.Direction,
-        size: float,
-        price: Optional[float] = None,
-        **kwargs: Any,
-    ) -> Optional[Order]:
-        """
-        Create an order based on a strategy's request.
-
-        Args:
-            strategy (Strategy): The strategy initiating the order.
-            symbol (str): The symbol to trade.
-            direction (Order.Direction): The direction of the trade (LONG or SHORT).
-            size (float): The size of the order.
-            price (Optional[float]): The price for limit orders. If None, a market order is created.
-            **kwargs: Additional order parameters.
-
-        Returns:
-            Optional[Order]: The created Order object, or None if order creation failed.
-        """
-        order_type = (
-            Order.ExecType.LIMIT if price is not None else Order.ExecType.MARKET
-        )
-        order = self.portfolio.create_order(
-            symbol,
-            direction,
-            size,
-            order_type,
-            price,
-            strategy_id=strategy._id,
-            **kwargs,
-        )
-
-        if order:
-            strategy.on_order(order)
-        return order
-
-    def cancel_order(self, strategy: Strategy, order: Order) -> bool:
-        """
-        Cancel an existing order.
-
-        Args:
-            strategy (Strategy): The strategy requesting the cancellation.
-            order (Order): The order to cancel.
-
-        Returns:
-            bool: True if the order was successfully cancelled, False otherwise.
-        """
-        if order.strategy_id != strategy._id:
-            logger_main.warning(
-                f"Strategy {strategy.name} attempted to cancel an order it didn't create."
+        if len(self._dataview.symbols) == 0:
+            logger_main.log_and_print(
+                "No symbols found in the loaded data.", level="warning"
             )
             return False
 
-        success = self.portfolio.cancel_order(order)
-        if success:
-            strategy.on_order(order)  # Notify the strategy of the order cancellation
-        return success
-
-    def close_positions(self, strategy: Strategy, symbol: Optional[str] = None) -> bool:
-        """
-        Close all positions for a strategy, or for a specific symbol if provided.
-
-        Args:
-            strategy (Strategy): The strategy requesting to close positions.
-            symbol (Optional[str]): The symbol to close positions for. If None, close all positions for the strategy.
-
-        Returns:
-            bool: True if the closing operation was successful, False otherwise.
-        """
-        success = self.portfolio.close_positions(
-            strategy_id=strategy._id, symbol=symbol
-        )
-        if success:
-            # Notify the strategy of closed positions
-            closed_trades = self.portfolio.get_closed_trades(
-                strategy_id=strategy._id, symbol=symbol
+        if len(self._dataview.timeframes) == 0:
+            logger_main.log_and_print(
+                "No timeframes found in the loaded data.", level="warning"
             )
-            for trade in closed_trades:
-                strategy.on_trade(trade)
-        return success
+            return False
 
-    def _process_order_update(self, order: Order) -> None:
-        """
-        Process updates to an order and notify the relevant strategy.
+        date_range = self._dataview.get_data_range()
+        if date_range[0] == date_range[1]:
+            logger_main.log_and_print(
+                "Insufficient data: only one data point available.", level="warning"
+            )
+            return False
 
-        Args:
-            order (Order): The updated order.
-        """
-        strategy = self._get_strategy_by_id(order.strategy_id)
-        if strategy:
-            strategy.on_order(order)
-
-    def _process_trade_update(self, trade: Trade) -> None:
-        """
-        Process updates to a trade and notify the relevant strategy.
-
-        Args:
-            trade (Trade): The updated trade.
-        """
-        strategy = self._get_strategy_by_id(trade.strategy_id)
-        if strategy:
-            strategy.on_trade(trade)
-
-    def _get_strategy_by_id(self, strategy_id: str) -> Optional[Strategy]:
-        """
-        Get a strategy by its ID.
-
-        Args:
-            strategy_id (str): The ID of the strategy to retrieve.
-
-        Returns:
-            Optional[Strategy]: The strategy with the given ID, or None if not found.
-        """
-        for strategy in self._strategies:
-            if strategy._id == strategy_id:
-                return strategy
-        return None
+        logger_main.log_and_print("Data validation passed.", level="info")
+        return True
 
     # endregion
 
-    # region Data Management
+    # region --- Data Management
     def add_data(self, dataloader: BaseDataLoader) -> None:
         """
         Add data from a dataloader to the engine's DataView.
@@ -421,7 +251,7 @@ class Engine:
                 df=data,
             )
         logger_main.log_and_print(
-            f"Added data for {len(dataloader.dataframes)} symbols."
+            f"Added data for {len(dataloader.dataframes)} symbols.", level="info"
         )
 
     def resample_data(
@@ -450,42 +280,9 @@ class Engine:
                 df=data,
             )
         logger_main.log_and_print(
-            f"Resampled data for {len(dataloader.dataframes)} symbols to {timeframe}."
+            f"Resampled data for {len(dataloader.dataframes)} symbols to {timeframe}.",
+            level="info",
         )
-
-    def _init_dataview_numpy(self) -> None:
-        """
-        Initialize the optimized NumPy-based DataView.
-
-        This method aligns all data in the DataView and creates a DataViewNumpy instance.
-        """
-        self._dataview.align_all_data()
-        self._optimized_dataview = DataViewNumpy(self._dataview)
-        logger_main.log_and_print("Initialized optimized NumPy-based DataView.")
-
-    def _get_market_data(
-        self, timestamp: pd.Timestamp
-    ) -> Dict[str, Dict[Timeframe, np.ndarray]]:
-        """
-        Retrieve market data for all symbols and timeframes at a given timestamp.
-
-        Args:
-            timestamp (pd.Timestamp): The timestamp for which to retrieve data.
-
-        Returns:
-            Dict[str, Dict[Timeframe, np.ndarray]]: A nested dictionary containing
-            market data for each symbol and timeframe.
-        """
-        market_data = {}
-        for symbol in self._optimized_dataview.symbols:
-            market_data[symbol] = {}
-            for timeframe in self._optimized_dataview.timeframes:
-                data = self._optimized_dataview.get_data_point_by_keys(
-                    symbol, timeframe, timestamp
-                )
-                if data is not None:
-                    market_data[symbol][timeframe] = data
-        return market_data
 
     def _create_bar(
         self, symbol: str, timeframe: Timeframe, ohlcv_data: np.ndarray
@@ -502,19 +299,69 @@ class Engine:
             Bar: A Bar object representing the market data.
         """
         return Bar(
-            open=ohlcv_data[0],
-            high=ohlcv_data[1],
-            low=ohlcv_data[2],
-            close=ohlcv_data[3],
-            volume=ohlcv_data[4],
+            open=Decimal(str(ohlcv_data[0])),
+            high=Decimal(str(ohlcv_data[1])),
+            low=Decimal(str(ohlcv_data[2])),
+            close=Decimal(str(ohlcv_data[3])),
+            volume=int(ohlcv_data[4]),
             timestamp=self._current_timestamp,
             timeframe=timeframe,
             ticker=symbol,
         )
 
+    def get_data_info(self) -> Dict[str, Any]:
+        """
+        Get information about the loaded data.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing information about the loaded data.
+        """
+        return {
+            "symbols": self._dataview.symbols,
+            "timeframes": [str(tf) for tf in self._dataview.timeframes],
+            "date_range": self._dataview.get_data_range(),
+            "total_bars": sum(len(data) for data in self._dataview.data.values()),
+        }
+
+    def get_market_data(
+        self, symbol: str, timeframe: Timeframe, n_bars: int = 1
+    ) -> pd.DataFrame:
+        """
+        Get recent market data for a specific symbol and timeframe.
+
+        Args:
+            symbol (str): The symbol to get data for.
+            timeframe (Timeframe): The timeframe of the data.
+            n_bars (int): The number of recent bars to retrieve.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing the requested market data.
+        """
+        if self._optimized_dataview is None:
+            logger_main.log_and_print(
+                "Optimized dataview is not initialized.", level="warning"
+            )
+            return pd.DataFrame()
+
+        end_idx = self._optimized_dataview.timestamp_to_index[self._current_timestamp]
+        start_idx = max(0, end_idx - n_bars + 1)
+
+        symbol_idx = self._optimized_dataview.symbol_to_index[symbol]
+        timeframe_idx = self._optimized_dataview.timeframe_to_index[timeframe]
+
+        data = self._optimized_dataview.data_array[
+            symbol_idx, timeframe_idx, start_idx : end_idx + 1
+        ]
+
+        df = pd.DataFrame(
+            data, columns=["open", "high", "low", "close", "volume", "is_original"]
+        )
+        df.index = self._optimized_dataview.master_timeline[start_idx : end_idx + 1]
+        return df
+
     # endregion
 
-    # region Strategy Management
+    # region --- Strategy Management
     def add_strategy(
         self, strategy: Strategy, primary_timeframe: Optional[Timeframe] = None
     ) -> None:
@@ -526,101 +373,321 @@ class Engine:
             primary_timeframe (Optional[Timeframe]): The primary timeframe for strategy updates.
                 If None, the lowest timeframe in the data will be used.
         """
-        self._strategies.append(strategy)
+        strategy.set_engine(self)
+        self._strategies[strategy._id] = strategy
         if primary_timeframe is not None:
-            self._strategy_timeframes[strategy] = primary_timeframe
-        logger_main.info(f"Added strategy: {strategy.__class__.__name__}")
+            self._strategy_timeframes[strategy._id] = primary_timeframe
+        logger_main.log_and_print(
+            f"Added strategy: {strategy.__class__.__name__}", level="info"
+        )
 
-    def remove_strategy(self, strategy: Strategy) -> None:
+    def remove_strategy(self, strategy_id: str) -> None:
         """
         Remove a trading strategy from the engine.
 
         Args:
-            strategy (Strategy): The strategy to be removed.
+            strategy_id (str): The ID of the strategy to be removed.
         """
-        if strategy in self._strategies:
-            self._strategies.remove(strategy)
-            logger_main.info(f"Removed strategy: {strategy.__class__.__name__}")
-        else:
-            logger_main.warning(f"Strategy not found: {strategy.__class__.__name__}")
-
-    def _generate_signals(
-        self, symbol: str, timeframe: Timeframe, timestamp: pd.Timestamp, bar: Bar
-    ) -> List[Dict[str, Any]]:
-        """
-        Generate trading signals from all strategies for a given symbol and timeframe.
-
-        Args:
-            symbol (str): The symbol being processed.
-            timeframe (Timeframe): The timeframe of the data point.
-            timestamp (pd.Timestamp): The timestamp of the data point.
-            bar (Bar): The price bar data.
-
-        Returns:
-            List[Dict[str, Any]]: A list of signal dictionaries generated by the strategies.
-        """
-        signals = []
-        for strategy in self._strategies:
-            strategy_signals = strategy.generate_signals(
-                symbol, timeframe, timestamp, bar
+        if strategy_id in self._strategies:
+            del self._strategies[strategy_id]
+            logger_main.log_and_print(
+                f"Removed strategy with ID: {strategy_id}", level="info"
             )
-            if strategy_signals:
-                signals.extend(strategy_signals)
-        return signals
+        else:
+            logger_main.log_and_print(
+                f"Strategy not found with ID: {strategy_id}", level="warning"
+            )
 
-    def _standardize_signals(
-        self, signals: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+    def get_strategy_by_id(self, strategy_id: str) -> Optional[Strategy]:
         """
-        Standardize the format of strategy signals.
-
-        This method ensures all signals have a consistent format before being
-        passed to the portfolio for processing.
+        Get a strategy by its ID.
 
         Args:
-            signals (List[Dict[str, Any]]): The original signals generated by strategies.
+            strategy_id (str): The ID of the strategy to retrieve.
 
         Returns:
-            List[Dict[str, Any]]: A list of standardized signal dictionaries.
+            Optional[Strategy]: The strategy with the given ID, or None if not found.
         """
-        standardized_signals = []
-        for signal in signals:
-            standardized_signal = {
-                "symbol": signal["symbol"],
-                "timeframe": signal["timeframe"],
-                "direction": signal["direction"],
-                "size": signal["size"],
-                "price": signal["price"],
-                "order_type": signal["order_type"],
-                "timestamp": signal["timestamp"],
-            }
-            # Add optional fields if present
-            for field in [
-                "expiry",
-                "stoplimit_price",
-                "parent_id",
-                "exit_profit",
-                "exit_loss",
-                "exit_profit_percent",
-                "exit_loss_percent",
-                "trailing_percent",
-            ]:
-                if field in signal:
-                    standardized_signal[field] = signal[field]
-            standardized_signals.append(standardized_signal)
-        return standardized_signals
+        return self._strategies.get(strategy_id)
 
-    def get_trades_for_strategy(self, strategy: Strategy) -> List[Trade]:
+    def update_strategy_parameters(
+        self, strategy_id: str, new_parameters: Dict[str, Any]
+    ) -> None:
+        """
+        Update the parameters of a specific strategy.
+
+        Args:
+            strategy_id (str): The ID of the strategy to update.
+            new_parameters (Dict[str, Any]): A dictionary of new parameter values.
+        """
+        strategy = self.get_strategy_by_id(strategy_id)
+        if strategy:
+            strategy.parameters = new_parameters
+            logger_main.log_and_print(
+                f"Updated parameters for strategy {strategy_id}", level="info"
+            )
+        else:
+            logger_main.log_and_print(
+                f"Strategy with ID {strategy_id} not found.", level="warning"
+            )
+
+    def log_strategy_activity(self, strategy_id: str, message: str) -> None:
+        """
+        Log activity for a specific strategy.
+
+        Args:
+            strategy_id (str): The ID of the strategy.
+            message (str): The message to log.
+        """
+        logger_main.log_and_print(f"Strategy {strategy_id}: {message}", level="info")
+
+    # endregion
+
+    # region --- Backtesting Execution
+
+    def run(self) -> Dict[str, Any]:
+        """
+        Execute the backtest and return the results.
+
+        Returns:
+            Dict[str, Any]: The final backtest results.
+
+        Raises:
+            ValueError: If data validation fails.
+            Exception: For any errors occurring during the backtest.
+        """
+        if self._is_running:
+            logger_main.log_and_print("Backtest is already running.", level="warning")
+            return {}
+        try:
+            self._init_dataview_numpy()
+
+            if not self.validate_data():
+                logger_main.log_and_raise(
+                    ValueError("Data validation failed. Cannot start backtest.")
+                )
+
+            self._is_running = True
+            self._initialize_backtest()
+            logger_main.log_and_print("Starting backtest...", level="info")
+
+            for timestamp, data_point in self._optimized_dataview:
+                self._current_timestamp = timestamp
+                self._process_timestamp(timestamp, data_point)
+
+                if self._check_termination_condition():
+                    break
+
+            self._finalize_backtest()
+        except Exception as e:
+            logger_main.log_and_raise(Exception(f"Error during backtest: {str(e)}"))
+        finally:
+            self._is_running = False
+
+        logger_main.log_and_print("Backtest completed.", level="info")
+        return self._generate_results()
+
+    def _initialize_backtest(self) -> None:
+        """Initialize all components for the backtest."""
+        default_timeframe = min(self._optimized_dataview.timeframes)
+        for strategy_id, strategy in self._strategies.items():
+            primary_timeframe = self._strategy_timeframes.get(
+                strategy_id, default_timeframe
+            )
+            strategy.initialize(
+                self._optimized_dataview.symbols,
+                self._optimized_dataview.timeframes,
+                primary_timeframe,
+            )
+        logger_main.log_and_print("Backtest initialized.", level="info")
+
+    def _init_dataview_numpy(self) -> None:
+        """Initialize the optimized NumPy-based DataView."""
+        self._dataview.align_all_data()
+        self._optimized_dataview = DataViewNumpy(self._dataview)
+        logger_main.log_and_print(
+            "Initialized optimized NumPy-based DataView.", level="info"
+        )
+
+    def _process_timestamp(
+        self,
+        timestamp: pd.Timestamp,
+        data_point: Dict[str, Dict[Timeframe, np.ndarray]],
+    ) -> None:
+        """
+        Process a single timestamp across all symbols and timeframes.
+
+        Args:
+            timestamp (pd.Timestamp): The current timestamp being processed.
+            data_point (Dict[str, Dict[Timeframe, np.ndarray]]): Market data for the current timestamp.
+        """
+        for strategy_id, strategy in self._strategies.items():
+            for symbol in self._optimized_dataview.symbols:
+                if self._optimized_dataview.is_original_data_point(
+                    symbol, strategy.primary_timeframe, timestamp
+                ):
+                    ohlcv_data = data_point[symbol][strategy.primary_timeframe]
+                    bar = self._create_bar(
+                        symbol, strategy.primary_timeframe, ohlcv_data
+                    )
+                    strategy.process_bar(bar)
+
+        # Process order and trade updates
+        for order in self.portfolio.get_updated_orders():
+            self._process_order_update(order)
+        for trade in self.portfolio.get_updated_trades():
+            self._process_trade_update(trade)
+
+    def _check_termination_condition(self) -> bool:
+        """
+        Check if the backtest should be terminated based on certain conditions.
+
+        Returns:
+            bool: True if the backtest should be terminated, False otherwise.
+        """
+        if self.portfolio.calculate_equity() < self._config.get("min_equity", 0):
+            logger_main.log_and_print(
+                "Portfolio value dropped below minimum equity. Terminating backtest.",
+                level="warning",
+            )
+            return True
+        return False
+
+    def _finalize_backtest(self) -> None:
+        """Perform final operations after the backtest is complete."""
+        self.portfolio.close_all_trades(
+            self._current_timestamp, self._optimized_dataview
+        )
+        logger_main.log_and_print(
+            "Finalized backtest. Closed all remaining trades.", level="info"
+        )
+
+    def _generate_results(self) -> Dict[str, Any]:
+        """
+        Generate and return the final backtest results.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing the backtest results and performance metrics.
+        """
+        return {
+            "performance_metrics": self.portfolio.get_performance_metrics(),
+            "trade_history": self.portfolio.get_trade_history(),
+            "equity_curve": self.portfolio.get_equity_curve(),
+        }
+
+    # endregion
+
+    # region --- Order and Trade Management
+
+    def create_order(
+        self,
+        strategy_id: str,
+        symbol: str,
+        direction: Order.Direction,
+        size: float,
+        price: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Optional[Order]:
+        """
+        Create an order based on a strategy's request.
+
+        Args:
+            strategy_id (str): The ID of the strategy initiating the order.
+            symbol (str): The symbol to trade.
+            direction (Order.Direction): The direction of the trade (LONG or SHORT).
+            size (float): The size of the order.
+            price (Optional[float]): The price for limit orders. If None, a market order is created.
+            **kwargs: Additional order parameters.
+
+        Returns:
+            Optional[Order]: The created Order object, or None if order creation failed.
+        """
+        order_type = (
+            Order.ExecType.LIMIT if price is not None else Order.ExecType.MARKET
+        )
+        order = self.portfolio.create_order(
+            symbol,
+            direction,
+            size,
+            order_type,
+            price,
+            strategy_id=strategy_id,
+            **kwargs,
+        )
+
+        return order
+
+    def cancel_order(self, strategy_id: str, order: Order) -> bool:
+        """
+        Cancel an existing order.
+
+        Args:
+            strategy_id (str): The ID of the strategy requesting the cancellation.
+            order (Order): The order to cancel.
+
+        Returns:
+            bool: True if the order was successfully cancelled, False otherwise.
+        """
+        if order.strategy_id != strategy_id:
+            logger_main.log_and_print(
+                f"Strategy {strategy_id} attempted to cancel an order it didn't create.",
+                level="warning",
+            )
+            return False
+
+        success = self.portfolio.cancel_order(order)
+        return success
+
+    def close_positions(self, strategy_id: str, symbol: Optional[str] = None) -> bool:
+        """
+        Close all positions for a strategy, or for a specific symbol if provided.
+
+        Args:
+            strategy_id (str): The ID of the strategy requesting to close positions.
+            symbol (Optional[str]): The symbol to close positions for. If None, close all positions for the strategy.
+
+        Returns:
+            bool: True if the closing operation was successful, False otherwise.
+        """
+        success = self.portfolio.close_positions(strategy_id=strategy_id, symbol=symbol)
+        return success
+
+    def _process_order_update(self, order: Order) -> None:
+        """
+        Process updates to an order and notify the relevant strategy.
+
+        Args:
+            order (Order): The updated order.
+        """
+        strategy = self.get_strategy_by_id(order.strategy_id)
+        if strategy:
+            strategy.on_order_update(order)
+
+    def _process_trade_update(self, trade: Trade) -> None:
+        """
+        Process updates to a trade and notify the relevant strategy.
+
+        Args:
+            trade (Trade): The updated trade.
+        """
+        strategy = self.get_strategy_by_id(trade.strategy_id)
+        if strategy:
+            strategy.on_trade_update(trade)
+
+    # endregion
+
+    # region --- Portfolio and Account Information
+    def get_trades_for_strategy(self, strategy_id: str) -> List[Trade]:
         """
         Get all trades for a specific strategy.
 
         Args:
-            strategy (Strategy): The strategy object.
+            strategy_id (str): The ID of the strategy.
 
         Returns:
             List[Trade]: A list of Trade objects associated with the strategy.
         """
-        return self.portfolio.get_trades_for_strategy(strategy._id)
+        return self.portfolio.get_trades_for_strategy(strategy_id)
 
     def get_account_value(self) -> Decimal:
         """
@@ -652,60 +719,6 @@ class Engine:
         """
         return self.portfolio.get_available_margin()
 
-    # endregion
-
-    # region Configuration and Utility Methods
-    def set_config(self, config: Dict[str, Any]) -> None:
-        """
-        Set the configuration for the backtest.
-
-        Args:
-            config (Dict[str, Any]): A dictionary containing configuration parameters.
-        """
-        self._config = config
-        self.portfolio.set_config(config)  # Pass configuration to portfolio
-        logger_main.info("Backtest configuration set.")
-
-    def validate_data(self) -> bool:
-        """
-        Validate the loaded data to ensure it's sufficient for backtesting.
-
-        Returns:
-            bool: True if the data is valid, False otherwise.
-        """
-        if not self._dataview.has_data:
-            logger_main.warning("No data has been loaded.")
-            return False
-
-        if len(self._dataview.symbols) == 0:
-            logger_main.warning("No symbols found in the loaded data.")
-            return False
-
-        if len(self._dataview.timeframes) == 0:
-            logger_main.warning("No timeframes found in the loaded data.")
-            return False
-
-        date_range = self._dataview.get_data_range()
-        if date_range[0] == date_range[1]:
-            logger_main.warning("Insufficient data: only one data point available.")
-            return False
-
-        logger_main.info("Data validation passed.")
-        return True
-
-    def reset(self):
-        """
-        Reset the engine to its initial state.
-        """
-        self._dataview = DataView()
-        self._optimized_dataview = None
-        self.portfolio = Portfolio()
-        self._strategies = []
-        self._current_timestamp = None
-        self._is_running = False
-        self._config = {}
-        logger_main.info("Engine reset to initial state.")
-
     def get_current_state(self) -> Dict[str, Any]:
         """
         Get the current state of the backtest.
@@ -717,6 +730,34 @@ class Engine:
             "current_timestamp": self._current_timestamp,
             "portfolio_state": self.portfolio.get_portfolio_state(),
             "is_running": self._is_running,
+            "strategies": list(self._strategies.keys()),
+        }
+
+    def get_strategy_performance(self, strategy_id: str) -> Dict[str, Any]:
+        """
+        Get the performance metrics for a specific strategy.
+
+        Args:
+            strategy_id (str): The ID of the strategy.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing performance metrics for the strategy.
+        """
+        strategy = self.get_strategy_by_id(strategy_id)
+        if not strategy:
+            logger_main.log_and_print(
+                f"Strategy with ID {strategy_id} not found.", level="warning"
+            )
+            return {}
+
+        trades = self.get_trades_for_strategy(strategy_id)
+        # Calculate and return performance metrics
+        return {
+            "total_trades": len(trades),
+            "winning_trades": sum(1 for trade in trades if trade.metrics.pnl > 0),
+            "losing_trades": sum(1 for trade in trades if trade.metrics.pnl < 0),
+            "total_pnl": sum(trade.metrics.pnl for trade in trades),
+            # Add more metrics as needed
         }
 
     # endregion

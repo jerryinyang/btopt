@@ -13,81 +13,6 @@ from .helper import BarManager, Data
 
 
 class StrategyError(Exception):
-    """
-    Abstract base class for trading strategies.
-
-    This class provides a comprehensive framework for creating and managing trading strategies
-    in a financial backtesting or live trading system. It defines the interface and common
-    functionality that all strategy implementations should follow, ensuring consistency
-    and modularity across different trading approaches.
-
-    The Strategy class is designed to work in conjunction with an Engine class, which
-    handles the overall execution of the trading system, and a Portfolio class, which
-    manages positions and risk. It provides methods for handling market data, generating
-    trading signals, managing orders, and responding to trade events.
-
-    Key Features:
-    1. Data Management: Stores and provides access to historical and real-time market data
-       for multiple symbols and timeframes.
-    2. Signal Generation: Abstract method for implementing strategy-specific logic to
-       generate trading signals based on market data.
-    3. Order Management: Methods for creating, modifying, and canceling orders.
-    4. Event Handling: Abstract methods for responding to order and trade events.
-    5. Position Sizing: Utility method for calculating position sizes based on risk parameters.
-    6. Parameter Management: Flexible system for managing and updating strategy parameters.
-
-    Attributes:
-        name (str): The name of the strategy. Used for identification and logging.
-        primary_timeframe (Optional[Timeframe]): The primary timeframe used by the strategy
-            for signal generation and decision making.
-        _datas (Dict[str, Dict[Timeframe, Data]]): A nested dictionary storing market data
-            for each symbol and timeframe combination. Provides efficient access to
-            historical and real-time data.
-        _bar_manager (BarManager): A utility object for storing and managing price bars.
-            Provides additional functionality for data access and manipulation.
-        _initialized (bool): A flag indicating whether the strategy has been properly
-            initialized with symbols and timeframes.
-        _primary_symbol (Optional[str]): The main trading symbol for the strategy.
-            Used as a default when accessing data or placing orders.
-        _engine: A reference to the Engine object that manages this strategy.
-            Provides access to broader system functionality like order execution
-            and portfolio management.
-        _parameters (Parameters): An object managing the strategy's parameters.
-            Allows for easy setting, getting, and validation of strategy parameters.
-        _id (str): A unique identifier for the strategy instance. Used for
-            distinguishing between multiple instances of the same strategy.
-
-    Usage:
-        To create a specific trading strategy, subclass this Strategy class and
-        implement the abstract methods (generate_signals, on_order, on_trade).
-        The subclass can then be instantiated and added to a trading engine for
-        backtesting or live trading.
-
-    Example:
-        class SimpleMovingAverageCrossover(Strategy):
-            def __init__(self, name, parameters):
-                super().__init__(name, parameters)
-                self.short_period = self.parameters.get('short_period', 10)
-                self.long_period = self.parameters.get('long_period', 20)
-
-            def generate_signals(self, bar):
-                # Implementation of the moving average crossover logic
-                ...
-
-            def on_order(self, order):
-                # Handle order updates
-                ...
-
-            def on_trade(self, trade):
-                # Handle trade updates
-                ...
-
-    Note:
-        This class is designed to be flexible and extensible. When subclassing,
-        ensure that all abstract methods are implemented and consider overriding
-        other methods like on_bar for custom behavior.
-    """
-
     pass
 
 
@@ -98,22 +23,142 @@ def generate_unique_id() -> str:
 
 class Strategy(ABC):
     """
-    Abstract base class for trading strategies.
+    A comprehensive backtesting engine for financial trading strategies.
 
-    This class provides a framework for creating specific trading strategies.
-    It defines the interface and common functionality that all strategy
-    implementations should follow.
+    This class serves as the central coordinator for the entire backtesting process,
+    orchestrating data management, strategy execution, and portfolio operations.
+    It provides a robust framework for simulating and evaluating trading strategies
+    across multiple financial instruments and timeframes.
+
+    Key Responsibilities:
+    1. Data Management:
+       - Handles the loading of financial data from various sources (e.g., CSV files, APIs, databases)
+       - Preprocesses and aligns data across different timeframes and symbols
+       - Efficiently stores data using both pandas DataFrames (for flexibility) and optimized NumPy arrays (for performance)
+       - Supports multiple timeframes and symbols simultaneously
+       - Provides methods for data resampling and interpolation
+       - Ensures data integrity and consistency throughout the backtesting process
+
+    2. Strategy Execution:
+       - Coordinates the application of multiple trading strategies concurrently
+       - Manages strategy initialization, updating, and finalization
+       - Handles strategy-specific parameters and configurations
+       - Provides mechanisms for strategies to access market data and place orders
+       - Supports various types of trading strategies (e.g., trend-following, mean-reversion, machine learning-based)
+       - Allows for strategy performance tracking and dynamic parameter updates
+
+    3. Portfolio Management:
+       - Interfaces with the Portfolio class to manage trades and positions
+       - Tracks open and closed positions across multiple symbols
+       - Calculates and updates portfolio value, cash balance, and margin requirements
+       - Implements risk management features such as position sizing and stop-loss orders
+       - Handles order execution, including various order types (market, limit, stop, etc.)
+       - Simulates realistic trading conditions, including slippage and transaction costs
+
+    4. Backtesting Control:
+       - Manages the overall flow of the backtesting process
+       - Handles initialization of all components (data, strategies, portfolio)
+       - Executes the main event loop, processing market events chronologically
+       - Coordinates interactions between strategies, portfolio, and market data
+       - Implements termination conditions (e.g., end date, minimum equity)
+       - Ensures proper finalization of all components at the end of the backtest
+
+    5. Performance Analysis:
+       - Generates comprehensive performance reports upon backtest completion
+       - Calculates key performance metrics (e.g., total return, Sharpe ratio, maximum drawdown)
+       - Produces trade-by-trade analysis and summary statistics
+       - Creates visualizations of performance, including equity curves and drawdown charts
+       - Supports comparison of multiple strategy variants or parameter sets
+       - Provides tools for analyzing strategy behavior and decision-making process
 
     Attributes:
-        name (str): The name of the strategy.
-        primary_timeframe (Optional[Timeframe]): The primary timeframe for the strategy.
-        _datas (Dict[str, Dict[Timeframe, Data]]): Nested dictionary to store data for each symbol and timeframe.
-        _bar_manager (BarManager): Manager for storing and accessing Bar objects.
-        _initialized (bool): Flag indicating whether the strategy has been initialized.
-        _primary_symbol (Optional[str]): The primary symbol for the strategy.
-        _engine: Reference to the Engine object.
-        _parameters (Parameters): Strategy parameters managed by the Parameters class.
-        _id (str): Unique identifier for the strategy.
+        _dataview (DataView):
+            Manages and aligns financial data across different timeframes and symbols.
+            Responsible for data storage, retrieval, and preprocessing.
+
+        _optimized_dataview (DataViewNumpy):
+            Optimized version of the data view using NumPy arrays for faster data access.
+            Provides high-performance data retrieval for intensive backtesting operations.
+
+        portfolio (Portfolio):
+            Manages trade execution, position tracking, and performance measurement.
+            Handles all aspects of portfolio management, including cash balance and risk metrics.
+
+        _strategies (Dict[str, Strategy]):
+            Dictionary of Strategy objects, keyed by strategy ID.
+            Stores all active strategies in the backtest, allowing for multi-strategy simulations.
+
+        _current_timestamp (pd.Timestamp):
+            Current timestamp being processed in the backtest.
+            Used to synchronize all components and ensure chronological processing of events.
+
+        _is_running (bool):
+            Flag indicating whether a backtest is currently in progress.
+            Helps prevent concurrent backtest runs and manage the engine's state.
+
+        _config (Dict[str, Any]):
+            Configuration dictionary for backtest parameters.
+            Stores global settings such as initial capital, commission rates, and risk limits.
+
+        _strategy_timeframes (Dict[str, Timeframe]):
+            Primary timeframes for each strategy, keyed by strategy ID.
+            Allows each strategy to operate on its preferred data frequency.
+
+    Usage:
+        The Engine class is the main entry point for setting up and running a backtest.
+        Typical usage involves the following steps:
+        1. Create an Engine instance
+        2. Load data using add_data() or a DataLoader
+        3. Add one or more strategies using add_strategy()
+        4. Set configuration parameters with set_config()
+        5. Run the backtest using the run() method
+        6. Analyze the results using the generated performance metrics and visualizations
+
+    Example:
+        # Create an Engine instance
+        engine = Engine()
+
+        # Load data
+        data_loader = YFDataloader(symbols=['AAPL', 'GOOGL'], timeframe='1d', start_date='2020-01-01', end_date='2021-12-31')
+        engine.add_data(data_loader)
+
+        # Create and add a strategy
+        ma_cross_strategy = MovingAverageCrossoverStrategy(short_window=50, long_window=200)
+        engine.add_strategy(ma_cross_strategy)
+
+        # Set configuration
+        engine.set_config({
+            'initial_capital': 100000,
+            'commission_rate': 0.001,
+            'slippage_rate': 0.0005
+        })
+
+        # Run the backtest
+        results = engine.run()
+
+        # Analyze results
+        print(results['performance_metrics'])
+        plot_equity_curve(results['equity_curve'])
+
+    Notes:
+        - The Engine class is designed to be flexible and extensible. Users can easily add
+          custom data loaders, strategies, and performance metrics.
+        - For large datasets or computationally intensive strategies, consider using the
+          optimized NumPy-based data view for improved performance.
+        - The Engine supports multi-threaded execution of strategies, but users should be
+          aware of potential race conditions when implementing custom strategies.
+        - While the Engine simulates many aspects of real trading, including slippage and
+          commission costs, users should always validate backtest results with out-of-sample
+          data and consider real-world factors not captured in the simulation.
+        - The Engine's modular design allows for easy integration with external data sources,
+          risk management tools, and reporting systems.
+        - Regular logging and checkpointing during long backtests is recommended to track
+          progress and allow for resuming in case of interruptions.
+
+    This Engine class provides a sophisticated framework for conducting realistic and flexible
+    backtests of trading strategies. It combines efficient data management, robust strategy
+    execution, and comprehensive performance analysis to enable thorough evaluation and
+    optimization of trading algorithms across various market conditions and instruments.
     """
 
     def __init__(
@@ -127,8 +172,8 @@ class Strategy(ABC):
 
         Args:
             name (str): The name of the strategy.
-            parameters (Optional[Dict[str, Any]], optional): Initial strategy parameters. Defaults to None.
-            primary_timeframe (Optional[Timeframe], optional): The primary timeframe for the strategy. Defaults to None.
+            parameters (Optional[Dict[str, Any]]): Initial strategy parameters. Defaults to None.
+            primary_timeframe (Optional[Timeframe]): The primary timeframe for the strategy. Defaults to None.
         """
         self.name: str = name
         self._parameters: Parameters = Parameters(parameters or {})
@@ -138,8 +183,10 @@ class Strategy(ABC):
         self._initialized: bool = False
         self._primary_symbol: Optional[str] = None
         self._engine = None
-        self._strategy_timeframes = {}
+        self._strategy_timeframes: Dict[Timeframe, List[str]] = {}
         self._id: str = generate_unique_id()
+        self._positions: Dict[str, float] = {}
+        self._pending_orders: List[Order] = []
 
     def initialize(
         self,
@@ -172,6 +219,7 @@ class Strategy(ABC):
         for symbol in symbols:
             for timeframe in timeframes:
                 self._datas[symbol][timeframe] = Data(symbol, timeframe)
+            self._positions[symbol] = 0.0
 
         self._primary_symbol = symbols[0] if symbols else None
         self._initialized = True
@@ -227,26 +275,24 @@ class Strategy(ABC):
         )
 
     @abstractmethod
-    def generate_signals(self, bar: Bar) -> List[Dict[str, Any]]:
-        """
-        Generate trading signals based on the current market data.
-
-        This method must be implemented by concrete strategy classes.
-
-        Args:
-            bar (Bar): The latest price bar data.
-
-        Returns:
-            List[Dict[str, Any]]: A list of signal dictionaries.
-        """
-        pass
-
     def on_bar(self, bar: Bar) -> None:
         """
         Handle the arrival of a new price bar.
 
-        This method updates the data structures with the new bar and can be
-        overridden by concrete strategy classes to implement custom logic.
+        This method is the primary decision-making point for the strategy.
+        It should be implemented by concrete strategy classes to define the strategy's logic.
+
+        Args:
+            bar (Bar): The new price bar data.
+        """
+        pass
+
+    def process_bar(self, bar: Bar) -> None:
+        """
+        Process a new bar and update the strategy's state.
+
+        This method is called by the Engine for each new bar. It updates the strategy's
+        internal data structures and calls the on_bar method for decision making.
 
         Args:
             bar (Bar): The new price bar data.
@@ -254,65 +300,82 @@ class Strategy(ABC):
         symbol, timeframe = bar.ticker, bar.timeframe
         self._datas[symbol][timeframe].add_bar(bar)
         self._bar_manager.add_bar(bar)
+        self.on_bar(bar)
 
-        # Generate signals and create orders
-        signals = self.generate_signals(bar)
-        for signal in signals:
-            if signal["action"] == "BUY":
-                order = self.buy(signal["symbol"], signal["size"], signal.get("price"))
-            elif signal["action"] == "SELL":
-                order = self.sell(signal["symbol"], signal["size"], signal.get("price"))
-
-            if order:
-                self.on_order(order)
-
-        # Check for any trade updates
-        if self._engine:
-            trades = self._engine.get_trades_for_strategy(self._id)
-            for trade in trades:
-                self.on_trade(trade)
-
-    def __getitem__(self, key: Union[str, Tuple[str, Timeframe]]) -> Data:
+    def on_order_update(self, order: Order) -> None:
         """
-        Allow easy access to data streams.
+        Handle updates to orders created by this strategy.
 
         Args:
-            key (Union[str, Tuple[str, Timeframe]]):
-                If str, assumes primary timeframe and returns data for that symbol.
-                If tuple, returns data for the specified (symbol, timeframe) pair.
-
-        Returns:
-            Data: The requested Data object.
-
-        Raises:
-            KeyError: If the requested symbol or timeframe is not found.
+            order (Order): The updated Order object.
         """
-        if isinstance(key, str):
-            return self._datas[key][self.primary_timeframe]
-        elif isinstance(key, tuple) and len(key) == 2:
-            symbol, timeframe = key
-            return self._datas[symbol][timeframe]
-        else:
-            raise KeyError(f"Invalid key: {key}")
+        # Update the strategy's state based on the order update
+        if order.status == Order.Status.FILLED:
+            self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
+            self._update_position(order)
+        elif order.status == Order.Status.CANCELED:
+            self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
 
-    def get_data(self, symbol: str, timeframe: Optional[Timeframe] = None) -> Data:
+        # Implement any strategy-specific logic for handling order updates
+        self._handle_order_update(order)
+
+    def on_trade_update(self, trade: Trade) -> None:
         """
-        Retrieve a specific data stream.
+        Handle updates to trades associated with this strategy.
 
         Args:
-            symbol (str): The symbol to retrieve data for.
-            timeframe (Optional[Timeframe]): The timeframe to retrieve data for.
-                                             If None, uses the primary timeframe.
-
-        Returns:
-            Data: The requested Data object.
-
-        Raises:
-            KeyError: If the requested symbol or timeframe is not found.
+            trade (Trade): The updated Trade object.
         """
-        if timeframe is None:
-            timeframe = self.primary_timeframe
-        return self._datas[symbol][timeframe]
+        # Update the strategy's state based on the trade update
+        if trade.status == Trade.Status.CLOSED:
+            self._update_position(trade)
+
+        # Implement any strategy-specific logic for handling trade updates
+        self._handle_trade_update(trade)
+
+    @abstractmethod
+    def _handle_order_update(self, order: Order) -> None:
+        """
+        Handle strategy-specific logic for order updates.
+
+        This method should be implemented by concrete strategy classes to define
+        how the strategy responds to order updates.
+
+        Args:
+            order (Order): The updated Order object.
+        """
+        pass
+
+    @abstractmethod
+    def _handle_trade_update(self, trade: Trade) -> None:
+        """
+        Handle strategy-specific logic for trade updates.
+
+        This method should be implemented by concrete strategy classes to define
+        how the strategy responds to trade updates.
+
+        Args:
+            trade (Trade): The updated Trade object.
+        """
+        pass
+
+    def _update_position(self, transaction: Union[Order, Trade]) -> None:
+        """
+        Update the strategy's position based on an order or trade.
+
+        Args:
+            transaction (Union[Order, Trade]): The Order or Trade object to update the position from.
+        """
+        symbol = transaction.ticker
+        if isinstance(transaction, Order):
+            size = transaction.details.size
+        else:  # Trade
+            size = transaction.initial_size
+
+        if transaction.direction == Order.Direction.LONG:
+            self._positions[symbol] += size
+        else:  # SHORT
+            self._positions[symbol] -= size
 
     def buy(
         self, symbol: str, size: float, price: Optional[float] = None, **kwargs: Any
@@ -334,9 +397,12 @@ class Strategy(ABC):
         """
         if self._engine is None:
             raise StrategyError("Strategy is not connected to an engine.")
-        return self._engine.create_order(
+        order = self._engine.create_order(
             self, symbol, Order.Direction.LONG, size, price, **kwargs
         )
+        if order:
+            self._pending_orders.append(order)
+        return order
 
     def sell(
         self, symbol: str, size: float, price: Optional[float] = None, **kwargs: Any
@@ -358,9 +424,12 @@ class Strategy(ABC):
         """
         if self._engine is None:
             raise StrategyError("Strategy is not connected to an engine.")
-        return self._engine.create_order(
+        order = self._engine.create_order(
             self, symbol, Order.Direction.SHORT, size, price, **kwargs
         )
+        if order:
+            self._pending_orders.append(order)
+        return order
 
     def cancel(self, order: Order) -> bool:
         """
@@ -377,7 +446,10 @@ class Strategy(ABC):
         """
         if self._engine is None:
             raise StrategyError("Strategy is not connected to an engine.")
-        return self._engine.cancel_order(self, order)
+        success = self._engine.cancel_order(self, order)
+        if success:
+            self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
+        return success
 
     def close(self, symbol: Optional[str] = None) -> bool:
         """
@@ -394,31 +466,12 @@ class Strategy(ABC):
         """
         if self._engine is None:
             raise StrategyError("Strategy is not connected to an engine.")
-        return self._engine.close_positions(self, symbol)
-
-    @abstractmethod
-    def on_order(self, order: Order) -> None:
-        """
-        Handle order events.
-
-        This method is called when there's an update to an order created by this strategy.
-
-        Args:
-            order (Order): The updated Order object.
-        """
-        pass
-
-    @abstractmethod
-    def on_trade(self, trade: Trade) -> None:
-        """
-        Handle trade events.
-
-        This method is called when there's an update to a trade associated with this strategy.
-
-        Args:
-            trade (Trade): The updated Trade object.
-        """
-        pass
+        success = self._engine.close_positions(self, symbol)
+        if success and symbol:
+            self._positions[symbol] = 0.0
+        elif success:
+            self._positions = {s: 0.0 for s in self._positions}
+        return success
 
     def calculate_position_size(
         self, symbol: str, risk_percent: float, stop_loss: float
@@ -462,14 +515,77 @@ class Strategy(ABC):
 
         Returns:
             float: The current position size (positive for long, negative for short, 0 for no position).
+        """
+        return self._positions.get(symbol, 0.0)
+
+    def __getitem__(self, key: Union[str, Tuple[str, Timeframe]]) -> Data:
+        """
+        Allow easy access to data streams.
+
+        Args:
+            key (Union[str, Tuple[str, Timeframe]]):
+                If str, assumes primary timeframe and returns data for that symbol.
+                If tuple, returns data for the specified (symbol, timeframe) pair.
+
+        Returns:
+            Data: The requested Data object.
 
         Raises:
-            StrategyError: If the strategy is not connected to an engine.
+            KeyError: If the requested symbol or timeframe is not found.
         """
-        if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
+        if isinstance(key, str):
+            return self._datas[key][self.primary_timeframe]
+        elif isinstance(key, tuple) and len(key) == 2:
+            symbol, timeframe = key
+            return self._datas[symbol][timeframe]
+        else:
+            raise KeyError(f"Invalid key: {key}")
 
-        return self._engine.get_position_size(self._id, symbol)
+    def get_data(self, symbol: str, timeframe: Optional[Timeframe] = None) -> Data:
+        """
+        Retrieve a specific data stream.
+
+        Args:
+            symbol (str): The symbol to retrieve data for.
+            timeframe (Optional[Timeframe]): The timeframe to retrieve data for.
+                                             If None, uses the primary timeframe.
+
+        Returns:
+            Data: The requested Data object.
+
+        Raises:
+            KeyError: If the requested symbol or timeframe is not found.
+        """
+        if timeframe is None:
+            timeframe = self.primary_timeframe
+        return self._datas[symbol][timeframe]
+
+    def get_pending_orders(self) -> List[Order]:
+        """
+        Get all pending orders for this strategy.
+
+        Returns:
+            List[Order]: A list of all pending orders.
+        """
+        return self._pending_orders
+
+    def get_positions(self) -> Dict[str, float]:
+        """
+        Get all current positions for this strategy.
+
+        Returns:
+            Dict[str, float]: A dictionary of current positions, keyed by symbol.
+        """
+        return self._positions.copy()
+
+    def set_engine(self, engine: Any) -> None:
+        """
+        Set the engine for this strategy.
+
+        Args:
+            engine (Any): The engine object to set.
+        """
+        self._engine = engine
 
     def __repr__(self) -> str:
         """
@@ -478,4 +594,9 @@ class Strategy(ABC):
         Returns:
             str: A string representation of the Strategy.
         """
-        return f"Strategy(name={self.name}, id={self._id}, symbols={list(self._datas.keys())}, timeframes={list(next(iter(self._datas.values())).keys())})"
+        return (
+            f"Strategy(name={self.name}, id={self._id}, "
+            f"symbols={list(self._datas.keys())}, "
+            f"timeframes={list(next(iter(self._datas.values())).keys())}, "
+            f"positions={self._positions})"
+        )

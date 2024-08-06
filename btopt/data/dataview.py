@@ -501,6 +501,20 @@ class DataView:
                         ].loc[timestamp]
             yield timestamp, data_point
 
+    @property
+    def has_data(self) -> bool:
+        return bool(self.data)
+
+    @property
+    def symbols(self) -> List[str]:
+        return list(self.data.keys())
+
+    @property
+    def timeframes(self) -> List[Timeframe]:
+        return list(
+            set().union(*[symbol_data.keys() for symbol_data in self.data.values()])
+        )
+
 
 class DataViewNumpy:
     """

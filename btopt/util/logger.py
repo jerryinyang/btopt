@@ -1,4 +1,5 @@
 import logging
+import sys
 from pathlib import Path
 from typing import Literal, Union
 
@@ -69,8 +70,61 @@ class Logger(logging.Logger):
             The provided exception after logging it.
         """
         log_method = getattr(self, level)
-        log_method(str(error))
+
+        # Get the caller's frame information
+        frame = sys._getframe(1)
+        filename = frame.f_code.co_filename
+        lineno = frame.f_lineno
+
+        # Create a custom record with the correct file and line information
+        record = self.makeRecord(
+            self.name,
+            self.LEVEL_MAP[level],
+            filename,
+            lineno,
+            str(error),
+            None,
+            None,
+            func=frame.f_code.co_name,
+        )
+
+        # Log the custom record
+        log_method(str(error), extra={"custom_record": record})
+
         raise error
+
+    def _log(
+        self,
+        level,
+        msg,
+        args,
+        exc_info=None,
+        extra=None,
+        stack_info=False,
+        stacklevel=1,
+    ):
+        """
+        Override the internal _log method to use our custom record when available.
+        """
+        if extra and "custom_record" in extra:
+            record = extra["custom_record"]
+        else:
+            record = self.makeRecord(
+                self.name,
+                level,
+                self.findCaller(stack_info, stacklevel)[0],
+                self.findCaller(stack_info, stacklevel)[1],
+                msg,
+                args,
+                exc_info,
+                func=self.findCaller(stack_info, stacklevel)[2],
+                extra=extra,
+                sinfo=self.findCaller(stack_info, stacklevel)[3]
+                if stack_info
+                else None,
+            )
+
+        self.handle(record)
 
     def log_and_print(
         self, message: str, level: Literal["info", "debug", "warning"] = "info"
@@ -80,13 +134,30 @@ class Logger(logging.Logger):
 
         Args:
             message (str): The message to be logged and printed.
-            level (Literal["error", "critical"]): The log level to use. Defaults to "error".
-
-        Raises:
-            The provided exception after logging it.
+            level (Literal["info", "debug", "warning"]): The log level to use. Defaults to "info".
         """
         log_method = getattr(self, level)
-        log_method(message)
+
+        # Get the caller's frame information
+        frame = sys._getframe(1)
+        filename = frame.f_code.co_filename
+        lineno = frame.f_lineno
+
+        # Create a custom record with the correct file and line information
+        record = self.makeRecord(
+            self.name,
+            self.LEVEL_MAP[level],
+            filename,
+            lineno,
+            message,
+            None,
+            None,
+            func=frame.f_code.co_name,
+        )
+
+        # Log the custom record
+        log_method(message, extra={"custom_record": record})
+
         print(message)
 
 
