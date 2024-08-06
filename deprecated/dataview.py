@@ -475,15 +475,13 @@ class DataView:
 
         return self.master_timeline
 
-    def __iter__(
-        self,
-    ) -> Iterator[Tuple[pd.Timestamp, Dict[str, Dict[Timeframe, pd.Series]]]]:
+    def __iter__(self) -> Iterator[Dict[str, Dict[str, pd.Series]]]:
         """
         Iterate over the data chronologically.
 
         Yields:
-            Tuple[pd.Timestamp, Dict[str, Dict[Timeframe, pd.Series]]]: A tuple containing the timestamp
-            and a dictionary of data points for all symbols and timeframes at that timestamp.
+            Dict[str, Dict[str, pd.Series]]: A dictionary containing data for all symbols and timeframes
+            at each timestamp in the master timeline.
         """
         if self.master_timeline is None or not self.is_aligned:
             logger_main.log_and_raise(
@@ -503,58 +501,16 @@ class DataView:
                         ].loc[timestamp]
             yield timestamp, data_point
 
-    def get_data(
-        self, symbol: str, timeframe: Timeframe, n_bars: int = 1
-    ) -> pd.DataFrame:
-        """
-        Get recent market data for a specific symbol and timeframe.
-
-        Args:
-            symbol (str): The symbol to get data for.
-            timeframe (Timeframe): The timeframe of the data.
-            n_bars (int): The number of recent bars to retrieve.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing the requested market data.
-        """
-        if symbol not in self.data or timeframe not in self.data[symbol]:
-            logger_main.log_and_print(
-                f"No data available for symbol {symbol} and timeframe {timeframe}",
-                level="warning",
-            )
-            return pd.DataFrame()
-
-        df = self.data[symbol][timeframe]
-        return df.iloc[-n_bars:]
-
     @property
     def has_data(self) -> bool:
-        """
-        Check if the DataView contains any data.
-
-        Returns:
-            bool: True if data has been added, False otherwise.
-        """
         return bool(self.data)
 
     @property
     def symbols(self) -> List[str]:
-        """
-        Get the list of symbols in the DataView.
-
-        Returns:
-            List[str]: A list of all symbols for which data has been added.
-        """
         return list(self.data.keys())
 
     @property
     def timeframes(self) -> List[Timeframe]:
-        """
-        Get the list of timeframes in the DataView.
-
-        Returns:
-            List[Timeframe]: A list of all unique timeframes across all symbols.
-        """
         return list(
             set().union(*[symbol_data.keys() for symbol_data in self.data.values()])
         )

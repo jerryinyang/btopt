@@ -23,142 +23,88 @@ def generate_unique_id() -> str:
 
 class Strategy(ABC):
     """
-    A comprehensive backtesting engine for financial trading strategies.
+    A comprehensive abstract base class for implementing trading strategies.
 
-    This class serves as the central coordinator for the entire backtesting process,
-    orchestrating data management, strategy execution, and portfolio operations.
-    It provides a robust framework for simulating and evaluating trading strategies
-    across multiple financial instruments and timeframes.
+    This class provides a robust framework for creating and managing trading strategies
+    within a backtesting or live trading environment. It encapsulates core functionality
+    for data handling, order management, position tracking, risk management, and
+    performance analysis. The class is designed to be flexible and extensible,
+    allowing for the implementation of a wide range of trading strategies across
+    various financial instruments and timeframes.
 
-    Key Responsibilities:
-    1. Data Management:
-       - Handles the loading of financial data from various sources (e.g., CSV files, APIs, databases)
-       - Preprocesses and aligns data across different timeframes and symbols
-       - Efficiently stores data using both pandas DataFrames (for flexibility) and optimized NumPy arrays (for performance)
-       - Supports multiple timeframes and symbols simultaneously
-       - Provides methods for data resampling and interpolation
-       - Ensures data integrity and consistency throughout the backtesting process
+    Key Features:
+    1. Multi-timeframe and multi-symbol support: Capable of handling data and
+       executing trades across multiple symbols and timeframes simultaneously.
+    2. Sophisticated order management: Supports various order types including
+       market, limit, stop, and OCO (One-Cancels-Other) orders.
+    3. Advanced position management: Tracks positions, handles partial fills,
+       and supports pyramiding and scaling in/out of positions.
+    4. Risk management tools: Includes methods for position sizing, stop-loss
+       and take-profit management, and enforcing risk limits.
+    5. Performance tracking: Provides methods to calculate and track key
+       performance metrics for the strategy.
+    6. Event-driven architecture: Utilizes callback methods to handle market
+       events, order updates, and trade updates.
 
-    2. Strategy Execution:
-       - Coordinates the application of multiple trading strategies concurrently
-       - Manages strategy initialization, updating, and finalization
-       - Handles strategy-specific parameters and configurations
-       - Provides mechanisms for strategies to access market data and place orders
-       - Supports various types of trading strategies (e.g., trend-following, mean-reversion, machine learning-based)
-       - Allows for strategy performance tracking and dynamic parameter updates
-
-    3. Portfolio Management:
-       - Interfaces with the Portfolio class to manage trades and positions
-       - Tracks open and closed positions across multiple symbols
-       - Calculates and updates portfolio value, cash balance, and margin requirements
-       - Implements risk management features such as position sizing and stop-loss orders
-       - Handles order execution, including various order types (market, limit, stop, etc.)
-       - Simulates realistic trading conditions, including slippage and transaction costs
-
-    4. Backtesting Control:
-       - Manages the overall flow of the backtesting process
-       - Handles initialization of all components (data, strategies, portfolio)
-       - Executes the main event loop, processing market events chronologically
-       - Coordinates interactions between strategies, portfolio, and market data
-       - Implements termination conditions (e.g., end date, minimum equity)
-       - Ensures proper finalization of all components at the end of the backtest
-
-    5. Performance Analysis:
-       - Generates comprehensive performance reports upon backtest completion
-       - Calculates key performance metrics (e.g., total return, Sharpe ratio, maximum drawdown)
-       - Produces trade-by-trade analysis and summary statistics
-       - Creates visualizations of performance, including equity curves and drawdown charts
-       - Supports comparison of multiple strategy variants or parameter sets
-       - Provides tools for analyzing strategy behavior and decision-making process
+    The class is designed to work in conjunction with a backtesting engine,
+    which is responsible for simulating market conditions, executing orders,
+    and managing the overall flow of the backtest.
 
     Attributes:
-        _dataview (DataView):
-            Manages and aligns financial data across different timeframes and symbols.
-            Responsible for data storage, retrieval, and preprocessing.
-
-        _optimized_dataview (DataViewNumpy):
-            Optimized version of the data view using NumPy arrays for faster data access.
-            Provides high-performance data retrieval for intensive backtesting operations.
-
-        portfolio (Portfolio):
-            Manages trade execution, position tracking, and performance measurement.
-            Handles all aspects of portfolio management, including cash balance and risk metrics.
-
-        _strategies (Dict[str, Strategy]):
-            Dictionary of Strategy objects, keyed by strategy ID.
-            Stores all active strategies in the backtest, allowing for multi-strategy simulations.
-
-        _current_timestamp (pd.Timestamp):
-            Current timestamp being processed in the backtest.
-            Used to synchronize all components and ensure chronological processing of events.
-
-        _is_running (bool):
-            Flag indicating whether a backtest is currently in progress.
-            Helps prevent concurrent backtest runs and manage the engine's state.
-
-        _config (Dict[str, Any]):
-            Configuration dictionary for backtest parameters.
-            Stores global settings such as initial capital, commission rates, and risk limits.
-
-        _strategy_timeframes (Dict[str, Timeframe]):
-            Primary timeframes for each strategy, keyed by strategy ID.
-            Allows each strategy to operate on its preferred data frequency.
+        name (str): The name of the strategy.
+        _parameters (Parameters): The strategy's parameters, allowing for easy
+            configuration and optimization.
+        primary_timeframe (Optional[Timeframe]): The primary timeframe used by
+            the strategy for decision making.
+        _datas (Dict[str, Dict[Timeframe, Data]]): A nested dictionary storing
+            price and indicator data for different symbols and timeframes.
+        _bar_manager (BarManager): Manages and aligns bar data across different
+            timeframes.
+        _initialized (bool): Flag indicating whether the strategy has been
+            properly initialized.
+        _primary_symbol (Optional[str]): The main trading symbol for the strategy.
+        _engine (Any): Reference to the backtesting engine, used for interacting
+            with the simulated market environment.
+        _strategy_timeframes (Dict[Timeframe, List[str]]): Mapping of timeframes
+            to the symbols traded on those timeframes.
+        _id (str): Unique identifier for the strategy instance.
+        _positions (Dict[str, float]): Current positions held by the strategy,
+            keyed by symbol.
+        _pending_orders (List[Order]): List of orders that have been submitted
+            but not yet filled or cancelled.
+        _open_trades (Dict[str, List[Trade]]): Currently open trades, organized
+            by symbol.
+        _closed_trades (List[Trade]): Historical record of closed trades.
 
     Usage:
-        The Engine class is the main entry point for setting up and running a backtest.
-        Typical usage involves the following steps:
-        1. Create an Engine instance
-        2. Load data using add_data() or a DataLoader
-        3. Add one or more strategies using add_strategy()
-        4. Set configuration parameters with set_config()
-        5. Run the backtest using the run() method
-        6. Analyze the results using the generated performance metrics and visualizations
+        To create a new trading strategy, subclass this Strategy class and
+        implement the required abstract methods, particularly the 'on_bar' method
+        which defines the core logic of the strategy. Other methods can be
+        overridden as needed to customize behavior.
 
-    Example:
-        # Create an Engine instance
-        engine = Engine()
+        Example:
+        ```
+        class MyStrategy(Strategy):
+            def __init__(self, name, parameters):
+                super().__init__(name, parameters)
 
-        # Load data
-        data_loader = YFDataloader(symbols=['AAPL', 'GOOGL'], timeframe='1d', start_date='2020-01-01', end_date='2021-12-31')
-        engine.add_data(data_loader)
+            def on_bar(self, bar):
+                # Implement strategy logic here
+                pass
 
-        # Create and add a strategy
-        ma_cross_strategy = MovingAverageCrossoverStrategy(short_window=50, long_window=200)
-        engine.add_strategy(ma_cross_strategy)
+            def _handle_order_update(self, order):
+                # Custom order handling logic
+                pass
 
-        # Set configuration
-        engine.set_config({
-            'initial_capital': 100000,
-            'commission_rate': 0.001,
-            'slippage_rate': 0.0005
-        })
+            def _handle_trade_update(self, trade):
+                # Custom trade handling logic
+                pass
+        ```
 
-        # Run the backtest
-        results = engine.run()
-
-        # Analyze results
-        print(results['performance_metrics'])
-        plot_equity_curve(results['equity_curve'])
-
-    Notes:
-        - The Engine class is designed to be flexible and extensible. Users can easily add
-          custom data loaders, strategies, and performance metrics.
-        - For large datasets or computationally intensive strategies, consider using the
-          optimized NumPy-based data view for improved performance.
-        - The Engine supports multi-threaded execution of strategies, but users should be
-          aware of potential race conditions when implementing custom strategies.
-        - While the Engine simulates many aspects of real trading, including slippage and
-          commission costs, users should always validate backtest results with out-of-sample
-          data and consider real-world factors not captured in the simulation.
-        - The Engine's modular design allows for easy integration with external data sources,
-          risk management tools, and reporting systems.
-        - Regular logging and checkpointing during long backtests is recommended to track
-          progress and allow for resuming in case of interruptions.
-
-    This Engine class provides a sophisticated framework for conducting realistic and flexible
-    backtests of trading strategies. It combines efficient data management, robust strategy
-    execution, and comprehensive performance analysis to enable thorough evaluation and
-    optimization of trading algorithms across various market conditions and instruments.
+    Note:
+        This class is designed to be used within a larger backtesting or trading
+        system. It requires integration with a data feed, order execution system,
+        and portfolio management component to function fully.
     """
 
     def __init__(
@@ -187,6 +133,10 @@ class Strategy(ABC):
         self._id: str = generate_unique_id()
         self._positions: Dict[str, float] = {}
         self._pending_orders: List[Order] = []
+        self._open_trades: Dict[str, List[Trade]] = defaultdict(list)
+        self._closed_trades: List[Trade] = []
+
+    # region Initialization and Configuration
 
     def initialize(
         self,
@@ -228,6 +178,10 @@ class Strategy(ABC):
         logger_main.info(f"Timeframes: {timeframes}")
         logger_main.info(f"Primary timeframe: {self.primary_timeframe}")
         logger_main.info(f"Primary symbol: {self._primary_symbol}")
+
+    # endregion
+
+    # region Data Management
 
     @property
     def data(self) -> Data:
@@ -274,19 +228,6 @@ class Strategy(ABC):
             f"Updated parameters for strategy {self.name}: {new_parameters}"
         )
 
-    @abstractmethod
-    def on_bar(self, bar: Bar) -> None:
-        """
-        Handle the arrival of a new price bar.
-
-        This method is the primary decision-making point for the strategy.
-        It should be implemented by concrete strategy classes to define the strategy's logic.
-
-        Args:
-            bar (Bar): The new price bar data.
-        """
-        pass
-
     def process_bar(self, bar: Bar) -> None:
         """
         Process a new bar and update the strategy's state.
@@ -302,6 +243,326 @@ class Strategy(ABC):
         self._bar_manager.add_bar(bar)
         self.on_bar(bar)
 
+    # endregion
+
+    # region Order Management
+
+    def buy(
+        self,
+        symbol: str,
+        size: float,
+        price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Tuple[Optional[Order], List[Order]]:
+        """
+        Create a buy order.
+
+        Args:
+            symbol (str): The symbol to buy.
+            size (float): The size of the order.
+            price (Optional[float]): The price for limit orders. If None, a market order is created.
+            stop_loss (Optional[float]): The stop-loss price for the order.
+            take_profit (Optional[float]): The take-profit price for the order.
+            **kwargs: Additional order parameters.
+
+        Returns:
+            Tuple[Optional[Order], List[Order]]: The created parent Order object and a list of child orders,
+            or (None, []) if the order creation failed.
+
+        Raises:
+            StrategyError: If the strategy is not connected to an engine.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+
+        parent_order, child_orders = self._engine.create_order(
+            self._id,
+            symbol,
+            Order.Direction.LONG,
+            size,
+            Order.ExecType.MARKET if price is None else Order.ExecType.LIMIT,
+            price,
+            stop_loss,
+            take_profit,
+            **kwargs,
+        )
+
+        if parent_order:
+            self._pending_orders.append(parent_order)
+            self._pending_orders.extend(child_orders)
+
+        return parent_order, child_orders
+
+    def sell(
+        self,
+        symbol: str,
+        size: float,
+        price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Tuple[Optional[Order], List[Order]]:
+        """
+        Create a sell order.
+
+        Args:
+            symbol (str): The symbol to sell.
+            size (float): The size of the order.
+            price (Optional[float]): The price for limit orders. If None, a market order is created.
+            stop_loss (Optional[float]): The stop-loss price for the order.
+            take_profit (Optional[float]): The take-profit price for the order.
+            **kwargs: Additional order parameters.
+
+        Returns:
+            Tuple[Optional[Order], List[Order]]: The created parent Order object and a list of child orders,
+            or (None, []) if the order creation failed.
+
+        Raises:
+            StrategyError: If the strategy is not connected to an engine.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+
+        parent_order, child_orders = self._engine.create_order(
+            self._id,
+            symbol,
+            Order.Direction.SHORT,
+            size,
+            Order.ExecType.MARKET if price is None else Order.ExecType.LIMIT,
+            price,
+            stop_loss,
+            take_profit,
+            **kwargs,
+        )
+
+        if parent_order:
+            self._pending_orders.append(parent_order)
+            self._pending_orders.extend(child_orders)
+
+        return parent_order, child_orders
+
+    def add_stop_loss(self, symbol: str, stop_loss: float) -> Optional[Order]:
+        """
+        Add a stop-loss order to an existing position.
+
+        Args:
+            symbol (str): The symbol for the position.
+            stop_loss (float): The stop-loss price.
+
+        Returns:
+            Optional[Order]: The created stop-loss Order object, or None if the order creation failed.
+
+        Raises:
+            StrategyError: If the strategy is not connected to an engine or if there's no open position.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+
+        position = self.get_current_position(symbol)
+        if position == 0:
+            raise StrategyError(f"No open position for {symbol}")
+
+        direction = Order.Direction.SHORT if position > 0 else Order.Direction.LONG
+        order = self._engine.create_order(
+            self._id, symbol, direction, abs(position), Order.ExecType.STOP, stop_loss
+        )[0]  # We only need the parent order here
+
+        if order:
+            self._pending_orders.append(order)
+
+        return order
+
+    def add_take_profit(self, symbol: str, take_profit: float) -> Optional[Order]:
+        """
+        Add a take-profit order to an existing position.
+
+        Args:
+            symbol (str): The symbol for the position.
+            take_profit (float): The take-profit price.
+
+        Returns:
+            Optional[Order]: The created take-profit Order object, or None if the order creation failed.
+
+        Raises:
+            StrategyError: If the strategy is not connected to an engine or if there's no open position.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+
+        position = self.get_current_position(symbol)
+        if position == 0:
+            raise StrategyError(f"No open position for {symbol}")
+
+        direction = Order.Direction.SHORT if position > 0 else Order.Direction.LONG
+        order = self._engine.create_order(
+            self._id,
+            symbol,
+            direction,
+            abs(position),
+            Order.ExecType.LIMIT,
+            take_profit,
+        )[0]  # We only need the parent order here
+
+        if order:
+            self._pending_orders.append(order)
+
+        return order
+
+    def cancel(self, order: Order) -> bool:
+        """
+        Cancel an existing order.
+
+        Args:
+            order (Order): The order to cancel.
+
+        Returns:
+            bool: True if the order was successfully cancelled, False otherwise.
+
+        Raises:
+            StrategyError: If the strategy is not connected to an engine.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+        success = self._engine.cancel_order(self._id, order)
+        if success:
+            self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
+        return success
+
+    def close(self, symbol: Optional[str] = None) -> bool:
+        """
+        Close all positions for this strategy, or for a specific symbol if provided.
+
+        Args:
+            symbol (Optional[str]): The symbol to close positions for. If None, close all positions.
+
+        Returns:
+            bool: True if the closing operation was successful, False otherwise.
+
+        Raises:
+            StrategyError: If the strategy is not connected to an engine.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+        success = self._engine.close_positions(self._id, symbol)
+        if success and symbol:
+            self._positions[symbol] = 0.0
+        elif success:
+            self._positions = {s: 0.0 for s in self._positions}
+        return success
+
+    def partial_close(self, symbol: str, size: float) -> Optional[Order]:
+        """
+        Partially close an existing position.
+
+        Args:
+            symbol (str): The symbol for the position.
+            size (float): The size of the position to close.
+
+        Returns:
+            Optional[Order]: The created Order object for the partial close, or None if the order creation failed.
+
+        Raises:
+            StrategyError: If the strategy is not connected to an engine or if there's no open position.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+
+        position = self.get_current_position(symbol)
+        if position == 0:
+            raise StrategyError(f"No open position for {symbol}")
+
+        if abs(size) > abs(position):
+            raise StrategyError(
+                f"Requested size {size} is larger than current position {position}"
+            )
+
+        direction = Order.Direction.SHORT if position > 0 else Order.Direction.LONG
+        order = self._engine.create_order(
+            self._id, symbol, direction, abs(size), Order.ExecType.MARKET
+        )[0]  # We only need the parent order here
+
+        if order:
+            self._pending_orders.append(order)
+
+        return order
+
+    # endregion
+
+    # region Position Management
+
+    def get_current_position(self, symbol: str) -> float:
+        """
+        Get the current position size for a given symbol.
+
+        Args:
+            symbol (str): The symbol to check.
+
+        Returns:
+            float: The current position size (positive for long, negative for short, 0 for no position).
+        """
+        return self._engine.get_position_size(symbol)
+
+    def calculate_position_size(
+        self, symbol: str, risk_percent: float, stop_loss: float
+    ) -> float:
+        """
+        Calculate the position size based on risk percentage and stop loss.
+
+        Args:
+            symbol (str): The symbol to trade.
+            risk_percent (float): The percentage of account to risk on this trade.
+            stop_loss (float): The stop loss price.
+
+        Returns:
+            float: The calculated position size.
+
+        Raises:
+            StrategyError: If the strategy is not connected to an engine or if the risk per share is zero.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+
+        account_value = self._engine.get_account_value()
+        risk_amount = account_value * (risk_percent / 100)
+        current_price = self._datas[symbol][self.primary_timeframe].close[-1]
+        risk_per_share = abs(current_price - stop_loss)
+
+        if risk_per_share == 0:
+            raise StrategyError(
+                "Risk per share is zero. Cannot calculate position size."
+            )
+
+        available_margin = self._engine.get_available_margin()
+        max_position_size = available_margin / current_price
+
+        position_size = min(risk_amount / risk_per_share, max_position_size)
+        return position_size
+
+    def enforce_risk_limits(self, symbol: str, proposed_position_size: float) -> float:
+        """
+        Enforce risk limits on the proposed position size.
+
+        Args:
+            symbol (str): The symbol to trade.
+            proposed_position_size (float): The initially calculated position size.
+
+        Returns:
+            float: The adjusted position size that complies with risk limits.
+        """
+        # Example risk limit: no single position can be more than 5% of the account value
+        account_value = self._engine.get_account_value()
+        current_price = self._datas[symbol][self.primary_timeframe].close[-1]
+        max_position_value = account_value * 0.05
+        max_position_size = max_position_value / current_price
+
+        return min(proposed_position_size, max_position_size)
+
+    # endregion
+
+    # region Order and Trade Update Handling
+
     def on_order_update(self, order: Order) -> None:
         """
         Handle updates to orders created by this strategy.
@@ -309,14 +570,14 @@ class Strategy(ABC):
         Args:
             order (Order): The updated Order object.
         """
-        # Update the strategy's state based on the order update
         if order.status == Order.Status.FILLED:
             self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
             self._update_position(order)
+        elif order.status == Order.Status.PARTIALLY_FILLED:
+            self.handle_partial_fill(order)
         elif order.status == Order.Status.CANCELED:
             self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
 
-        # Implement any strategy-specific logic for handling order updates
         self._handle_order_update(order)
 
     def on_trade_update(self, trade: Trade) -> None:
@@ -326,12 +587,53 @@ class Strategy(ABC):
         Args:
             trade (Trade): The updated Trade object.
         """
-        # Update the strategy's state based on the trade update
         if trade.status == Trade.Status.CLOSED:
             self._update_position(trade)
+            self._open_trades[trade.ticker] = [
+                t for t in self._open_trades[trade.ticker] if t.id != trade.id
+            ]
+            self._closed_trades.append(trade)
+        elif trade.status == Trade.Status.PARTIALLY_CLOSED:
+            self._update_position(trade)
 
-        # Implement any strategy-specific logic for handling trade updates
         self._handle_trade_update(trade)
+
+    def handle_partial_fill(self, order: Order) -> None:
+        """
+        Handle a partial fill of an order.
+
+        Args:
+            order (Order): The partially filled Order object.
+        """
+        # Update the strategy's state based on the partial fill
+        filled_size = order.get_filled_size()
+        remaining_size = order.get_remaining_size()
+
+        # Update the order in pending orders
+        for i, pending_order in enumerate(self._pending_orders):
+            if pending_order.id == order.id:
+                self._pending_orders[i] = order
+                break
+
+        # Implement strategy-specific logic for handling partial fills
+        self._handle_partial_fill(order, filled_size, remaining_size)
+
+    @abstractmethod
+    def _handle_partial_fill(
+        self, order: Order, filled_size: float, remaining_size: float
+    ) -> None:
+        """
+        Handle strategy-specific logic for partial fills.
+
+        This method should be implemented by concrete strategy classes to define
+        how the strategy responds to partial fills.
+
+        Args:
+            order (Order): The partially filled Order object.
+            filled_size (float): The size that was filled.
+            remaining_size (float): The remaining size to be filled.
+        """
+        pass
 
     @abstractmethod
     def _handle_order_update(self, order: Order) -> None:
@@ -370,153 +672,164 @@ class Strategy(ABC):
         if isinstance(transaction, Order):
             size = transaction.details.size
         else:  # Trade
-            size = transaction.initial_size
+            size = transaction.current_size
 
         if transaction.direction == Order.Direction.LONG:
             self._positions[symbol] += size
         else:  # SHORT
             self._positions[symbol] -= size
 
-    def buy(
-        self, symbol: str, size: float, price: Optional[float] = None, **kwargs: Any
-    ) -> Optional[Order]:
+    # endregion
+
+    # region Limit Exit Order Management
+
+    def manage_stop_loss(self, symbol: str, new_stop_loss: float) -> bool:
         """
-        Create a buy order.
+        Adjust the stop-loss level for an existing position.
 
         Args:
-            symbol (str): The symbol to buy.
-            size (float): The size of the order.
-            price (Optional[float]): The price for limit orders. If None, a market order is created.
-            **kwargs: Additional order parameters.
+            symbol (str): The symbol for the position.
+            new_stop_loss (float): The new stop-loss price.
 
         Returns:
-            Optional[Order]: The created Order object, or None if the order creation failed.
+            bool: True if the stop-loss was successfully adjusted, False otherwise.
 
         Raises:
-            StrategyError: If the strategy is not connected to an engine.
+            StrategyError: If the strategy is not connected to an engine or if there's no open position.
         """
         if self._engine is None:
             raise StrategyError("Strategy is not connected to an engine.")
-        order = self._engine.create_order(
-            self, symbol, Order.Direction.LONG, size, price, **kwargs
+
+        position = self.get_current_position(symbol)
+        if position == 0:
+            raise StrategyError(f"No open position for {symbol}")
+
+        for order in self._pending_orders:
+            if (
+                order.details.ticker == symbol
+                and order.details.exectype == Order.ExecType.STOP
+                and (
+                    (position > 0 and order.details.direction == Order.Direction.SHORT)
+                    or (
+                        position < 0 and order.details.direction == Order.Direction.LONG
+                    )
+                )
+            ):
+                return self._engine.modify_order(order.id, {"price": new_stop_loss})
+
+        # If no existing stop-loss order was found, create a new one
+        return self.add_stop_loss(symbol, new_stop_loss) is not None
+
+    def manage_take_profit(self, symbol: str, new_take_profit: float) -> bool:
+        """
+        Adjust the take-profit level for an existing position.
+
+        Args:
+            symbol (str): The symbol for the position.
+            new_take_profit (float): The new take-profit price.
+
+        Returns:
+            bool: True if the take-profit was successfully adjusted, False otherwise.
+
+        Raises:
+            StrategyError: If the strategy is not connected to an engine or if there's no open position.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+
+        position = self.get_current_position(symbol)
+        if position == 0:
+            raise StrategyError(f"No open position for {symbol}")
+
+        for order in self._pending_orders:
+            if (
+                order.details.ticker == symbol
+                and order.details.exectype == Order.ExecType.LIMIT
+                and (
+                    (position > 0 and order.details.direction == Order.Direction.SHORT)
+                    or (
+                        position < 0 and order.details.direction == Order.Direction.LONG
+                    )
+                )
+            ):
+                return self._engine.modify_order(order.id, {"price": new_take_profit})
+
+        # If no existing take-profit order was found, create a new one
+        return self.add_take_profit(symbol, new_take_profit) is not None
+
+    # endregion
+
+    # region Performance Tracking
+
+    def calculate_strategy_metrics(self) -> Dict[str, Any]:
+        """
+        Calculate performance metrics for the strategy.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing various performance metrics.
+        """
+        if self._engine is None:
+            raise StrategyError("Strategy is not connected to an engine.")
+
+        open_trades = self._engine.get_open_trades(self._id)
+        closed_trades = self._engine.get_closed_trades(self._id)
+
+        total_trades = len(open_trades) + len(closed_trades)
+        winning_trades = sum(1 for trade in closed_trades if trade.metrics.pnl > 0)
+        losing_trades = sum(1 for trade in closed_trades if trade.metrics.pnl < 0)
+
+        win_rate = winning_trades / len(closed_trades) if closed_trades else 0
+        avg_win = (
+            sum(trade.metrics.pnl for trade in closed_trades if trade.metrics.pnl > 0)
+            / winning_trades
+            if winning_trades
+            else 0
         )
-        if order:
-            self._pending_orders.append(order)
-        return order
-
-    def sell(
-        self, symbol: str, size: float, price: Optional[float] = None, **kwargs: Any
-    ) -> Optional[Order]:
-        """
-        Create a sell order.
-
-        Args:
-            symbol (str): The symbol to sell.
-            size (float): The size of the order.
-            price (Optional[float]): The price for limit orders. If None, a market order is created.
-            **kwargs: Additional order parameters.
-
-        Returns:
-            Optional[Order]: The created Order object, or None if the order creation failed.
-
-        Raises:
-            StrategyError: If the strategy is not connected to an engine.
-        """
-        if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
-        order = self._engine.create_order(
-            self, symbol, Order.Direction.SHORT, size, price, **kwargs
-        )
-        if order:
-            self._pending_orders.append(order)
-        return order
-
-    def cancel(self, order: Order) -> bool:
-        """
-        Cancel an existing order.
-
-        Args:
-            order (Order): The order to cancel.
-
-        Returns:
-            bool: True if the order was successfully cancelled, False otherwise.
-
-        Raises:
-            StrategyError: If the strategy is not connected to an engine.
-        """
-        if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
-        success = self._engine.cancel_order(self, order)
-        if success:
-            self._pending_orders = [o for o in self._pending_orders if o.id != order.id]
-        return success
-
-    def close(self, symbol: Optional[str] = None) -> bool:
-        """
-        Close all positions for this strategy, or for a specific symbol if provided.
-
-        Args:
-            symbol (Optional[str]): The symbol to close positions for. If None, close all positions.
-
-        Returns:
-            bool: True if the closing operation was successful, False otherwise.
-
-        Raises:
-            StrategyError: If the strategy is not connected to an engine.
-        """
-        if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
-        success = self._engine.close_positions(self, symbol)
-        if success and symbol:
-            self._positions[symbol] = 0.0
-        elif success:
-            self._positions = {s: 0.0 for s in self._positions}
-        return success
-
-    def calculate_position_size(
-        self, symbol: str, risk_percent: float, stop_loss: float
-    ) -> float:
-        """
-        Calculate the position size based on risk percentage and stop loss.
-
-        Args:
-            symbol (str): The symbol to trade.
-            risk_percent (float): The percentage of account to risk on this trade.
-            stop_loss (float): The stop loss price.
-
-        Returns:
-            float: The calculated position size.
-
-        Raises:
-            StrategyError: If the strategy is not connected to an engine or if the risk per share is zero.
-        """
-        if self._engine is None:
-            raise StrategyError("Strategy is not connected to an engine.")
-
-        account_value = self._engine.get_account_value()
-        risk_amount = account_value * (risk_percent / 100)
-        current_price = self._datas[symbol][self.primary_timeframe].close[-1]
-        risk_per_share = abs(current_price - stop_loss)
-
-        if risk_per_share == 0:
-            raise StrategyError(
-                "Risk per share is zero. Cannot calculate position size."
+        avg_loss = (
+            sum(
+                abs(trade.metrics.pnl)
+                for trade in closed_trades
+                if trade.metrics.pnl < 0
             )
+            / losing_trades
+            if losing_trades
+            else 0
+        )
+        profit_factor = avg_win / avg_loss if avg_loss != 0 else float("inf")
 
-        position_size = risk_amount / risk_per_share
-        return position_size
+        return {
+            "total_trades": total_trades,
+            "open_trades": len(open_trades),
+            "closed_trades": len(closed_trades),
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "win_rate": win_rate,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "profit_factor": profit_factor,
+            # Add more metrics as needed
+        }
 
-    def get_current_position(self, symbol: str) -> float:
+    # endregion
+
+    # region Abstract Methods
+
+    @abstractmethod
+    def on_bar(self, bar: Bar) -> None:
         """
-        Get the current position size for a given symbol.
+        Handle the arrival of a new price bar.
+
+        This method is the primary decision-making point for the strategy.
+        It should be implemented by concrete strategy classes to define the strategy's logic.
 
         Args:
-            symbol (str): The symbol to check.
-
-        Returns:
-            float: The current position size (positive for long, negative for short, 0 for no position).
+            bar (Bar): The new price bar data.
         """
-        return self._positions.get(symbol, 0.0)
+        pass
+
+    # endregion
+
+    # region Utility Methods
 
     def __getitem__(self, key: Union[str, Tuple[str, Timeframe]]) -> Data:
         """
@@ -600,3 +913,5 @@ class Strategy(ABC):
             f"timeframes={list(next(iter(self._datas.values())).keys())}, "
             f"positions={self._positions})"
         )
+
+    # endregion
