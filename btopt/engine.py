@@ -1,5 +1,6 @@
+import inspect
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import pandas as pd
 
@@ -78,9 +79,27 @@ class Engine:
         self._current_timestamp: Optional[pd.Timestamp] = None
         self._is_running: bool = False
         self._config: Dict[str, Any] = {}
-        self._strategy_timeframes: Dict[str, Timeframe] = {}
+        self._strategy_timeframes: Dict[str, List[Timeframe]] = {}
+
+        # Clear log file
+        clear_log_file()
 
     # region Initialization and Configuration
+
+    @property
+    def default_timeframe(self) -> Timeframe:
+        """
+        Get the default (lowest) timeframe available in the DataView.
+
+        Returns:
+            Timeframe: The lowest timeframe available in the data.
+
+        Raises:
+            ValueError: If no data has been added to the DataView yet.
+        """
+        if self._dataview.lowest_timeframe is None:
+            raise ValueError("No data has been added to the DataView yet.")
+        return self._dataview.lowest_timeframe
 
     def set_config(self, config: Dict[str, Any]) -> None:
         """
@@ -91,7 +110,7 @@ class Engine:
         """
         self._config = config
         self.portfolio.set_config(config)
-        logger_main.log_and_print("Backtest configuration set.", level="info")
+        logger_main.info("Backtest configuration set.")
 
     def reset(self) -> None:
         """
@@ -106,7 +125,7 @@ class Engine:
         self._is_running = False
         self._config = {}
         self._strategy_timeframes = {}
-        logger_main.log_and_print("Engine reset to initial state.", level="info")
+        logger_main.info("Engine reset to initial state.")
 
     def validate_data(self) -> bool:
         """
@@ -116,29 +135,25 @@ class Engine:
             bool: True if the data is valid and sufficient, False otherwise.
         """
         if not self._dataview.has_data:
-            logger_main.log_and_print("No data has been loaded.", level="warning")
+            logger_main.info("No data has been loaded.", level="warning")
             return False
 
         if len(self._dataview.symbols) == 0:
-            logger_main.log_and_print(
-                "No symbols found in the loaded data.", level="warning"
-            )
+            logger_main.info("No symbols found in the loaded data.", level="warning")
             return False
 
         if len(self._dataview.timeframes) == 0:
-            logger_main.log_and_print(
-                "No timeframes found in the loaded data.", level="warning"
-            )
+            logger_main.info("No timeframes found in the loaded data.", level="warning")
             return False
 
         date_range = self._dataview.get_data_range()
         if date_range[0] == date_range[1]:
-            logger_main.log_and_print(
+            logger_main.info(
                 "Insufficient data: only one data point available.", level="warning"
             )
             return False
 
-        logger_main.log_and_print("Data validation passed.", level="info")
+        logger_main.info("Data validation passed.")
         return True
 
     # endregion
@@ -166,9 +181,7 @@ class Engine:
                 timeframe=dataloader.timeframe,
                 df=data,
             )
-        logger_main.log_and_print(
-            f"Added data for {len(dataloader.dataframes)} symbols.", level="info"
-        )
+        logger_main.info(f"Added data for {len(dataloader.dataframes)} symbols.")
 
     def resample_data(
         self, dataloader: BaseDataLoader, timeframe: Union[str, Timeframe]
@@ -210,9 +223,8 @@ class Engine:
         # Add the resampled dataloader to the engine
         self.add_data(resampled_dataloader)
 
-        logger_main.log_and_print(
+        logger_main.info(
             f"Resampled data for {len(resampled_dataloader.dataframes)} symbols to {timeframe}.",
-            level="info",
         )
 
     def _create_bar(self, symbol: str, timeframe: Timeframe, data: pd.Series) -> Bar:
@@ -274,22 +286,77 @@ class Engine:
     # region Strategy Management
 
     def add_strategy(
-        self, strategy: Strategy, primary_timeframe: Optional[Timeframe] = None
+        self,
+        strategy: Type[Strategy],
+        *args,
+        **kwargs,
     ) -> None:
         """
         Add a trading strategy to the engine.
 
         Args:
-            strategy (Strategy): The strategy to be added.
-            primary_timeframe (Optional[Timeframe], optional): The primary timeframe for the strategy.
-                If not provided, the lowest available timeframe will be used.
+            strategy (Type[Strategy]): The strategy class to be instantiated.
+            *args: Positional arguments for strategy initialization.
+            **kwargs: Keyword arguments for strategy initialization.
+
+        Raises:
+            ValueError: If invalid arguments are provided or required parameters are missing.
         """
-        strategy.set_engine(self)
-        self._strategies[strategy._id] = strategy
-        if primary_timeframe is not None:
-            self._strategy_timeframes[strategy._id] = primary_timeframe
-        logger_main.log_and_print(
-            f"Added strategy: {strategy.__class__.__name__}", level="info"
+        # Process timeframes
+        valid_timeframes = []
+        for arg in args:
+            if isinstance(arg, Timeframe):
+                valid_timeframes.append(arg)
+            elif isinstance(arg, str):
+                try:
+                    timeframe = Timeframe(arg)
+                    valid_timeframes.append(timeframe)
+                    logger_main.info(
+                        f"Converted argument `{arg}` to a Timeframe object `{repr(timeframe)}`"
+                    )
+                except Exception as e:
+                    logger_main.info(
+                        f"Failed to convert argument `{arg}` to a Timeframe object. Error: {e}",
+                        level="warning",
+                    )
+
+        # Use default timeframe if none provided
+        if not valid_timeframes:
+            valid_timeframes.append(self.default_timeframe)
+            logger_main.info(
+                f"No valid timeframes provided. Using default timeframe: {self.default_timeframe}",
+            )
+
+        # Prepare strategy initialization parameters
+        init_parameters = {}
+        strategy_signature = inspect.signature(strategy.__init__)
+        for param_name, param in strategy_signature.parameters.items():
+            if param_name == "self":
+                continue
+            if param_name in kwargs:
+                init_parameters[param_name] = kwargs[param_name]
+            elif param.default is not param.empty:
+                init_parameters[param_name] = param.default
+            else:
+                logger_main.log_and_raise(
+                    ValueError(f"Missing required parameter: {param_name}")
+                )
+
+        # Initialize the strategy
+        try:
+            strategy_instance = strategy(**init_parameters)
+        except Exception as e:
+            logger_main.log_and_raise(
+                ValueError(f"Failed to initialize strategy: {str(e)}")
+            )
+        strategy_instance.set_engine(self)
+
+        # Store strategy and its timeframes
+        self._strategies[strategy_instance._id] = strategy_instance
+        self._strategy_timeframes[strategy_instance._id] = valid_timeframes
+
+        logger_main.info(
+            f"Added strategy: {strategy_instance.__class__.__name__} with ID: {strategy_instance._id}"
         )
 
     def remove_strategy(self, strategy_id: str) -> None:
@@ -301,11 +368,9 @@ class Engine:
         """
         if strategy_id in self._strategies:
             del self._strategies[strategy_id]
-            logger_main.log_and_print(
-                f"Removed strategy with ID: {strategy_id}", level="info"
-            )
+            logger_main.info(f"Removed strategy with ID: {strategy_id}")
         else:
-            logger_main.log_and_print(
+            logger_main.info(
                 f"Strategy not found with ID: {strategy_id}", level="warning"
             )
 
@@ -334,11 +399,9 @@ class Engine:
         strategy = self.get_strategy_by_id(strategy_id)
         if strategy:
             strategy.parameters = new_parameters
-            logger_main.log_and_print(
-                f"Updated parameters for strategy {strategy_id}", level="info"
-            )
+            logger_main.info(f"Updated parameters for strategy {strategy_id}")
         else:
-            logger_main.log_and_print(
+            logger_main.info(
                 f"Strategy with ID {strategy_id} not found.", level="warning"
             )
 
@@ -350,7 +413,7 @@ class Engine:
             strategy_id (str): The ID of the strategy logging the activity.
             message (str): The message to be logged.
         """
-        logger_main.log_and_print(f"Strategy {strategy_id}: {message}", level="info")
+        logger_main.info(f"Strategy {strategy_id}: {message}")
 
     # endregion
 
@@ -367,11 +430,9 @@ class Engine:
             ValueError: If data validation fails.
             Exception: If an error occurs during the backtest.
         """
-        # Clear log file
-        clear_log_file()
 
         if self._is_running:
-            logger_main.log_and_print("Backtest is already running.", level="warning")
+            logger_main.info("Backtest is already running.", level="warning")
             return self.portfolio.reporter
         try:
             self._dataview.align_all_data()
@@ -383,7 +444,10 @@ class Engine:
 
             self._is_running = True
             self._initialize_backtest()
-            logger_main.log_and_print("Starting backtest...", level="info")
+            logger_main.info("Starting backtest...")
+
+            # Ensure all orders have a valid timeframe before starting the backtest
+            self._validate_order_timeframes()
 
             for timestamp, data_point in self._dataview:
                 self._current_timestamp = timestamp
@@ -398,7 +462,7 @@ class Engine:
         finally:
             self._is_running = False
 
-        logger_main.log_and_print("Backtest completed.", level="info")
+        logger_main.info("Backtest completed.")
         return self.portfolio.reporter
 
     def _initialize_backtest(self) -> None:
@@ -407,17 +471,17 @@ class Engine:
 
         This method sets up each strategy with the appropriate data and timeframes.
         """
-        default_timeframe = min(self._dataview.timeframes)
+        default_timeframe = self._dataview.lowest_timeframe
         for strategy_id, strategy in self._strategies.items():
-            primary_timeframe = self._strategy_timeframes.get(
-                strategy_id, default_timeframe
+            # Get the strategy timeframes
+            strategy_timeframes = self._strategy_timeframes.get(
+                strategy_id, [default_timeframe]
             )
             strategy.initialize(
                 self._dataview.symbols,
-                self._dataview.timeframes,
-                primary_timeframe,
+                strategy_timeframes,
             )
-        logger_main.log_and_print("Backtest initialized.", level="info")
+        logger_main.info("Backtest initialized.")
 
     def _process_timestamp(
         self,
@@ -438,7 +502,9 @@ class Engine:
         self._process_order_fills(data_point)
 
         # Update strategies
-        for strategy_id, strategy in self._strategies.items():
+        logger_main.warning(data_point)
+
+        for strategy in self._strategies.values():
             for symbol in self._dataview.symbols:
                 if self._dataview.is_original_data_point(
                     symbol, strategy.primary_timeframe, timestamp
@@ -484,7 +550,7 @@ class Engine:
             bool: True if the backtest should be terminated, False otherwise.
         """
         if self.portfolio.calculate_equity() < self._config.get("min_equity", 0):
-            logger_main.log_and_print(
+            logger_main.info(
                 "Portfolio value dropped below minimum equity. Terminating backtest.",
                 level="warning",
             )
@@ -497,10 +563,8 @@ class Engine:
 
         This method closes all remaining trades and performs any necessary cleanup.
         """
-        self.portfolio.close_all_trades(self._current_timestamp, self._dataview)
-        logger_main.log_and_print(
-            "Finalized backtest. Closed all remaining trades.", level="info"
-        )
+        self.close_all_positions()
+        logger_main.info("Finalized backtest. Closed all remaining trades.")
 
     def _generate_results(self) -> Dict[str, Any]:
         """
@@ -514,6 +578,22 @@ class Engine:
             "trade_history": self.portfolio.get_trade_history(),
             "equity_curve": self.portfolio.get_equity_curve(),
         }
+
+    def _validate_order_timeframes(self) -> None:
+        """
+        Ensure all pending orders have a valid timeframe set.
+
+        This method checks all pending orders and sets the default timeframe
+        if the order's timeframe is None. It logs a warning for each order
+        that requires a timeframe update.
+        """
+        for order in self.portfolio.pending_orders + self.portfolio.limit_exit_orders:
+            if order.details.timeframe is None:
+                order.details.timeframe = self.default_timeframe
+                logger_main.info(
+                    f"Updated order {order.id} for {order.details.ticker} to use default timeframe {self.default_timeframe}",
+                    level="warning",
+                )
 
     # endregion
 
@@ -548,6 +628,14 @@ class Engine:
         Returns:
             Tuple[Order, List[Order]]: The parent order and a list of child orders (stop-loss and take-profit).
         """
+        # Use the default timeframe if not provided in kwargs
+        if ("timeframe" not in kwargs) or kwargs["timeframe"] is None:
+            kwargs["timeframe"] = self.default_timeframe
+            logger_main.info(
+                f"Using default timeframe {self.default_timeframe} for order on {symbol}",
+                level="warning",
+            )
+
         parent_order = self.portfolio.create_order(
             symbol, direction, size, order_type, price, **kwargs
         )
@@ -614,7 +702,7 @@ class Engine:
             bool: True if the order was successfully cancelled, False otherwise.
         """
         if order.details.strategy_id != strategy_id:
-            logger_main.log_and_print(
+            logger_main.info(
                 f"Strategy {strategy_id} attempted to cancel an order it didn't create.",
                 level="warning",
             )
@@ -636,6 +724,16 @@ class Engine:
         """
         success = self.portfolio.close_positions(strategy_id=strategy_id, symbol=symbol)
         return success
+
+    def close_all_positions(self) -> None:
+        """
+        Close all open positions in the portfolio.
+        """
+        if self._current_timestamp is None:
+            logger_main.log_and_raise(ValueError("Backtest has not been run yet."))
+
+        self.portfolio.close_all_positions(self._current_timestamp)
+        logger_main.info("Closed all open positions.")
 
     def _notify_order_fill(self, order: Order, trade: Optional[Trade]) -> None:
         """
@@ -769,7 +867,7 @@ class Engine:
         """
         strategy = self.get_strategy_by_id(strategy_id)
         if not strategy:
-            logger_main.log_and_print(
+            logger_main.info(
                 f"Strategy with ID {strategy_id} not found.", level="warning"
             )
             return {}
@@ -843,7 +941,7 @@ class Engine:
 
         with open(filename, "w") as f:
             json.dump(results, f, default=str)
-        logger_main.log_and_print(f"Backtest results saved to {filename}", level="info")
+        logger_main.info(f"Backtest results saved to {filename}")
 
     def load_results(self, filename: str) -> Dict[str, Any]:
         """
@@ -861,9 +959,7 @@ class Engine:
 
         with open(filename, "r") as f:
             results = json.load(f)
-        logger_main.log_and_print(
-            f"Backtest results loaded from {filename}", level="info"
-        )
+        logger_main.info(f"Backtest results loaded from {filename}")
         return results
 
     # endregion

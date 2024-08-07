@@ -117,15 +117,14 @@ class DataView:
         # Handle existing data
         if timeframe in self.data[symbol]:
             if overwrite:
-                logger_main.log_and_print(
+                logger_main.info(
                     f"Overwriting existing data for {symbol} at {timeframe} timeframe.",
                     level="warning",
                 )
                 self.data[symbol][timeframe] = df
             else:
-                logger_main.log_and_print(
+                logger_main.info(
                     f"Merging new data with existing data for {symbol} at {timeframe} timeframe.",
-                    level="info",
                 )
                 existing_df = self.data[symbol][timeframe]
                 merged_df = pd.concat([existing_df, df])
@@ -143,9 +142,8 @@ class DataView:
         # Set the alignment flag to False as new data has been added
         self.is_aligned = False
 
-        logger_main.log_and_print(
+        logger_main.info(
             f"Data {'added' if timeframe not in self.data[symbol] else 'updated'} for {symbol} at {timeframe} timeframe.",
-            level="info",
         )
 
     def align_all_data(self) -> None:
@@ -156,13 +154,13 @@ class DataView:
         and trims higher timeframe data to match the master timeline.
         """
         if self.is_aligned:
-            logger_main.log_and_print("Data is already aligned.", level="info")
+            logger_main.info("Data is already aligned.")
             return
 
         self._calculate_master_timeline()
 
         if self.master_timeline is None:
-            logger_main.log_and_print(
+            logger_main.info(
                 "No master timeline available. Cannot align data.", level="warning"
             )
             return
@@ -173,7 +171,7 @@ class DataView:
 
         self._trim_higher_timeframe_data()
         self.is_aligned = True
-        logger_main.log_and_print("All data aligned to master timeline.", level="info")
+        logger_main.info("All data aligned to master timeline.")
 
     def _calculate_master_timeline(self):
         """
@@ -337,9 +335,8 @@ class DataView:
         # Resample the data
         resampled_df = self._resample_dataframe(df, to_timeframe)
 
-        logger_main.log_and_print(
+        logger_main.info(
             f"Data resampled for {symbol} from {from_timeframe} to {to_timeframe} timeframe.",
-            level="info",
         )
 
         return resampled_df
@@ -454,9 +451,7 @@ class DataView:
         start_time = self.master_timeline[0]
         end_time = self.master_timeline[-1]
 
-        logger_main.log_and_print(
-            f"Data range: from {start_time} to {end_time}", level="info"
-        )
+        logger_main.info(f"Data range: from {start_time} to {end_time}")
 
         return start_time, end_time
 
@@ -522,7 +517,7 @@ class DataView:
             pd.DataFrame: A DataFrame containing the requested market data.
         """
         if symbol not in self.data or timeframe not in self.data[symbol]:
-            logger_main.log_and_print(
+            logger_main.info(
                 f"No data available for symbol {symbol} and timeframe {timeframe}",
                 level="warning",
             )

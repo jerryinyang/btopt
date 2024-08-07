@@ -9,7 +9,7 @@ from ..log_config import logger_main
 from ..order import Order
 from ..parameters import Parameters
 from ..trade import Trade
-from .helper import Data, DataTimeframe
+from .helper import BarManager, Data, DataTimeframe
 
 
 class StrategyError(Exception):
@@ -22,22 +22,55 @@ def generate_unique_id() -> str:
 
 
 class Strategy(ABC):
+    """
+    A comprehensive abstract base class for implementing trading strategies.
+
+    This class provides a robust framework for creating and managing trading strategies
+    within a backtesting or live trading environment. It encapsulates core functionality
+    for data handling, order management, position tracking, risk management, and
+    performance analysis.
+
+    Attributes:
+        name (str): The name of the strategy.
+        _parameters (Parameters): The strategy's parameters.
+        primary_timeframe (Optional[Timeframe]): The primary timeframe used by the strategy.
+        _datas (Dict[str, Data]): A dictionary storing Data objects for different symbols.
+        _bar_manager (BarManager): Manages and aligns bar data across different timeframes.
+        _initialized (bool): Flag indicating whether the strategy has been properly initialized.
+        _primary_symbol (Optional[str]): The main trading symbol for the strategy.
+        _engine (Any): Reference to the backtesting engine.
+        _strategy_timeframes (Dict[Timeframe, List[str]]): Mapping of timeframes to symbols.
+        _id (str): Unique identifier for the strategy instance.
+        _positions (Dict[str, float]): Current positions held by the strategy.
+        _pending_orders (List[Order]): List of orders that have been submitted but not yet filled.
+        _open_trades (Dict[str, List[Trade]]): Currently open trades, organized by symbol.
+        _closed_trades (List[Trade]): Historical record of closed trades.
+    """
+
     def __init__(
         self,
-        name: Optional[str] = None,
-        primary_timeframe: Optional[Timeframe] = None,
+        name: str,
         parameters: Optional[Dict[str, Any]] = None,
+        primary_timeframe: Optional[Timeframe] = None,
     ) -> None:
-        self._id: str = generate_unique_id()
-        self.name: str = name or self._id
+        """
+        Initialize the Strategy instance.
 
+        Args:
+            name (str): The name of the strategy.
+            parameters (Optional[Dict[str, Any]]): Initial strategy parameters. Defaults to None.
+            primary_timeframe (Optional[Timeframe]): The primary timeframe for the strategy. Defaults to None.
+        """
+        self.name: str = name
         self.datas: Dict[str, Data] = {}
         self.primary_timeframe: Optional[Timeframe] = primary_timeframe
         self._parameters: Parameters = Parameters(parameters or {})
         self._primary_symbol: Optional[str] = None
+        self._bar_manager: BarManager = BarManager()
         self._initialized: bool = False
         self._engine: Any = None
-        self._strategy_timeframes: List[Timeframe] = []
+        self._strategy_timeframes: Dict[Timeframe, List[str]] = {}
+        self._id: str = generate_unique_id()
         self._positions: Dict[str, float] = {}
         self._pending_orders: List[Order] = []
         self._open_trades: Dict[str, List[Trade]] = defaultdict(list)
@@ -50,11 +83,21 @@ class Strategy(ABC):
         self,
         symbols: List[str],
         timeframes: List[Timeframe],
+        default_timeframe: Timeframe,
     ) -> None:
+        """
+        Initialize the strategy with symbols and timeframes.
+
+        Args:
+            symbols (List[str]): List of symbols the strategy will trade.
+            timeframes (List[Timeframe]): List of timeframes the strategy will use.
+            default_timeframe (Timeframe): Default timeframe to use if primary_timeframe is not set.
+
+        Raises:
+            StrategyError: If the strategy is already initialized.
+        """
         if self._initialized:
             logger_main.log_and_raise(StrategyError("Strategy is already initialized."))
-
-        default_timeframe = min(timeframes)
 
         if self.primary_timeframe is None:
             self.primary_timeframe = default_timeframe
@@ -64,12 +107,9 @@ class Strategy(ABC):
             )
             self.primary_timeframe = default_timeframe
 
-        # Create Data objects for each symbol
         for symbol in symbols:
             self.datas[symbol] = Data(symbol)
 
-        # Set the strategy timeframes
-        self._strategy_timeframes = timeframes
         self._primary_symbol = symbols[0] if symbols else None
         self._initialized = True
 
@@ -158,6 +198,9 @@ class Strategy(ABC):
             )
 
         self._max_bars_back = value
+
+        # Update BarManager
+        self._bar_manager.max_bars = value
 
         # Update all Data objects
         for data in self.datas.values():
@@ -930,5 +973,51 @@ class Strategy(ABC):
             )
 
         return self.get_data_length(self._primary_symbol, self.primary_timeframe)
+
+    def __getitem__(
+        self, key: Union[str, Tuple[str, Timeframe]]
+    ) -> Union[Data, DataTimeframe]:
+        """
+        Allow easy access to data streams.
+
+        Args:
+            key (Union[str, Tuple[str, Timeframe]]):
+                If str, assumes primary timeframe and returns data for that symbol.
+                If tuple, returns data for the specified (symbol, timeframe) pair.
+
+        Returns:
+            Union[Data, DataTimeframe]: The requested Data or DataTimeframe object.
+
+        Raises:
+            KeyError: If the requested symbol or timeframe is not found.
+        """
+        if isinstance(key, str):
+            return self.datas[key]
+        elif isinstance(key, tuple) and len(key) == 2:
+            symbol, timeframe = key
+            return self.datas[symbol][timeframe]
+        else:
+            logger_main.log_and_raise(KeyError(f"Invalid key: {key}"))
+
+    def get_data_length_all(self) -> Dict[str, Dict[Timeframe, int]]:
+        """
+        Get the length of available data for all symbols and timeframes.
+
+        Returns:
+            Dict[str, Dict[Timeframe, int]]: A nested dictionary containing the data length for each symbol and timeframe.
+
+        Raises:
+            StrategyError: If the strategy hasn't been initialized.
+        """
+        if not self._initialized:
+            logger_main.log_and_raise(
+                StrategyError("Strategy has not been initialized.")
+            )
+
+        result = {}
+        for symbol, data in self.datas.items():
+            result[symbol] = {tf: len(data[tf].close) for tf in data.timeframes}
+
+        return result
 
     # endregion

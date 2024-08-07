@@ -129,7 +129,7 @@ class Portfolio:
         Initialize the Reporter instance for this Portfolio.
         """
         self.reporter = Reporter(self, self.engine)
-        logger_main.log_and_print("Reporter initialized for Portfolio.", level="info")
+        logger_main.info("Reporter initialized for Portfolio.")
 
     def set_config(self, config: Dict[str, Any]) -> None:
         """
@@ -150,7 +150,7 @@ class Portfolio:
         self.margin_call_threshold = Decimal(
             str(config.get("margin_call_threshold", self.margin_call_threshold))
         )
-        logger_main.log_and_print("Portfolio configuration set.", level="info")
+        logger_main.info("Portfolio configuration set.")
 
     def reset(self) -> None:
         """
@@ -165,7 +165,7 @@ class Portfolio:
             self.margin_call_threshold,
             self.engine,
         )
-        logger_main.log_and_print("Portfolio reset to initial state.", level="info")
+        logger_main.info("Portfolio reset to initial state.")
 
     # endregion
 
@@ -323,7 +323,7 @@ class Portfolio:
         commission = cost * self.commission_rate
 
         if not self._check_margin_requirements(order, cost):
-            logger_main.log_and_print(
+            logger_main.info(
                 f"Insufficient margin to execute order: {order}", level="warning"
             )
             return False, None
@@ -353,9 +353,7 @@ class Portfolio:
         if trade:
             self.updated_trades.append(trade)
 
-        logger_main.log_and_print(
-            f"Executed order: {order}, resulting trade: {trade}", level="info"
-        )
+        logger_main.info(f"Executed order: {order}, resulting trade: {trade}")
         return True, trade
 
     def add_pending_order(self, order: Order) -> None:
@@ -373,7 +371,7 @@ class Portfolio:
             self.limit_exit_orders.append(order)
         else:
             self.pending_orders.append(order)
-        logger_main.log_and_print(f"Added pending order: {order}", level="info")
+        logger_main.info(f"Added pending order: {order}")
 
     def cancel_order(self, order: Order) -> bool:
         """
@@ -390,7 +388,7 @@ class Portfolio:
         elif order in self.limit_exit_orders:
             self.limit_exit_orders.remove(order)
         else:
-            logger_main.log_and_print(
+            logger_main.info(
                 f"Failed to cancel order (not found in pending orders): {order}",
                 level="warning",
             )
@@ -398,7 +396,7 @@ class Portfolio:
 
         order.status = Order.Status.CANCELED
         self.updated_orders.append(order)
-        logger_main.log_and_print(f"Cancelled order: {order}", level="info")
+        logger_main.info(f"Cancelled order: {order}")
         return True
 
     def modify_order(self, order_id: int, new_details: Dict[str, Any]) -> bool:
@@ -418,9 +416,9 @@ class Portfolio:
                     if hasattr(order.details, key):
                         setattr(order.details, key, value)
                 self.updated_orders.append(order)
-                logger_main.log_and_print(f"Modified order: {order}", level="info")
+                logger_main.info(f"Modified order: {order}")
                 return True
-        logger_main.log_and_print(
+        logger_main.info(
             f"Order with ID {order_id} not found in pending orders.", level="warning"
         )
         return False
@@ -444,16 +442,14 @@ class Portfolio:
             closed_any = True
 
         if closed_any:
-            logger_main.log_and_print(
+            logger_main.info(
                 f"Closed positions for strategy {strategy_id}"
                 + (f" and symbol {symbol}" if symbol else ""),
-                level="info",
             )
         else:
-            logger_main.log_and_print(
+            logger_main.info(
                 f"No positions to close for strategy {strategy_id}"
                 + (f" and symbol {symbol}" if symbol else ""),
-                level="info",
             )
 
         return closed_any
@@ -473,7 +469,7 @@ class Portfolio:
                 current_price = self._get_current_price(symbol)
                 self.close_trade(trade, current_price)
 
-        logger_main.log_and_print("Closed all open positions.", level="info")
+        logger_main.info("Closed all open positions.")
 
     def _get_open_trades(
         self, strategy_id: str, symbol: Optional[str] = None
@@ -509,7 +505,7 @@ class Portfolio:
                 del self.open_trades[trade.ticker]
         self.closed_trades.append(trade)
         self._update_position(trade.ticker, -trade.current_size, current_price)
-        logger_main.log_and_print(f"Closed trade: {trade}", level="info")
+        logger_main.info(f"Closed trade: {trade}")
 
     def _process_pending_orders(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
@@ -536,13 +532,13 @@ class Portfolio:
             if timeframe is None:
                 available_timeframes = list(market_data[symbol].keys())
                 if not available_timeframes:
-                    logger_main.log_and_print(
+                    logger_main.info(
                         f"No market data available for symbol {symbol}. Skipping order processing.",
                         level="warning",
                     )
                     continue
                 timeframe = min(available_timeframes)
-                logger_main.log_and_print(
+                logger_main.info(
                     f"Order for {symbol} has no timeframe. Using lowest available: {timeframe}",
                     level="warning",
                 )
@@ -550,13 +546,13 @@ class Portfolio:
             try:
                 current_price = market_data[symbol][timeframe][3]  # Close price
             except KeyError:
-                logger_main.log_and_print(
+                logger_main.info(
                     f"No market data for {symbol} at timeframe {timeframe}. Skipping order.",
                     level="warning",
                 )
                 continue
 
-            logger_main.log_and_print(
+            logger_main.info(
                 f"current_price : {current_price}",
                 level="error",
             )
@@ -588,9 +584,8 @@ class Portfolio:
         self._remove_executed_order(order)
         order.status = Order.Status.CANCELED
         self.updated_orders.append(order)
-        logger_main.log_and_print(
+        logger_main.info(
             f"Order {order.id} for {order.details.ticker} has expired and been canceled.",
-            level="info",
         )
 
     def _update_position(
@@ -689,7 +684,7 @@ class Portfolio:
         equity = self.calculate_equity()
         if self.margin_used:
             if equity / self.margin_used < self.margin_call_threshold:
-                logger_main.log_and_print("Margin call triggered!", level="warning")
+                logger_main.info("Margin call triggered!", level="warning")
                 return True
         return False
 

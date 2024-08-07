@@ -1,5 +1,7 @@
-from collections import defaultdict, deque
-from typing import Dict, List, Optional
+from collections import defaultdict
+from datetime import datetime
+from decimal import Decimal
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -10,250 +12,380 @@ from ..log_config import logger_main
 
 
 class Data:
-    def __init__(self, symbol: str, max_length: int = 1000):
+    """
+    A class to manage market data for a specific symbol across multiple timeframes.
+
+    This class provides efficient storage and access to OHLCV (Open, High, Low, Close, Volume)
+    data for different timeframes, while maintaining compatibility with Bar objects.
+
+    Attributes:
+        symbol (str): The market symbol (e.g., 'EURUSD', 'AAPL') this data represents.
+        _max_length (int): The maximum number of data points to store for each timeframe.
+        _data (Dict[Timeframe, Dict[str, np.ndarray]]): The internal data storage structure.
+        _timestamps (Dict[Timeframe, np.ndarray]): Timestamps for each timeframe.
+    """
+
+    def __init__(self, symbol: str, max_length: int = 500):
+        """
+        Initialize the Data object.
+
+        Args:
+            symbol (str): The market symbol this data represents.
+            max_length (int, optional): The maximum number of data points to store. Defaults to 500.
+        """
         self.symbol: str = symbol
-        self.max_length: int = max_length
+        self._max_length: int = max_length
         self._data: Dict[Timeframe, Dict[str, np.ndarray]] = defaultdict(
-            lambda: {
-                "open": np.array([], dtype=float),
-                "high": np.array([], dtype=float),
-                "low": np.array([], dtype=float),
-                "close": np.array([], dtype=float),
-                "volume": np.array([], dtype=float),
-            }
+            self._create_empty_timeframe_data
+        )
+        self._timestamps: Dict[Timeframe, np.ndarray] = defaultdict(
+            lambda: np.array([], dtype="datetime64[ns]")
         )
 
-    def add_bar(self, bar: Bar) -> None:
-        for attr in ["open", "high", "low", "close", "volume"]:
-            value = getattr(bar, attr)
-            self._data[bar.timeframe][attr] = np.concatenate(
-                ([value], self._data[bar.timeframe][attr][: self.max_length - 1])
-            )
+    @staticmethod
+    def _create_empty_timeframe_data() -> Dict[str, np.ndarray]:
+        """
+        Create an empty data structure for a new timeframe.
 
-    def __getitem__(self, timeframe: Timeframe) -> Dict[str, np.ndarray]:
-        # Ensure the timeframe exists in the data
-        if timeframe not in self._data:
-            self._data[timeframe] = {
-                "open": np.array([], dtype=float),
-                "high": np.array([], dtype=float),
-                "low": np.array([], dtype=float),
-                "close": np.array([], dtype=float),
-                "volume": np.array([], dtype=float),
-            }
-        return self._data[timeframe]
+        Returns:
+            Dict[str, np.ndarray]: A dictionary with empty numpy arrays for OHLCV data.
+        """
+        return {
+            "open": np.array([], dtype=float),
+            "high": np.array([], dtype=float),
+            "low": np.array([], dtype=float),
+            "close": np.array([], dtype=float),
+            "volume": np.array([], dtype=int),
+        }
+
+    def add_bar(self, bar: Bar) -> None:
+        """
+        Add a new bar of data to the appropriate timeframe.
+
+        Args:
+            bar (Bar): The new bar of market data to add.
+        """
+        timeframe = bar.timeframe
+        for attr in ["open", "high", "low", "close"]:
+            value = float(getattr(bar, attr))
+            self._data[timeframe][attr] = np.concatenate(
+                ([value], self._data[timeframe][attr][: self.max_length - 1])
+            )
+        self._data[timeframe]["volume"] = np.concatenate(
+            ([bar.volume], self._data[timeframe]["volume"][: self.max_length - 1])
+        )
+        self._timestamps[timeframe] = np.concatenate(
+            (
+                [np.datetime64(bar.timestamp)],
+                self._timestamps[timeframe][: self.max_length - 1],
+            )
+        )
 
     def get(
-        self, timeframe: Timeframe, attr: str, default: Optional[float] = None
-    ) -> np.ndarray:
-        return self[timeframe].get(attr, default)
+        self,
+        timeframe: Optional[Timeframe] = None,
+        index: int = 0,
+        size: int = 1,
+        value: Optional[str] = None,
+    ) -> Union[
+        Optional[Bar],
+        List[Bar],
+        Optional[Union[Decimal, int]],
+        List[Union[Decimal, int]],
+    ]:
+        """
+        Get Bar object(s) or specific value(s) for a given timeframe and index.
+
+        Args:
+            timeframe (Optional[Timeframe], optional): The timeframe to get data for. If None, uses the primary timeframe. Defaults to None.
+            index (int, optional): The starting index of the bar to retrieve (0 is the most recent). Defaults to 0.
+            size (int, optional): The number of bars to retrieve. Defaults to 1.
+            value (Optional[str], optional): If specified, returns only this attribute of the Bar(s).
+                                            Must be one of 'open', 'high', 'low', 'close', 'volume', 'timestamp', 'timeframe', 'ticker', or 'index'.
+                                            Defaults to None (returns full Bar object(s)).
+
+        Returns:
+            Union[Optional[Bar], List[Bar], Optional[Union[Decimal, int]], List[Union[Decimal, int]]]:
+                - If value is None:
+                    - If size is 1, returns a single Bar object or None if not available.
+                    - If size > 1, returns a list of Bar objects (may be shorter than size if not enough data is available).
+                - If value is specified:
+                    - If size is 1, returns the specified value (Decimal for prices, int for volume, or appropriate type for other attributes) or None if not available.
+                    - If size > 1, returns a list of the specified values.
+
+        Raises:
+            ValueError: If an invalid value is specified.
+        """
+        if timeframe is None:
+            timeframe = self.primary_timeframe
+
+        if timeframe not in self._data:
+            return None if size == 1 else []
+
+        valid_values = {
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "timestamp",
+            "timeframe",
+            "ticker",
+            "index",
+        }
+        if value and value not in valid_values:
+            raise ValueError(
+                f"Invalid value: {value}. Must be one of {', '.join(valid_values)}"
+            )
+
+        result = []
+        for i in range(index, min(index + size, len(self._data[timeframe]["open"]))):
+            bar = Bar(
+                open=Decimal(str(self._data[timeframe]["open"][i])),
+                high=Decimal(str(self._data[timeframe]["high"][i])),
+                low=Decimal(str(self._data[timeframe]["low"][i])),
+                close=Decimal(str(self._data[timeframe]["close"][i])),
+                volume=int(self._data[timeframe]["volume"][i]),
+                timestamp=self._timestamps[timeframe][i].astype(datetime),
+                timeframe=timeframe,
+                ticker=self.symbol,
+                index=i,
+            )
+
+            if value:
+                result.append(getattr(bar, value))
+            else:
+                result.append(bar)
+
+        if size == 1:
+            return result[0] if result else None
+        return result
+
+    def __getitem__(self, key: Union[int, Timeframe]) -> "DataTimeframe":
+        """
+        Access data for a specific timeframe.
+
+        Args:
+            key (Union[int, Timeframe]):
+                - If Timeframe: The specific timeframe to access data for.
+                - If int: The index of the timeframe to access (0 for the primary/least timeframe).
+
+        Returns:
+            DataTimeframe: A DataTimeframe object providing access to the data for the specified timeframe.
+
+        Raises:
+            IndexError: If the integer index is out of range of available timeframes.
+            TypeError: If the key is neither an integer nor a Timeframe.
+        """
+        if isinstance(key, int):
+            timeframes = sorted(self.timeframes)
+            if 0 <= key < len(timeframes):
+                return DataTimeframe(self, timeframes[key])
+            else:
+                raise IndexError(
+                    f"Timeframe index {key} is out of range. Available indices: 0 to {len(timeframes) - 1}"
+                )
+        elif isinstance(key, Timeframe):
+            if key in self._data:
+                return DataTimeframe(self, key)
+            else:
+                raise KeyError(f"No data available for timeframe {key}")
+        else:
+            raise TypeError(
+                f"Invalid key type. Expected int or Timeframe, got {type(key).__name__}"
+            )
 
     @property
-    def timeframes(self):
+    def max_length(self) -> int:
+        """Get the maximum number of data points stored for each timeframe."""
+        return self._max_length
+
+    @max_length.setter
+    def max_length(self, value: int) -> None:
+        """
+        Set the maximum number of data points to store for each timeframe.
+
+        Args:
+            value (int): The new maximum length.
+
+        Raises:
+            ValueError: If the value is not a positive integer.
+        """
+        if value <= 0:
+            logger_main.log_and_raise(
+                ValueError("max_length must be a positive integer.")
+            )
+
+        old_max_length = self._max_length
+        self._max_length = value
+
+        # Update all existing data arrays
+        for timeframe in self._data.keys():
+            for key in self._data[timeframe].keys():
+                self._data[timeframe][key] = self._resize_array(
+                    self._data[timeframe][key], value
+                )
+            self._timestamps[timeframe] = self._resize_array(
+                self._timestamps[timeframe], value
+            )
+
+        logger_main.info(f"max_length updated from {old_max_length} to {value}")
+
+    @staticmethod
+    def _resize_array(arr: np.ndarray, new_length: int) -> np.ndarray:
+        """
+        Resize a numpy array to a new length, either by padding or trimming.
+
+        Args:
+            arr (np.ndarray): The array to resize.
+            new_length (int): The desired new length of the array.
+
+        Returns:
+            np.ndarray: The resized array.
+        """
+        if new_length > len(arr):
+            pad_width = new_length - len(arr)
+            return np.pad(arr, (0, pad_width), "constant", constant_values=np.nan)
+        else:
+            return arr[:new_length]
+
+    @property
+    def timeframes(self) -> List[Timeframe]:
+        """Get a list of all available timeframes."""
         return list(self._data.keys())
 
+    @property
+    def primary_timeframe(self) -> Timeframe:
+        """Get the least available timeframe."""
+        return min(self.timeframes)
 
-class DataTimeframe:
-    def __init__(self, data: Data, timeframe: Timeframe):
-        self.data = data
-        self.timeframe = timeframe
+    def _get_primary_data(self, attr: str) -> np.ndarray:
+        """
+        Get data for a specific attribute from the primary timeframe.
+
+        Args:
+            attr (str): The attribute to get ('open', 'high', 'low', 'close', or 'volume').
+
+        Returns:
+            np.ndarray: The requested data as a numpy array.
+        """
+        return self[self.primary_timeframe][attr]
 
     @property
     def open(self) -> np.ndarray:
-        return self.data._arrays[self.timeframe]["open"]
+        """Get the open price data for the primary timeframe."""
+        return self._get_primary_data("open")
 
     @property
     def high(self) -> np.ndarray:
-        return self.data._arrays[self.timeframe]["high"]
+        """Get the high price data for the primary timeframe."""
+        return self._get_primary_data("high")
 
     @property
     def low(self) -> np.ndarray:
-        return self.data._arrays[self.timeframe]["low"]
+        """Get the low price data for the primary timeframe."""
+        return self._get_primary_data("low")
 
     @property
     def close(self) -> np.ndarray:
-        return self.data._arrays[self.timeframe]["close"]
+        """Get the close price data for the primary timeframe."""
+        return self._get_primary_data("close")
 
     @property
     def volume(self) -> np.ndarray:
-        return self.data._arrays[self.timeframe]["volume"]
+        """Get the volume data for the primary timeframe."""
+        return self._get_primary_data("volume")
 
 
-class BarManager:
+class DataTimeframe:
     """
-    A class to manage and provide access to Bar objects for multiple symbols and timeframes.
+    A class to provide convenient access to market data for a specific timeframe.
 
-    This class acts as a container for Bar objects, organizing them by symbol and timeframe.
-    It provides methods for adding new bars, accessing historical bars, and managing the
-    data structure efficiently.
+    This class acts as a view into the Data object, providing easy access to OHLCV data
+    for a particular timeframe.
 
     Attributes:
-        max_bars (int): Maximum number of bars to store for each symbol-timeframe combination.
+        _data (Data): The parent Data object this view is associated with.
+        _timeframe (Timeframe): The specific timeframe this view represents.
     """
 
-    def __init__(self, max_bars: int = 1000):
+    VALID_KEYS = {"open", "high", "low", "close", "volume"}
+
+    def __init__(self, data: Data, timeframe: Timeframe):
         """
-        Initialize the BarManager.
+        Initialize the DataTimeframe object.
 
         Args:
-            max_bars (int, optional): Maximum number of bars to store for each
-                                      symbol-timeframe combination. Defaults to 1000.
+            data (Data): The parent Data object.
+            timeframe (Timeframe): The timeframe this object represents.
         """
-        self.max_bars: int = max_bars
-        self._bars: Dict[str, Dict[Timeframe, deque]] = {}
+        self._data = data
+        self._timeframe = timeframe
 
-    def add_bar(self, bar: Bar) -> None:
+    def __getitem__(self, key: Union[str, int]) -> Union[np.ndarray, Optional[Bar]]:
         """
-        Add a new Bar object to the manager.
-
-        This method adds the new bar to the appropriate symbol and timeframe queue.
-        If the symbol or timeframe doesn't exist, it creates a new queue.
+        Access OHLCV data using dictionary-style key access or get a Bar object by index.
 
         Args:
-            bar (Bar): The new Bar object to add.
-        """
-        symbol = bar.ticker
-        timeframe = bar.timeframe
-
-        # Initialize nested dictionaries if they don't exist
-        if symbol not in self._bars:
-            self._bars[symbol] = {}
-        if timeframe not in self._bars[symbol]:
-            self._bars[symbol][timeframe] = deque(maxlen=self.max_bars)
-
-        # Add the new bar
-        self._bars[symbol][timeframe].appendleft(bar)
-
-    def get_bar(
-        self, symbol: str, timeframe: Timeframe, index: int = 0
-    ) -> Optional[Bar]:
-        """
-        Retrieve a specific Bar object.
-
-        Args:
-            symbol (str): The symbol of the desired bar.
-            timeframe (Timeframe): The timeframe of the desired bar.
-            index (int, optional): The index of the bar to retrieve. 0 is the most recent,
-                                   -1 is the previous, and so on. Defaults to 0.
+            key (Union[str, int]): The data to access ('open', 'high', 'low', 'close', 'volume') or the index of the Bar to retrieve.
 
         Returns:
-            Optional[Bar]: The requested Bar object, or None if not found.
+            Union[np.ndarray, Optional[Bar]]: The requested data as a numpy array or a Bar object.
 
         Raises:
-            IndexError: If the requested index is out of range.
-
-
-        Note:
-            BarManager uses negative indexing (0 for most recent, -1 for previous),
-            unlike the Data class which uses positive indexing for OHLCV data.
+            KeyError: If an invalid string key is provided.
+            TypeError: If the key is neither a string nor an integer.
         """
-        try:
-            return self._bars[symbol][timeframe][index]
-        except KeyError:
-            return None
-        except IndexError:
-            logger_main.log_and_raise(
-                IndexError(f"Bar index {index} out of range for {symbol} {timeframe}")
-            )
+        if isinstance(key, str):
+            if key not in self.VALID_KEYS:
+                raise KeyError(
+                    f"Invalid key: {key}. Must be one of {', '.join(self.VALID_KEYS)}."
+                )
+            return self._data._data[self._timeframe][key]
+        elif isinstance(key, int):
+            return self._data.get_bar(self._timeframe, key)
+        else:
+            raise TypeError("Key must be a string or an integer.")
 
-    def get_latest_bars(
-        self, symbol: str, timeframe: Timeframe, n: int = 1
-    ) -> List[Bar]:
+    @property
+    def open(self) -> np.ndarray:
+        """Get the open price data for this timeframe."""
+        return self._data._data[self._timeframe]["open"]
+
+    @property
+    def high(self) -> np.ndarray:
+        """Get the high price data for this timeframe."""
+        return self._data._data[self._timeframe]["high"]
+
+    @property
+    def low(self) -> np.ndarray:
+        """Get the low price data for this timeframe."""
+        return self._data._data[self._timeframe]["low"]
+
+    @property
+    def close(self) -> np.ndarray:
+        """Get the close price data for this timeframe."""
+        return self._data._data[self._timeframe]["close"]
+
+    @property
+    def volume(self) -> np.ndarray:
+        """Get the volume data for this timeframe."""
+        return self._data._data[self._timeframe]["volume"]
+
+    def to_dataframe(self) -> pd.DataFrame:
         """
-        Retrieve the latest n Bar objects for a given symbol and timeframe.
-
-        Args:
-            symbol (str): The symbol to retrieve bars for.
-            timeframe (Timeframe): The timeframe to retrieve bars for.
-            n (int, optional): The number of bars to retrieve. Defaults to 1.
+        Convert the OHLCV data for this timeframe to a pandas DataFrame.
 
         Returns:
-            List[Bar]: A list of the latest n Bar objects.
+            pd.DataFrame: A DataFrame containing the OHLCV data and timestamps.
         """
-        try:
-            return list(self._bars[symbol][timeframe])[:n]
-        except KeyError:
-            return []
-
-    def get_dataframe(
-        self, symbol: str, timeframe: Timeframe, n: Optional[int] = None
-    ) -> pd.DataFrame:
-        """
-        Convert stored Bar objects to a pandas DataFrame.
-
-        Args:
-            symbol (str): The symbol to retrieve data for.
-            timeframe (Timeframe): The timeframe to retrieve data for.
-            n (Optional[int], optional): The number of latest bars to include.
-                                         If None, includes all stored bars. Defaults to None.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing the bar data.
-        """
-        try:
-            bars = (
-                list(self._bars[symbol][timeframe])[:n]
-                if n is not None
-                else self._bars[symbol][timeframe]
-            )
-            data = [
-                {
-                    "timestamp": bar.timestamp,
-                    "open": bar.open,
-                    "high": bar.high,
-                    "low": bar.low,
-                    "close": bar.close,
-                    "volume": bar.volume,
-                }
-                for bar in bars
-            ]
-            df = pd.DataFrame(data)
-            df.set_index("timestamp", inplace=True)
-            return df
-        except KeyError:
-            return pd.DataFrame()
-
-    def get_symbols(self) -> List[str]:
-        """
-        Get a list of all symbols in the BarManager.
-
-        Returns:
-            List[str]: A list of all symbols.
-        """
-        return list(self._bars.keys())
-
-    def get_timeframes(self, symbol: str) -> List[Timeframe]:
-        """
-        Get a list of all timeframes for a given symbol.
-
-        Args:
-            symbol (str): The symbol to get timeframes for.
-
-        Returns:
-            List[Timeframe]: A list of all timeframes for the given symbol.
-        """
-        return list(self._bars.get(symbol, {}).keys())
-
-    def __len__(self) -> int:
-        """
-        Get the total number of bars stored across all symbols and timeframes.
-
-        Returns:
-            int: The total number of bars.
-        """
-        return sum(
-            len(timeframe_deque)
-            for symbol_dict in self._bars.values()
-            for timeframe_deque in symbol_dict.values()
+        return pd.DataFrame(
+            {
+                "open": self.open,
+                "high": self.high,
+                "low": self.low,
+                "close": self.close,
+                "volume": self.volume,
+                "timestamp": self._data._timestamps[self._timeframe],
+            }
         )
-
-    def __repr__(self) -> str:
-        """
-        Get a string representation of the BarManager.
-
-        Returns:
-            str: A string representation of the BarManager.
-        """
-        symbol_count = len(self.get_symbols())
-        total_bars = len(self)
-        return f"BarManager(symbols={symbol_count}, total_bars={total_bars})"
-        return f"BarManager(symbols={symbol_count}, total_bars={total_bars})"

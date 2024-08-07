@@ -133,29 +133,6 @@ class Logger(logging.Logger):
         log_method(message, exc_info=True, stack_info=True, *args, **kwargs)
         raise error
 
-    def log_and_print(
-        self,
-        message: str,
-        level: Literal["debug", "info", "warning"] = "info",
-        *args: Any,
-        **kwargs: Any,
-    ) -> None:
-        """
-        Log the message and print it to the console if the level is appropriate.
-
-        Args:
-            message (str): The message to be logged and potentially printed.
-            level (Literal["debug", "info", "warning"]): The log level to use. Defaults to "info".
-            *args: Additional positional arguments for the log message.
-            **kwargs: Additional keyword arguments for the log message.
-        """
-        log_method = getattr(self, level)
-        log_method(message, *args, **kwargs)
-
-        # Print to console if the level is at or above the console handler's level
-        if self.LEVEL_MAP[level] >= self.handlers[0].level:
-            print(f"{level.upper()}: {message}")
-
 
 def get_logger(
     name: str = __name__,
@@ -190,8 +167,6 @@ if __name__ == "__main__":
     logger.warning("This is a warning message")
     logger.error("This is an error message")
     logger.critical("This is a critical message")
-
-    logger.log_and_print("This message will be logged and printed", level="info")
 
     try:
         logger.log_and_raise(ValueError("This is a test error"), level="error")
