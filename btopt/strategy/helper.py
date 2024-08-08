@@ -189,6 +189,7 @@ class Data:
             if key in self._data:
                 return DataTimeframe(self, key)
             else:
+                return None
                 raise KeyError(f"No data available for timeframe {key}")
         else:
             raise TypeError(
@@ -322,19 +323,36 @@ class DataTimeframe:
         self._data = data
         self._timeframe = timeframe
 
-    def __getitem__(self, key: Union[str, int]) -> Union[np.ndarray, Optional[Bar]]:
+    def __len__(self) -> int:
         """
-        Access OHLCV data using dictionary-style key access or get a Bar object by index.
-
-        Args:
-            key (Union[str, int]): The data to access ('open', 'high', 'low', 'close', 'volume') or the index of the Bar to retrieve.
+        Get the number of data points available for this timeframe.
 
         Returns:
-            Union[np.ndarray, Optional[Bar]]: The requested data as a numpy array or a Bar object.
+            int: The number of data points.
+        """
+        return len(self._data._data[self._timeframe]["close"])
+
+    def __getitem__(
+        self, key: Union[str, int, slice]
+    ) -> Union[np.ndarray, Optional[Bar], List[Optional[Bar]]]:
+        """
+        Access OHLCV data using dictionary-style key access or get Bar object(s) by index or slice.
+
+        Args:
+            key (Union[str, int, slice]):
+                - If str: The data to access ('open', 'high', 'low', 'close', 'volume')
+                - If int: The index of the Bar to retrieve
+                - If slice: A range of Bars to retrieve
+
+        Returns:
+            Union[np.ndarray, Optional[Bar], List[Optional[Bar]]]:
+                - If str: The requested data as a numpy array
+                - If int: A Bar object or None
+                - If slice: A list of Bar objects (may contain None for missing data)
 
         Raises:
             KeyError: If an invalid string key is provided.
-            TypeError: If the key is neither a string nor an integer.
+            TypeError: If the key is not a string, integer, or slice.
         """
         if isinstance(key, str):
             if key not in self.VALID_KEYS:
@@ -343,9 +361,39 @@ class DataTimeframe:
                 )
             return self._data._data[self._timeframe][key]
         elif isinstance(key, int):
-            return self._data.get_bar(self._timeframe, key)
+            return self._data.get(self._timeframe, index=key)
+        elif isinstance(key, slice):
+            start, stop, step = key.indices(len(self))
+            return [
+                self._data.get(self._timeframe, index=i)
+                for i in range(start, stop, step)
+            ]
         else:
-            raise TypeError("Key must be a string or an integer.")
+            raise TypeError("Key must be a string, integer, or slice.")
+
+    @property
+    def timestamps(self) -> np.ndarray:
+        """Get the timestamp data for this timeframe."""
+        return self._data._timestamps[self._timeframe]
+
+    def __iter__(self):
+        """
+        Iterate over the Bar objects in this timeframe.
+
+        Yields:
+            Bar: The next Bar object in the timeframe.
+        """
+        for i in range(len(self)):
+            yield self[i]
+
+    def __repr__(self) -> str:
+        """
+        Return a string representation of the DataTimeframe object.
+
+        Returns:
+            str: A string representation of the object.
+        """
+        return f"DataTimeframe(symbol={self._data.symbol}, timeframe={self._timeframe}, length={len(self)})"
 
     @property
     def open(self) -> np.ndarray:

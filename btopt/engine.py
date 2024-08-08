@@ -81,9 +81,6 @@ class Engine:
         self._config: Dict[str, Any] = {}
         self._strategy_timeframes: Dict[str, List[Timeframe]] = {}
 
-        # Clear log file
-        clear_log_file()
-
     # region Initialization and Configuration
 
     @property
@@ -430,6 +427,8 @@ class Engine:
             ValueError: If data validation fails.
             Exception: If an error occurs during the backtest.
         """
+        # Clear log file
+        clear_log_file()
 
         if self._is_running:
             logger_main.info("Backtest is already running.", level="warning")
@@ -501,19 +500,15 @@ class Engine:
         # Process order fills
         self._process_order_fills(data_point)
 
-        # Update strategies
-        logger_main.warning(data_point)
-
         for strategy in self._strategies.values():
-            for symbol in self._dataview.symbols:
-                if self._dataview.is_original_data_point(
-                    symbol, strategy.primary_timeframe, timestamp
-                ):
-                    ohlcv_data = data_point[symbol][strategy.primary_timeframe]
-                    bar = self._create_bar(
-                        symbol, strategy.primary_timeframe, ohlcv_data
-                    )
-                    strategy._process_bar(bar)
+            for symbol in strategy.datas:
+                for timeframe in strategy._strategy_timeframes:
+                    if self._dataview.is_original_data_point(
+                        symbol, timeframe, timestamp
+                    ):
+                        ohlcv_data = data_point[symbol][timeframe]
+                        bar = self._create_bar(symbol, timeframe, ohlcv_data)
+                        strategy._process_bar(bar)
 
         # Update portfolio
         self.portfolio.update(timestamp, data_point)

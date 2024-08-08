@@ -30,19 +30,23 @@ class Strategy(ABC):
     ) -> None:
         self._id: str = generate_unique_id()
         self.name: str = name or self._id
-
         self.datas: Dict[str, Data] = {}
-        self.primary_timeframe: Optional[Timeframe] = primary_timeframe
+
+        self._engine: Any = None
+        self._initialized: bool = False
         self._parameters: Parameters = Parameters(parameters or {})
         self._primary_symbol: Optional[str] = None
-        self._initialized: bool = False
-        self._engine: Any = None
+        self._primary_timeframe: Optional[Timeframe] = primary_timeframe
         self._strategy_timeframes: List[Timeframe] = []
-        self._positions: Dict[str, float] = {}
+
         self._pending_orders: List[Order] = []
+        self._positions: Dict[str, float] = {}
         self._open_trades: Dict[str, List[Trade]] = defaultdict(list)
         self._closed_trades: List[Trade] = []
+
         self._max_bars_back: int = 500
+        self._warmup_period: int = 1
+        self._is_warmed = False
 
     # region Initialization and Configuration
 
@@ -56,13 +60,13 @@ class Strategy(ABC):
 
         default_timeframe = min(timeframes)
 
-        if self.primary_timeframe is None:
-            self.primary_timeframe = default_timeframe
-        elif self.primary_timeframe not in timeframes:
+        if self._primary_timeframe is None:
+            self._primary_timeframe = default_timeframe
+        elif self._primary_timeframe not in timeframes:
             logger_main.warning(
-                f"Specified primary timeframe {self.primary_timeframe} not in available timeframes. Using default: {default_timeframe}"
+                f"Specified primary timeframe {self._primary_timeframe} not in available timeframes. Using default: {default_timeframe}"
             )
-            self.primary_timeframe = default_timeframe
+            self._primary_timeframe = default_timeframe
 
         # Create Data objects for each symbol
         for symbol in symbols:
@@ -76,7 +80,7 @@ class Strategy(ABC):
         logger_main.info(f"Initialized strategy: {self.name}")
         logger_main.info(f"Symbols: {symbols}")
         logger_main.info(f"Timeframes: {timeframes}")
-        logger_main.info(f"Primary timeframe: {self.primary_timeframe}")
+        logger_main.info(f"Primary timeframe: {self._primary_timeframe}")
         logger_main.info(f"Primary symbol: {self._primary_symbol}")
 
     # endregion
@@ -106,7 +110,7 @@ class Strategy(ABC):
             logger_main.log_and_raise(
                 StrategyError("No primary symbol set for the strategy.")
             )
-        return self.datas[self._primary_symbol][self.primary_timeframe]
+        return self.datas[self._primary_symbol][self._primary_timeframe]
 
     @property
     def parameters(self) -> Parameters:
@@ -165,18 +169,77 @@ class Strategy(ABC):
 
         logger_main.info(f"Updated max_bars_back to {value}")
 
+    @property
+    def warmup_period(self) -> int:
+        """
+        Get the warmup period for the strategy.
+
+        Returns:
+            int: The current warmup period.
+        """
+        return self._warmup_period
+
+    @warmup_period.setter
+    def warmup_period(self, value: int) -> None:
+        """
+        Set the warmup period for the strategy.
+
+        Args:
+            value (int): The new warmup period.
+
+        Raises:
+            ValueError: If the value is not a positive integer.
+        """
+        if not isinstance(value, int) or value <= 0:
+            logger_main.log_and_raise(
+                ValueError("warmup_period must be a positive integer.")
+            )
+        self._warmup_period = value
+        logger_main.info(f"Updated warmup_period to {value}")
+
+    def _check_warmup_period(self) -> bool:
+        """
+        Check if all timeframes for all symbols have at least warmup_period data points.
+
+        Returns:
+            bool: True if all timeframes have sufficient data, False otherwise.
+        """
+        if self._is_warmed:
+            return True
+
+        for symbol, data in self.datas.items():
+            for timeframe in self._strategy_timeframes:
+                if timeframe not in data.timeframes:
+                    logger_main.warning(
+                        f"Symbol `{symbol}` does not contain any data for the timeframe `{timeframe}`. Available timeframes are {self._strategy_timeframes}"
+                    )
+                    return False
+
+                elif len(data[timeframe]) < self.warmup_period:
+                    logger_main.warning(
+                        f"Insufficient data for `{symbol}` on `{timeframe}` timeframe."
+                    )
+                    return False
+
+        self._is_warmed = True
+        logger_main.warning(f"Strategy {self._id} has warmed up successfully.")
+        return True
+
     def _process_bar(self, bar: Bar) -> None:
         """
         Process a new bar and update the strategy's state.
 
         This method is called by the Engine for each new bar. It updates the strategy's
-        internal data structures and calls the on_bar method for decision making.
+        internal data structures and calls the on_bar method for decision making if
+        the warmup period condition is met.
 
         Args:
             bar (Bar): The new price bar data.
         """
         self.datas[bar.ticker].add_bar(bar)
-        self.on_bar(bar)
+
+        if self._check_warmup_period():
+            self.on_bar(bar)
 
     def get_data_timeframe(self, symbol: str, timeframe: Timeframe) -> DataTimeframe:
         """
@@ -528,7 +591,7 @@ class Strategy(ABC):
         """
         # Example risk limit: no single position can be more than 5% of the account value
         account_value = self._engine.get_account_value()
-        current_price = self.get_data_timeframe(symbol, self.primary_timeframe).close[
+        current_price = self.get_data_timeframe(symbol, self._primary_timeframe).close[
             -1
         ]
         max_position_value = account_value * 0.05
@@ -864,7 +927,7 @@ class Strategy(ABC):
             )
 
         if timeframe is None:
-            timeframe = self.primary_timeframe
+            timeframe = self._primary_timeframe
 
         return len(self.datas[symbol][timeframe].close)
 
@@ -905,7 +968,7 @@ class Strategy(ABC):
         return (
             f"Strategy(name={self.name}, id={self._id}, "
             f"symbols={list(self.datas.keys())}, "
-            f"primary_timeframe={self.primary_timeframe}, "
+            f"primary_timeframe={self._primary_timeframe}, "
             f"positions={self._positions})"
         )
 
@@ -929,6 +992,6 @@ class Strategy(ABC):
                 StrategyError("No primary symbol set for the strategy.")
             )
 
-        return self.get_data_length(self._primary_symbol, self.primary_timeframe)
+        return self.get_data_length(self._primary_symbol, self._primary_timeframe)
 
     # endregion
