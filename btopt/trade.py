@@ -121,10 +121,8 @@ class Trade:
     def close(self, exit_order: Order, exit_bar: Bar) -> None:
         """Closes the trade (fully or partially) with the given exit order and updates relevant information."""
         if exit_order.get_filled_size() > self.current_size:
-            logger_main.log_and_raise(
-                ValueError(
-                    f"Exit order size ({exit_order.get_filled_size()}) exceeds current trade size ({self.current_size})"
-                )
+            logger_main.warning(
+                f"Exit order size ({exit_order.get_filled_size()}) exceeds current trade size ({self.current_size}). Attempting trade reversal."
             )
 
         self.exit_orders.append(exit_order)

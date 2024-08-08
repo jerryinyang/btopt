@@ -74,9 +74,10 @@ class Engine:
 
     def __init__(self):
         self._dataview: DataView = DataView()
-        self.portfolio: Portfolio = Portfolio()
+        self.portfolio: Portfolio = Portfolio(engine=self)
         self._strategies: Dict[str, Strategy] = {}
         self._current_timestamp: Optional[pd.Timestamp] = None
+        self._current_market_data: Optional[Dict[str, Dict[Timeframe, Bar]]] = None
         self._is_running: bool = False
         self._config: Dict[str, Any] = {}
         self._strategy_timeframes: Dict[str, List[Timeframe]] = {}
@@ -241,11 +242,35 @@ class Engine:
             high=Decimal(str(data["high"])),
             low=Decimal(str(data["low"])),
             close=Decimal(str(data["close"])),
-            volume=int(data["volume"]),
+            volume=(data["volume"]),
             timestamp=self._current_timestamp,
             timeframe=timeframe,
             ticker=symbol,
         )
+
+    def _create_bars_data(
+        self,
+        datapoints: Dict[str, Dict[Timeframe, pd.Series]],
+    ) -> Dict[str, Dict[Timeframe, Bar]]:
+        """
+        Convert the data points into bars
+        """
+        bars_data: Dict[str, Dict[Timeframe, Bar]] = {}
+        for symbol, data_point in datapoints.items():
+            bars_data[symbol] = {}
+            # Update all timeframes
+            for timeframe in data_point:
+                ohlcv_data = data_point[timeframe]
+
+                # If the series contains any NaN values, skip this iteration
+                if ohlcv_data.isna().any():
+                    return {}
+
+                bar = self._create_bar(symbol, timeframe, ohlcv_data)
+
+                bars_data[symbol][timeframe] = bar
+
+        return bars_data
 
     def get_data_info(self) -> Dict[str, Any]:
         """
@@ -448,20 +473,28 @@ class Engine:
             self._validate_order_timeframes()
 
             for timestamp, data_point in self._dataview:
+                # Convert data points into Bar objects
+                data_point = self._create_bars_data(data_point)
+
+                # Data point contains missing data
+                if not data_point:
+                    continue
+
                 self._current_timestamp = timestamp
+                self._current_market_data = data_point
                 self._process_timestamp(timestamp, data_point)
 
                 if self._check_termination_condition():
                     break
 
-            self._finalize_backtest()
+            # self._finalize_backtest()
         except Exception as e:
             logger_main.log_and_raise(Exception(f"Error during backtest: {str(e)}"))
         finally:
             self._is_running = False
 
         logger_main.info("Backtest completed.")
-        return self.portfolio.reporter
+        return self.portfolio.initialize_reporter()
 
     def _initialize_backtest(self) -> None:
         """
@@ -484,7 +517,7 @@ class Engine:
     def _process_timestamp(
         self,
         timestamp: pd.Timestamp,
-        data_point: Dict[str, Dict[Timeframe, pd.Series]],
+        data_point: Dict[str, Dict[Timeframe, Bar]],
     ) -> None:
         """
         Process a single timestamp across all symbols and timeframes.
@@ -499,7 +532,7 @@ class Engine:
         # Process order fills
         self._process_order_fills(data_point)
 
-        # For each strategy
+        # Update each strategy datas
         for strategy in self._strategies.values():
             # Load new data for all symbols
             for symbol in strategy.datas:
@@ -508,8 +541,7 @@ class Engine:
                     if self._dataview.is_original_data_point(
                         symbol, timeframe, timestamp
                     ):
-                        ohlcv_data = data_point[symbol][timeframe]
-                        bar = self._create_bar(symbol, timeframe, ohlcv_data)
+                        bar = data_point[symbol][timeframe]
 
                         # Add the bar
                         strategy.datas[bar.ticker].add_bar(bar)
@@ -523,22 +555,12 @@ class Engine:
         # Notify strategies of updates
         self._notify_strategies()
 
-    def _process_order_fills(
-        self, data_point: Dict[str, Dict[Timeframe, pd.Series]]
-    ) -> None:
-        """
-        Process order fills based on current market data.
-
-        This method checks all pending and limit exit orders against the current market data
-        to determine if they should be filled.
-
-        Args:
-            data_point (Dict[str, Dict[Timeframe, pd.Series]]): Current market data for all symbols and timeframes.
-        """
+    def _process_order_fills(self, data_point: Dict[str, Dict[Timeframe, Bar]]) -> None:
         for order in self.portfolio.pending_orders + self.portfolio.limit_exit_orders:
             symbol = order.details.ticker
-            current_price = data_point[symbol][order.details.timeframe]["close"]
-            is_filled, fill_price = order.is_filled(current_price)
+            current_bar = data_point[symbol][order.details.timeframe].close
+
+            is_filled, fill_price = order.is_filled(current_bar)
             if is_filled:
                 executed, trade = self.portfolio.execute_order(order, fill_price)
                 if executed:

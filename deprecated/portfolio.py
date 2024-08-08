@@ -2,15 +2,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
-from .data.bar import Bar
 from .data.timeframe import Timeframe
 from .log_config import logger_main
 from .order import Order, OrderDetails
-from .reporter import Reporter
 from .trade import Trade
-from .types import EngineType
 
 
 class Portfolio:
@@ -29,7 +27,6 @@ class Portfolio:
     - Risk management: Implement margin trading with configurable ratios and margin calls
     - Performance analysis: Calculate key metrics such as total return, Sharpe ratio, and drawdown
     - Multi-strategy support: Track trades and orders for multiple trading strategies
-    - Reporting: Generate comprehensive reports and visualizations using the integrated Reporter class
 
     Attributes:
         initial_capital (Decimal): The starting capital of the portfolio.
@@ -51,8 +48,6 @@ class Portfolio:
         metrics (pd.DataFrame): DataFrame storing portfolio metrics over time.
         peak_equity (Decimal): Highest equity value reached.
         max_drawdown (Decimal): Maximum drawdown experienced.
-        reporter (Reporter): Instance of the Reporter class for generating reports and visualizations.
-        engine (Engine): Instance of the Engine class managing the trading system.
 
     Usage:
         portfolio = Portfolio(initial_capital=Decimal("100000"), commission_rate=Decimal("0.001"))
@@ -69,7 +64,6 @@ class Portfolio:
         pyramiding: int = 1,
         margin_ratio: Decimal = Decimal("0.5"),
         margin_call_threshold: Decimal = Decimal("0.3"),
-        engine: EngineType = None,
     ):
         """
         Initialize the Portfolio with given parameters.
@@ -81,7 +75,6 @@ class Portfolio:
             pyramiding (int): The maximum number of allowed positions per symbol.
             margin_ratio (Decimal): The required margin ratio for trades.
             margin_call_threshold (Decimal): The threshold for triggering a margin call.
-            engine (Engine): The Engine instance managing the trading system.
         """
         self.initial_capital = initial_capital
         self.cash = initial_capital
@@ -90,9 +83,10 @@ class Portfolio:
         self.pyramiding = pyramiding
         self.margin_ratio = margin_ratio
         self.margin_call_threshold = margin_call_threshold
-        self.engine = engine
-        self.positions: Dict[str, Decimal] = {}
-        self.avg_entry_prices: Dict[str, Decimal] = {}
+        self.positions: Dict[str, Decimal] = {}  # Current positions for each symbol
+        self.avg_entry_prices: Dict[
+            str, Decimal
+        ] = {}  # Average entry prices for each symbol
         self.open_trades: Dict[str, List[Trade]] = {}
         self.closed_trades: List[Trade] = []
         self.pending_orders: List[Order] = []
@@ -101,6 +95,7 @@ class Portfolio:
         self.buying_power = initial_capital / margin_ratio
         self.limit_exit_orders: List[Order] = []
 
+        # DataFrame to store portfolio metrics over time
         self.metrics = pd.DataFrame(
             columns=[
                 "timestamp",
@@ -120,88 +115,43 @@ class Portfolio:
         self.updated_orders: List[Order] = []
         self.updated_trades: List[Trade] = []
 
-        self.reporter: Optional[Reporter] = None
-
-    # region Initialization and Configuration
-
-    def initialize_reporter(self) -> None:
-        """
-        Initialize the Reporter instance for this Portfolio.
-        """
-        self.reporter = Reporter(self, self.engine)
-        logger_main.info("Reporter initialized for Portfolio.")
-
-    def set_config(self, config: Dict[str, Any]) -> None:
-        """
-        Set the configuration for the portfolio.
-
-        Args:
-            config (Dict[str, Any]): A dictionary containing configuration parameters.
-        """
-        self.initial_capital = Decimal(
-            str(config.get("initial_capital", self.initial_capital))
-        )
-        self.commission_rate = Decimal(
-            str(config.get("commission_rate", self.commission_rate))
-        )
-        self.slippage = Decimal(str(config.get("slippage", self.slippage)))
-        self.pyramiding = config.get("pyramiding", self.pyramiding)
-        self.margin_ratio = Decimal(str(config.get("margin_ratio", self.margin_ratio)))
-        self.margin_call_threshold = Decimal(
-            str(config.get("margin_call_threshold", self.margin_call_threshold))
-        )
-
-    def reset(self) -> None:
-        """
-        Reset the portfolio to its initial state.
-        """
-        self.__init__(
-            self.initial_capital,
-            self.commission_rate,
-            self.slippage,
-            self.pyramiding,
-            self.margin_ratio,
-            self.margin_call_threshold,
-            self.engine,
-        )
-        logger_main.info("Portfolio reset to initial state.")
-
-    # endregion
-
     # region Portfolio Update and Market Data Processing
 
     def update(
-        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
     ) -> None:
         """
         Update the portfolio state based on the current market data.
 
         Args:
             timestamp (datetime): The current timestamp.
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+            market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
         """
         self._process_pending_orders(timestamp, market_data)
-        self._update_open_trades(market_data)
+        self._update_open_trades(timestamp, market_data)
         self._update_metrics(timestamp, market_data)
-
-        # Clear the Reporter's cache after updating metrics
-        if self.reporter:
-            self.reporter.clear_cache()
 
     def _update_metrics(
         self,
         timestamp: pd.Timestamp,
-        market_data: Dict[str, Dict[Timeframe, Bar]],
+        market_data: Dict[str, Dict[Timeframe, np.ndarray]],
     ) -> None:
+        """
+        Update portfolio metrics based on current market data.
+
+        Args:
+            timestamp (pd.Timestamp): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
+        """
         open_pnl = Decimal("0")
         commission = Decimal("0")
         slippage = Decimal("0")
 
+        # Calculate open P&L, commission, and slippage for all open trades
         for symbol, trades in self.open_trades.items():
-            timeframe = min(market_data[symbol].keys())
-            current_bar = market_data[symbol][timeframe]
+            current_price = market_data[symbol][Timeframe("1m")][3]  # Close price
             for trade in trades:
-                trade.update(current_bar)
+                trade.update(current_price)
                 open_pnl += trade.metrics.pnl
                 commission += trade.metrics.commission
                 slippage += trade.metrics.slippage
@@ -212,43 +162,20 @@ class Portfolio:
         self.max_drawdown = max(self.max_drawdown, drawdown)
         self.peak_equity = max(self.peak_equity, equity)
 
-        new_row = pd.DataFrame(
-            [
-                {
-                    "timestamp": timestamp,
-                    "cash": self.cash,
-                    "equity": equity,
-                    "open_pnl": open_pnl,
-                    "closed_pnl": closed_pnl,
-                    "commission": commission,
-                    "slippage": slippage,
-                    "drawdown": drawdown,
-                    "max_drawdown": self.max_drawdown,
-                }
-            ]
-        )
-
-        self.metrics = pd.concat([self.metrics, new_row], ignore_index=True)
-
-    def _get_current_price(self, symbol: str) -> Decimal:
-        """
-        Get the current price for a symbol.
-
-        Args:
-            symbol (str): The symbol to get the price for.
-
-        Returns:
-            Decimal: The current price of the symbol.
-        """
-        if self.engine and hasattr(self.engine, "_current_market_data"):
-            market_data = self.engine._current_market_data[symbol]
-            current_data = market_data[min(market_data.keys())]
-            if current_data is not None:
-                return Decimal(str(current_data["close"]))
-
-        # If we can't get the current price, use the last known price
-        logger_main.log_and_raise(
-            ValueError(f"Unable to get current price for {symbol} {self.engine}")
+        # Append new row to metrics DataFrame
+        self.metrics = self.metrics.append(
+            {
+                "timestamp": timestamp,
+                "cash": self.cash,
+                "equity": equity,
+                "open_pnl": open_pnl,
+                "closed_pnl": closed_pnl,
+                "commission": commission,
+                "slippage": slippage,
+                "drawdown": drawdown,
+                "max_drawdown": self.max_drawdown,
+            },
+            ignore_index=True,
         )
 
     # endregion
@@ -285,6 +212,7 @@ class Portfolio:
             price=Decimal(str(price)) if price is not None else None,
             exectype=order_type,
             timestamp=datetime.now(),
+            timeframe=kwargs.get("timeframe"),
             **kwargs,
         )
         order = Order(order_id=self._generate_order_id(), details=order_details)
@@ -292,7 +220,7 @@ class Portfolio:
         return order
 
     def execute_order(
-        self, order: Order, execution_price: Decimal, bar: Bar
+        self, order: Order, execution_price: Decimal
     ) -> Tuple[bool, Optional[Trade]]:
         """
         Execute an order and update the portfolio accordingly.
@@ -300,7 +228,6 @@ class Portfolio:
         Args:
             order (Order): The order to execute.
             execution_price (Decimal): The price at which the order is executed.
-            bar (Bar): The current price bar
 
         Returns:
             Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
@@ -313,40 +240,46 @@ class Portfolio:
         cost = execution_price * size
         commission = cost * self.commission_rate
 
+        # Check if there's enough margin to execute the order
         if not self._check_margin_requirements(order, cost):
-            logger_main.info(
+            logger_main.log_and_print(
                 f"Insufficient margin to execute order: {order}", level="warning"
             )
             return False, None
 
         self._update_margin(order, cost)
 
+        # Update cash based on order direction
         if direction == Order.Direction.LONG:
             self.cash -= cost + commission
         else:  # SHORT
             self.cash += cost - commission
 
+        # Update position
         position_change = size if direction == Order.Direction.LONG else -size
         self._update_position(symbol, position_change, execution_price)
 
+        # Handle different order types
         if order.family_role == Order.FamilyRole.PARENT:
-            trade = self._create_or_update_trade(order, execution_price, bar)
+            trade = self._create_or_update_trade(order, execution_price)
+            # Add child orders to the appropriate list
             for child_order in order.children:
                 self.add_pending_order(child_order)
         elif order.family_role == Order.FamilyRole.CHILD_EXIT:
-            trade = self._close_or_reduce_trade(
-                symbol, size, execution_price, order, bar
-            )
+            trade = self._close_or_reduce_trade(symbol, size, execution_price, order)
         else:
-            trade = self._create_or_update_trade(order, execution_price, bar)
+            trade = self._create_or_update_trade(order, execution_price)
 
+        # Update order status
         order.fill(execution_price, datetime.now(), size)
 
         self.updated_orders.append(order)
         if trade:
             self.updated_trades.append(trade)
 
-        logger_main.info(f"Executed order: {order}, resulting trade: {trade}")
+        logger_main.log_and_print(
+            f"Executed order: {order}, resulting trade: {trade}", level="info"
+        )
         return True, trade
 
     def add_pending_order(self, order: Order) -> None:
@@ -364,7 +297,7 @@ class Portfolio:
             self.limit_exit_orders.append(order)
         else:
             self.pending_orders.append(order)
-        logger_main.info(f"Added pending order: {order}")
+        logger_main.log_and_print(f"Added pending order: {order}", level="info")
 
     def cancel_order(self, order: Order) -> bool:
         """
@@ -381,14 +314,15 @@ class Portfolio:
         elif order in self.limit_exit_orders:
             self.limit_exit_orders.remove(order)
         else:
-            logger_main.warning(
+            logger_main.log_and_print(
                 f"Failed to cancel order (not found in pending orders): {order}",
+                level="warning",
             )
             return False
 
         order.status = Order.Status.CANCELED
         self.updated_orders.append(order)
-        logger_main.info(f"Cancelled order: {order}")
+        logger_main.log_and_print(f"Cancelled order: {order}", level="info")
         return True
 
     def modify_order(self, order_id: int, new_details: Dict[str, Any]) -> bool:
@@ -408,9 +342,9 @@ class Portfolio:
                     if hasattr(order.details, key):
                         setattr(order.details, key, value)
                 self.updated_orders.append(order)
-                logger_main.info(f"Modified order: {order}")
+                logger_main.log_and_print(f"Modified order: {order}", level="info")
                 return True
-        logger_main.info(
+        logger_main.log_and_print(
             f"Order with ID {order_id} not found in pending orders.", level="warning"
         )
         return False
@@ -434,137 +368,83 @@ class Portfolio:
             closed_any = True
 
         if closed_any:
-            logger_main.info(
+            logger_main.log_and_print(
                 f"Closed positions for strategy {strategy_id}"
                 + (f" and symbol {symbol}" if symbol else ""),
+                level="info",
             )
         else:
-            logger_main.info(
+            logger_main.log_and_print(
                 f"No positions to close for strategy {strategy_id}"
                 + (f" and symbol {symbol}" if symbol else ""),
+                level="info",
             )
 
         return closed_any
 
-    def close_all_positions(self, current_timestamp: datetime) -> None:
-        """
-        Close all open positions in the portfolio.
-
-        Args:
-            current_timestamp (datetime): The current timestamp to use for closing trades.
-        """
-        symbols_to_close = list(self.open_trades.keys())
-
-        for symbol in symbols_to_close:
-            trades_to_close = self.open_trades[symbol][:]  # Create a copy of the list
-            for trade in trades_to_close:
-                current_price = self._get_current_price(symbol)
-                self.close_trade(trade, current_price)
-
-        logger_main.info("Closed all open positions.")
-
-    def _get_open_trades(
-        self, strategy_id: str, symbol: Optional[str] = None
+    def get_closed_trades(
+        self, strategy_id: Optional[str] = None, symbol: Optional[str] = None
     ) -> List[Trade]:
         """
-        Get open trades for a specific strategy and/or symbol.
+        Get closed trades filtered by strategy ID and/or symbol.
 
         Args:
-            strategy_id (str): The ID of the strategy.
-            symbol (Optional[str]): The symbol to filter trades for. If None, return all open trades.
+            strategy_id (Optional[str]): The strategy ID to filter by.
+            symbol (Optional[str]): The symbol to filter by.
 
         Returns:
-            List[Trade]: A list of open trades matching the criteria.
+            List[Trade]: A list of closed trades matching the filter criteria.
         """
-        trades = []
-        for sym, trade_list in self.open_trades.items():
-            if symbol is None or sym == symbol:
-                trades.extend([t for t in trade_list if t.strategy_id == strategy_id])
-        return trades
+        return [
+            trade
+            for trade in self.closed_trades
+            if (strategy_id is None or trade.strategy_id == strategy_id)
+            and (symbol is None or trade.ticker == symbol)
+        ]
 
-    def close_trade(self, trade: Trade, current_price: Decimal) -> None:
+    def get_pending_orders(
+        self, strategy_id: Optional[str] = None, symbol: Optional[str] = None
+    ) -> List[Order]:
         """
-        Close a specific trade.
+        Get pending orders filtered by strategy ID and/or symbol.
 
         Args:
-            trade (Trade): The trade to close.
-            current_price (Decimal): The current market price to close the trade at.
+            strategy_id (Optional[str]): The strategy ID to filter by.
+            symbol (Optional[str]): The symbol to filter by.
+
+        Returns:
+            List[Order]: A list of pending orders matching the filter criteria.
         """
-        trade.close(None, current_price)
-        if trade.ticker in self.open_trades:
-            self.open_trades[trade.ticker].remove(trade)
-            if not self.open_trades[trade.ticker]:
-                del self.open_trades[trade.ticker]
-        self.closed_trades.append(trade)
-        self._update_position(trade.ticker, -trade.current_size, current_price)
-        logger_main.info(f"Closed trade: {trade}")
+        return [
+            order
+            for order in self.pending_orders
+            if (strategy_id is None or order.details.strategy_id == strategy_id)
+            and (symbol is None or order.details.ticker == symbol)
+        ]
 
-    def _process_pending_orders(
-        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
-    ) -> None:
-        orders_to_process: List[Order] = (
-            self.pending_orders[:] + self.limit_exit_orders[:]
-        )
+    def get_updated_orders(self) -> List[Order]:
+        """
+        Get and clear the list of updated orders.
 
-        for order in orders_to_process:
-            symbol = order.details.ticker
-            timeframe = order.details.timeframe
+        Returns:
+            List[Order]: A list of orders that have been updated since the last call.
+        """
+        updated = self.updated_orders.copy()
+        self.updated_orders.clear()
+        return updated
 
-            # Handle case where order timeframe is None
-            if timeframe is None:
-                available_timeframes = list(market_data[symbol].keys())
-                if not available_timeframes:
-                    logger_main.warning(
-                        f"No market data available for symbol {symbol}. Skipping order processing.",
-                    )
-                    continue
-                timeframe = min(available_timeframes)
-                logger_main.warning(
-                    f"Order for {symbol} has no timeframe. Using lowest available: {timeframe}",
-                )
+    def get_updated_trades(self) -> List[Trade]:
+        """
+        Get and clear the list of updated trades.
 
-            try:
-                current_bar = market_data[symbol][timeframe]
-            except KeyError:
-                logger_main.warning(
-                    f"No market data for {symbol} at timeframe {timeframe}. Skipping order.",
-                )
-                continue
+        Returns:
+            List[Trade]: A list of trades that have been updated since the last call.
+        """
+        updated = self.updated_trades.copy()
+        self.updated_trades.clear()
+        return updated
 
-            is_filled, fill_price = order.is_filled(current_bar)
-            if is_filled:
-                executed, trade = self.execute_order(order, fill_price, current_bar)
-                if executed:
-                    self._remove_executed_order(order)
-                    self.updated_orders.append(order)
-                    if trade:
-                        self.updated_trades.append(trade)
-            elif order.is_expired(timestamp):
-                self._cancel_expired_order(order)
-
-        # Check for margin call after processing orders
-        if self._check_margin_call():
-            self._handle_margin_call()
-
-    def _remove_executed_order(self, order: Order) -> None:
-        """Remove an executed order from the appropriate list."""
-        if order in self.pending_orders:
-            self.pending_orders.remove(order)
-        elif order in self.limit_exit_orders:
-            self.limit_exit_orders.remove(order)
-
-    def _cancel_expired_order(self, order: Order) -> None:
-        """Cancel an expired order and update its status."""
-        self._remove_executed_order(order)
-        order.status = Order.Status.CANCELED
-        self.updated_orders.append(order)
-        logger_main.info(
-            f"Order {order.id} for {order.details.ticker} has expired and been canceled.",
-        )
-
-    def _update_position(
-        self, symbol: str, position_change: Decimal, price: Decimal
-    ) -> None:
+    def _update_position(self, symbol: str, position_change: Decimal, price: Decimal):
         """
         Update position and average entry price for a symbol.
 
@@ -579,6 +459,7 @@ class Portfolio:
         if current_position == Decimal("0"):
             self.avg_entry_prices[symbol] = price
         else:
+            # Calculate new average entry price
             current_value = current_position * self.avg_entry_prices[symbol]
             new_value = abs(position_change) * price
             self.avg_entry_prices[symbol] = (current_value + new_value) / abs(
@@ -591,23 +472,148 @@ class Portfolio:
             del self.positions[symbol]
             del self.avg_entry_prices[symbol]
 
-    def _update_open_trades(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
+    def _update_open_trades(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
+    ) -> None:
+        """
+        Update all open trades based on current market data.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
+        """
         for symbol, trades in self.open_trades.items():
-            timeframe = min(market_data[symbol].keys())
-            current_bar = market_data[symbol][timeframe]
+            current_price = market_data[symbol][Timeframe("1m")][3]  # Close price
             for trade in trades:
-                trade.update(current_bar)
+                trade.update(current_price)
                 self.updated_trades.append(trade)
 
-    def _create_or_update_trade(
-        self, order: Order, execution_price: Decimal, bar: Bar
-    ) -> Trade:
+    def _process_pending_orders(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
+    ) -> List[Tuple[Order, bool, Optional[Trade]]]:
+        """
+        Process all pending orders based on the current market data.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
+
+        Returns:
+            List[Tuple[Order, bool, Optional[Trade]]]: A list of tuples containing the processed order,
+            a boolean indicating if it was executed, and the resulting trade (if any).
+        """
+        results = []
+
+        # Process regular pending orders
+        results.extend(
+            self._process_order_list(self.pending_orders, timestamp, market_data)
+        )
+
+        # Process limit exit orders
+        results.extend(
+            self._process_order_list(self.limit_exit_orders, timestamp, market_data)
+        )
+
+        return results
+
+    def _process_order_list(
+        self,
+        order_list: List[Order],
+        timestamp: datetime,
+        market_data: Dict[str, Dict[Timeframe, np.ndarray]],
+    ) -> List[Tuple[Order, bool, Optional[Trade]]]:
+        """
+        Process a list of orders based on the current market data.
+
+        Args:
+            order_list (List[Order]): The list of orders to process.
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
+
+        Returns:
+            List[Tuple[Order, bool, Optional[Trade]]]: A list of tuples containing the processed order,
+            a boolean indicating if it was executed, and the resulting trade (if any).
+        """
+        results = []
+        for order in order_list[:]:  # Create a copy to iterate over
+            symbol = order.details.ticker
+            current_price = market_data[symbol][order.details.timeframe][
+                3
+            ]  # Close price
+            is_filled, fill_price = order.is_filled(current_price)
+            if is_filled:
+                executed, trade = self.execute_order(order, fill_price)
+                results.append((order, executed, trade))
+                order_list.remove(order)
+            elif order.is_expired(timestamp):
+                order_list.remove(order)
+                results.append((order, False, None))
+
+        return results
+
+    def _check_order_fill(
+        self, order: Order, current_price: Decimal
+    ) -> Tuple[bool, Optional[Decimal]]:
+        """
+        Check if an order should be filled based on current price and order type.
+
+        Args:
+            order (Order): The order to check.
+            current_price (Decimal): The current market price.
+
+        Returns:
+            Tuple[bool, Optional[Decimal]]: A tuple containing a boolean indicating if the order should be filled,
+            and the fill price (if applicable).
+        """
+        if order.details.exectype == Order.ExecType.MARKET:
+            return True, self._apply_slippage(current_price, order.details.size)
+
+        if order.details.exectype == Order.ExecType.LIMIT:
+            if (
+                order.details.direction == Order.Direction.LONG
+                and current_price <= order.details.price
+            ) or (
+                order.details.direction == Order.Direction.SHORT
+                and current_price >= order.details.price
+            ):
+                return True, order.details.price
+
+        if order.details.exectype == Order.ExecType.STOP:
+            if (
+                order.details.direction == Order.Direction.LONG
+                and current_price >= order.details.price
+            ) or (
+                order.details.direction == Order.Direction.SHORT
+                and current_price <= order.details.price
+            ):
+                return True, current_price
+
+        return False, None
+
+    def _apply_slippage(self, price: Decimal, size: Decimal) -> Decimal:
+        """
+        Apply slippage to the given price based on order size and volatility.
+
+        Args:
+            price (Decimal): The original price.
+            size (Decimal): The order size.
+
+        Returns:
+            Decimal: The price after applying slippage.
+        """
+        # This is a simplified slippage model. You might want to implement a more sophisticated one.
+        slippage_factor = self.slippage * (
+            1 + (size / Decimal("10000"))
+        )  # Adjust based on your typical order sizes
+        return price * (1 + slippage_factor)
+
+    def _create_or_update_trade(self, order: Order, execution_price: Decimal) -> Trade:
         """
         Create a new trade or update existing one based on the executed order.
 
         Args:
             order (Order): The executed order.
-            bar (Bar): The price at which the order was
+            execution_price (Decimal): The price at which the order was executed.
 
         Returns:
             Trade: The created or updated trade.
@@ -628,20 +634,13 @@ class Portfolio:
             and self.positions.get(symbol, Decimal("0")) > Decimal("0")
         ):
             # This is a closing or reducing order
-            return self._close_or_reduce_trade(
-                symbol, size, execution_price, order, bar
-            )
+            return self._close_or_reduce_trade(symbol, size, execution_price, order)
         else:
             # This is a new or increasing position order
-            return self._open_or_increase_trade(symbol, order, bar)
+            return self._open_or_increase_trade(symbol, size, execution_price, order)
 
     def _close_or_reduce_trade(
-        self,
-        symbol: str,
-        size: Decimal,
-        execution_price: Decimal,
-        order: Order,
-        bar: Bar,
+        self, symbol: str, size: Decimal, price: Decimal, order: Order
     ) -> Trade:
         """
         Close or reduce an existing trade.
@@ -649,13 +648,13 @@ class Portfolio:
         Args:
             symbol (str): The symbol of the trade.
             size (Decimal): The size to close or reduce.
-            execution_price (Decimal): The price at which to close or reduce the trade.
+            price (Decimal): The price at which to close or reduce the trade.
             order (Order): The order associated with this action.
 
         Returns:
             Trade: The last affected trade.
         """
-        remaining_size = size  # Size of the
+        remaining_size = size
         closed_trades = []
 
         for trade in self.open_trades[symbol]:
@@ -664,12 +663,12 @@ class Portfolio:
 
             if remaining_size >= trade.current_size:
                 # Fully close this trade
-                trade.close(order, bar)
+                trade.close(order, price)
                 closed_trades.append(trade)
                 remaining_size -= trade.current_size
             else:
                 # Partially close this trade
-                trade.close(order, bar)
+                trade.close(order, price, remaining_size)
                 remaining_size = Decimal("0")
 
         # Remove closed trades from open trades
@@ -679,22 +678,31 @@ class Portfolio:
         self.closed_trades.extend(closed_trades)
 
         if remaining_size > Decimal("0"):
-            # Update the order size
-            order.filled_size = Decimal(remaining_size)
-            order.fill_price = order.filled_size * execution_price
-
             # If there's remaining size, it means we've reversed the position
-            return self._open_or_increase_trade(symbol, order, bar)
+            return self._open_or_increase_trade(symbol, remaining_size, price, order)
         else:
             return closed_trades[-1] if closed_trades else None
 
-    def _open_or_increase_trade(self, symbol: str, order: Order, bar: Bar) -> Trade:
-        self.trade_count += 1
+    def _open_or_increase_trade(
+        self, symbol: str, size: Decimal, price: Decimal, order: Order
+    ) -> Trade:
+        """
+        Open a new trade or increase an existing one.
 
+        Args:
+            symbol (str): The symbol of the trade.
+            size (Decimal): The size of the trade.
+            price (Decimal): The price at which to open or increase the trade.
+            order (Order): The order associated with this action.
+
+        Returns:
+            Trade: The newly created or updated trade.
+        """
+        self.trade_count += 1
         trade = Trade(
-            trade_id=self.trade_count,
-            entry_order=order,
-            entry_bar=bar,
+            self.trade_count,
+            order,
+            price,
             commission_rate=self.commission_rate,
         )
         self.open_trades[symbol].append(trade)
@@ -749,10 +757,9 @@ class Portfolio:
             bool: True if a margin call should be triggered, False otherwise.
         """
         equity = self.calculate_equity()
-        if self.margin_used:
-            if equity / self.margin_used < self.margin_call_threshold:
-                logger_main.info("Margin call triggered!", level="warning")
-                return True
+        if equity / self.margin_used < self.margin_call_threshold:
+            logger_main.log_and_print("Margin call triggered!", level="warning")
+            return True
         return False
 
     def _handle_margin_call(self) -> None:
@@ -760,6 +767,7 @@ class Portfolio:
         Handle a margin call by closing positions until margin requirements are met.
         """
         while self._check_margin_call() and self.open_trades:
+            # Close the largest open trade
             largest_trade = max(
                 (trade for trades in self.open_trades.values() for trade in trades),
                 key=lambda t: abs(t.current_size * t.entry_price),
@@ -777,20 +785,29 @@ class Portfolio:
         Returns:
             Dict[str, Any]: A dictionary containing performance metrics.
         """
-        if not self.reporter:
-            self.initialize_reporter()
-        return self.reporter.generate_performance_summary()
+        total_return = self.calculate_total_return()
+        sharpe_ratio = self.calculate_sharpe_ratio()
+        max_drawdown = self.get_max_drawdown()
+        win_rate = self.calculate_win_rate()
+        profit_factor = self.calculate_profit_factor()
 
-    def get_trade_history(self) -> pd.DataFrame:
+        return {
+            "total_return": total_return,
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown": max_drawdown,
+            "win_rate": win_rate,
+            "profit_factor": profit_factor,
+            "total_trades": len(self.closed_trades),
+        }
+
+    def get_trade_history(self) -> List[Dict[str, Any]]:
         """
         Get the complete trade history.
 
         Returns:
-            pd.DataFrame: A DataFrame containing the trade history.
+            List[Dict[str, Any]]: A list of dictionaries, each representing a trade.
         """
-        if not self.reporter:
-            self.initialize_reporter()
-        return self.reporter.generate_trade_history_report()
+        return [trade.to_dict() for trade in self.closed_trades]
 
     def get_equity_curve(self) -> pd.DataFrame:
         """
@@ -801,193 +818,83 @@ class Portfolio:
         """
         return self.metrics[["timestamp", "equity"]]
 
-    def get_drawdown_curve(self) -> pd.DataFrame:
+    def calculate_total_return(self) -> Decimal:
         """
-        Get the drawdown curve data.
+        Calculate the total return of the portfolio.
 
         Returns:
-            pd.DataFrame: A DataFrame containing the drawdown curve data.
+            Decimal: The total return as a percentage.
         """
-        if not self.reporter:
-            self.initialize_reporter()
-        equity_curve = self.get_equity_curve()
-        equity_curve["Drawdown"] = self.reporter.calculate_max_drawdown()
-        return equity_curve[["timestamp", "Drawdown"]]
+        final_equity = self.calculate_equity()
+        return (final_equity - self.initial_capital) / self.initial_capital * 100
 
-    def get_position_history(self, symbol: str) -> pd.DataFrame:
+    def calculate_sharpe_ratio(
+        self, risk_free_rate: Decimal = Decimal("0.02")
+    ) -> Decimal:
         """
-        Get the position history for a specific symbol.
+        Calculate the Sharpe ratio of the portfolio.
 
         Args:
-            symbol (str): The symbol to get the position history for.
+            risk_free_rate (Decimal): The risk-free rate, default is 2%.
 
         Returns:
-            pd.DataFrame: A DataFrame containing the position history.
+            Decimal: The calculated Sharpe ratio.
         """
-        position_history = []
-        for timestamp, equity in zip(self.metrics["timestamp"], self.metrics["equity"]):
-            position_history.append(
-                {"timestamp": timestamp, "size": self.positions.get(symbol, 0)}
-            )
-        return pd.DataFrame(position_history)
+        if len(self.metrics) < 2:
+            return Decimal("0")
 
-    def generate_report(
-        self, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None
-    ) -> Dict[str, Any]:
+        returns = self.metrics["equity"].pct_change().dropna()
+        excess_returns = returns - (
+            risk_free_rate / 252
+        )  # Assuming daily returns and 252 trading days
+        sharpe_ratio = np.sqrt(252) * excess_returns.mean() / excess_returns.std()
+
+        return Decimal(str(sharpe_ratio))
+
+    def get_max_drawdown(self) -> Decimal:
         """
-        Generate a comprehensive report using the Reporter.
-
-        Args:
-            start_date (Optional[datetime]): The start date for the report.
-            end_date (Optional[datetime]): The end date for the report.
+        Get the maximum drawdown experienced by the portfolio.
 
         Returns:
-            Dict[str, Any]: A dictionary containing the comprehensive report.
+            Decimal: The maximum drawdown as a percentage.
         """
-        if not self.reporter:
-            self.initialize_reporter()
-        return self.reporter.generate_comprehensive_report(start_date, end_date)
+        return self.max_drawdown / self.peak_equity * 100
 
-    def plot_equity_curve(self) -> None:
+    def calculate_win_rate(self) -> Decimal:
         """
-        Plot the equity curve using the Reporter.
-        """
-        if not self.reporter:
-            self.initialize_reporter()
-        self.reporter.plot_equity_curve()
-
-    def plot_drawdown_curve(self) -> None:
-        """
-        Plot the drawdown curve using the Reporter.
-        """
-        if not self.reporter:
-            self.initialize_reporter()
-        self.reporter.plot_drawdown_curve()
-
-    def plot_return_distribution(self) -> None:
-        """
-        Plot the return distribution using the Reporter.
-        """
-        if not self.reporter:
-            self.initialize_reporter()
-        self.reporter.plot_return_distribution()
-
-    def export_report_to_csv(self, filename: str) -> None:
-        """
-        Export the trade history report to a CSV file using the Reporter.
-
-        Args:
-            filename (str): The name of the file to export to.
-        """
-        if not self.reporter:
-            self.initialize_reporter()
-        trade_history = self.reporter.generate_trade_history_report()
-        self.reporter.export_to_csv(trade_history, filename)
-
-    def export_report_to_excel(self, filename: str) -> None:
-        """
-        Export various reports to an Excel file using the Reporter.
-
-        Args:
-            filename (str): The name of the file to export to.
-        """
-        if not self.reporter:
-            self.initialize_reporter()
-        data = {
-            "Performance Summary": pd.DataFrame(
-                [self.reporter.generate_performance_summary()]
-            ),
-            "Trade History": self.reporter.generate_trade_history_report(),
-            "Position Report": self.reporter.generate_position_report(),
-            "Risk Report": pd.DataFrame([self.reporter.generate_risk_report()]),
-        }
-        self.reporter.export_to_excel(data, filename)
-
-    # endregion
-
-    # region Utility Methods
-
-    def calculate_equity(self) -> Decimal:
-        """
-        Calculate the total portfolio equity.
+        Calculate the win rate of closed trades.
 
         Returns:
-            Decimal: The total portfolio equity.
+            Decimal: The win rate as a percentage.
         """
-        open_pnl = sum(
-            trade.metrics.pnl
-            for trades in self.open_trades.values()
-            for trade in trades
+        if not self.closed_trades:
+            return Decimal("0")
+
+        winning_trades = sum(1 for trade in self.closed_trades if trade.metrics.pnl > 0)
+        return Decimal(winning_trades) / Decimal(len(self.closed_trades)) * 100
+
+    def calculate_profit_factor(self) -> Decimal:
+        """
+        Calculate the profit factor of the portfolio.
+
+        Returns:
+            Decimal: The profit factor.
+        """
+        total_profit = sum(
+            trade.metrics.pnl for trade in self.closed_trades if trade.metrics.pnl > 0
         )
-        closed_pnl = sum(trade.metrics.pnl for trade in self.closed_trades)
-        return self.cash + open_pnl + closed_pnl
+        total_loss = abs(
+            sum(
+                trade.metrics.pnl
+                for trade in self.closed_trades
+                if trade.metrics.pnl < 0
+            )
+        )
 
-    def get_account_value(self) -> Decimal:
-        """
-        Get the current total account value (equity).
+        if total_loss == 0:
+            return Decimal("inf") if total_profit > 0 else Decimal("0")
 
-        Returns:
-            Decimal: The current account value.
-        """
-        return self.calculate_equity()
-
-    def get_position_size(self, symbol: str) -> Decimal:
-        """
-        Get the current position size for a given symbol.
-
-        Args:
-            symbol (str): The symbol to check.
-
-        Returns:
-            Decimal: The current position size. Positive for long positions, negative for short positions.
-        """
-        return self.positions.get(symbol, Decimal("0"))
-
-    def get_available_margin(self) -> Decimal:
-        """
-        Get the available margin for new trades.
-
-        Returns:
-            Decimal: The available margin.
-        """
-        return self.buying_power
-
-    def get_open_trades(self) -> List[Trade]:
-        """
-        Get all open trades.
-
-        Returns:
-            List[Trade]: A list of all open trades.
-        """
-        return [trade for trades in self.open_trades.values() for trade in trades]
-
-    def get_closed_trades(self) -> List[Trade]:
-        """
-        Get all closed trades.
-
-        Returns:
-            List[Trade]: A list of all closed trades.
-        """
-        return self.closed_trades
-
-    def get_trades_for_strategy(self, strategy_id: str) -> List[Trade]:
-        """
-        Get all trades for a specific strategy.
-
-        Args:
-            strategy_id (str): The ID of the strategy.
-
-        Returns:
-            List[Trade]: A list of Trade objects associated with the strategy.
-        """
-        return [
-            trade for trade in self.closed_trades if trade.strategy_id == strategy_id
-        ] + [
-            trade
-            for trades in self.open_trades.values()
-            for trade in trades
-            if trade.strategy_id == strategy_id
-        ]
+        return total_profit / total_loss
 
     def get_portfolio_state(self) -> Dict[str, Any]:
         """
@@ -1010,6 +917,127 @@ class Portfolio:
             "buying_power": self.buying_power,
             "margin_ratio": self.margin_ratio,
         }
+
+    def get_trades_for_strategy(self, strategy_id: str) -> List[Trade]:
+        """
+        Get all trades for a specific strategy.
+
+        Args:
+            strategy_id (str): The ID of the strategy.
+
+        Returns:
+            List[Trade]: A list of Trade objects associated with the strategy.
+        """
+        return [
+            trade for trade in self.closed_trades if trade.strategy_id == strategy_id
+        ] + [
+            trade
+            for trades in self.open_trades.values()
+            for trade in trades
+            if trade.strategy_id == strategy_id
+        ]
+
+    def get_account_value(self) -> Decimal:
+        """
+        Get the current total account value (equity).
+
+        Returns:
+            Decimal: The current account value.
+        """
+        return self.calculate_equity()
+
+    def get_position_size(self, symbol: str) -> Decimal:
+        """
+        Get the current position size for a given symbol.
+
+        Args:
+            symbol (str): The symbol to check.
+
+        Returns:
+            Decimal: The current position size. Positive for long positions, negative for short positions.
+        """
+        if symbol in self.open_trades:
+            return sum(trade.current_size for trade in self.open_trades[symbol])
+        return Decimal("0")
+
+    def get_available_margin(self) -> Decimal:
+        """
+        Get the available margin for new trades.
+
+        Returns:
+            Decimal: The available margin.
+        """
+        return self.buying_power
+
+    # endregion
+
+    # region Utility Methods
+
+    def calculate_equity(self) -> Decimal:
+        """
+        Calculate the total portfolio equity.
+
+        Returns:
+            Decimal: The total portfolio equity.
+        """
+        open_pnl = sum(
+            trade.metrics.pnl
+            for trades in self.open_trades.values()
+            for trade in trades
+        )
+        closed_pnl = sum(trade.metrics.pnl for trade in self.closed_trades)
+        return self.cash + open_pnl + closed_pnl
+
+    def close_all_trades(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, np.ndarray]]
+    ) -> None:
+        """
+        Close all open trades.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, np.ndarray]]): The current market data.
+        """
+        for symbol, trades in list(self.open_trades.items()):
+            current_price = market_data[symbol][Timeframe("1m")][3]  # Close price
+            for trade in trades[:]:
+                self.close_trade(trade, current_price)
+        logger_main.log_and_print("Closed all open trades.", level="info")
+
+    def set_config(self, config: Dict[str, Any]) -> None:
+        """
+        Set the configuration for the portfolio.
+
+        Args:
+            config (Dict[str, Any]): A dictionary containing configuration parameters.
+        """
+        self.initial_capital = Decimal(
+            str(config.get("initial_capital", self.initial_capital))
+        )
+        self.commission_rate = Decimal(
+            str(config.get("commission_rate", self.commission_rate))
+        )
+        self.slippage = Decimal(str(config.get("slippage", self.slippage)))
+        self.pyramiding = config.get("pyramiding", self.pyramiding)
+        self.margin_ratio = Decimal(str(config.get("margin_ratio", self.margin_ratio)))
+        self.margin_call_threshold = Decimal(
+            str(config.get("margin_call_threshold", self.margin_call_threshold))
+        )
+        logger_main.log_and_print("Portfolio configuration set.", level="info")
+
+    def reset(self) -> None:
+        """
+        Reset the portfolio to its initial state.
+        """
+        self.__init__(
+            self.initial_capital,
+            self.commission_rate,
+            self.slippage,
+            self.pyramiding,
+            self.margin_ratio,
+            self.margin_call_threshold,
+        )
+        logger_main.log_and_print("Portfolio reset to initial state.", level="info")
 
     def _generate_order_id(self) -> int:
         """

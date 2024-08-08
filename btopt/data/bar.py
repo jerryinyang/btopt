@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from ..log_config import logger_main
 from .timeframe import Timeframe
@@ -50,6 +50,41 @@ class Bar:
 
         # Validate bar data
         self._validate()
+
+    def __getitem__(
+        self, key: Union[str, int]
+    ) -> Union[Decimal, int, datetime, Timeframe, str]:
+        """
+        Access Bar attributes using dictionary-style key access or list-style index access.
+
+        Args:
+            key (Union[str, int]): The key or index to access the attribute.
+                - If str: 'open', 'high', 'low', 'close', 'volume', 'timestamp', 'timeframe', 'ticker', 'index'
+                - If int: 0 (open), 1 (high), 2 (low), 3 (close), 4 (volume)
+
+        Returns:
+            Union[Decimal, int, datetime, Timeframe, str]: The value of the requested attribute.
+
+        Raises:
+            KeyError: If the string key is not a valid attribute.
+            IndexError: If the integer index is out of range.
+            TypeError: If the key is neither a string nor an integer.
+        """
+        if isinstance(key, str):
+            if key in self.__annotations__:
+                return getattr(self, key)
+            else:
+                logger_main.error(f"Invalid key: {key}")
+                raise KeyError(f"'{key}' is not a valid attribute of Bar")
+        elif isinstance(key, int):
+            if 0 <= key <= 4:
+                return [self.open, self.high, self.low, self.close, self.volume][key]
+            else:
+                logger_main.error(f"Index out of range: {key}")
+                raise IndexError("Bar index out of range")
+        else:
+            logger_main.error(f"Invalid key type: {type(key)}")
+            raise TypeError("Bar indices must be integers or strings")
 
     # region Validation
 
@@ -205,7 +240,7 @@ class Bar:
                 high=Decimal(str(data["high"])),
                 low=Decimal(str(data["low"])),
                 close=Decimal(str(data["close"])),
-                volume=int(data["volume"]),
+                volume=(data["volume"]),
                 timestamp=datetime.fromisoformat(data["timestamp"]),
                 timeframe=Timeframe(data["timeframe"]),
                 ticker=data["ticker"],
