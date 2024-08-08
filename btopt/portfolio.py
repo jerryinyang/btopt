@@ -388,9 +388,8 @@ class Portfolio:
         elif order in self.limit_exit_orders:
             self.limit_exit_orders.remove(order)
         else:
-            logger_main.info(
+            logger_main.warning(
                 f"Failed to cancel order (not found in pending orders): {order}",
-                level="warning",
             )
             return False
 
@@ -532,30 +531,22 @@ class Portfolio:
             if timeframe is None:
                 available_timeframes = list(market_data[symbol].keys())
                 if not available_timeframes:
-                    logger_main.info(
+                    logger_main.warning(
                         f"No market data available for symbol {symbol}. Skipping order processing.",
-                        level="warning",
                     )
                     continue
                 timeframe = min(available_timeframes)
-                logger_main.info(
+                logger_main.warning(
                     f"Order for {symbol} has no timeframe. Using lowest available: {timeframe}",
-                    level="warning",
                 )
 
             try:
                 current_price = market_data[symbol][timeframe][3]  # Close price
             except KeyError:
-                logger_main.info(
+                logger_main.warning(
                     f"No market data for {symbol} at timeframe {timeframe}. Skipping order.",
-                    level="warning",
                 )
                 continue
-
-            logger_main.info(
-                f"current_price : {current_price}",
-                level="error",
-            )
 
             is_filled, fill_price = order.is_filled(current_price)
             if is_filled:

@@ -312,9 +312,8 @@ class Engine:
                         f"Converted argument `{arg}` to a Timeframe object `{repr(timeframe)}`"
                     )
                 except Exception as e:
-                    logger_main.info(
+                    logger_main.warning(
                         f"Failed to convert argument `{arg}` to a Timeframe object. Error: {e}",
-                        level="warning",
                     )
 
         # Use default timeframe if none provided
@@ -500,15 +499,23 @@ class Engine:
         # Process order fills
         self._process_order_fills(data_point)
 
+        # For each strategy
         for strategy in self._strategies.values():
+            # Load new data for all symbols
             for symbol in strategy.datas:
+                # Update all timeframes
                 for timeframe in strategy._strategy_timeframes:
                     if self._dataview.is_original_data_point(
                         symbol, timeframe, timestamp
                     ):
                         ohlcv_data = data_point[symbol][timeframe]
                         bar = self._create_bar(symbol, timeframe, ohlcv_data)
-                        strategy._process_bar(bar)
+
+                        # Add the bar
+                        strategy.datas[bar.ticker].add_bar(bar)
+
+            # Run strategy.on_data
+            strategy._on_data()
 
         # Update portfolio
         self.portfolio.update(timestamp, data_point)
@@ -545,9 +552,8 @@ class Engine:
             bool: True if the backtest should be terminated, False otherwise.
         """
         if self.portfolio.calculate_equity() < self._config.get("min_equity", 0):
-            logger_main.info(
+            logger_main.warning(
                 "Portfolio value dropped below minimum equity. Terminating backtest.",
-                level="warning",
             )
             return True
         return False
@@ -585,9 +591,8 @@ class Engine:
         for order in self.portfolio.pending_orders + self.portfolio.limit_exit_orders:
             if order.details.timeframe is None:
                 order.details.timeframe = self.default_timeframe
-                logger_main.info(
+                logger_main.warning(
                     f"Updated order {order.id} for {order.details.ticker} to use default timeframe {self.default_timeframe}",
-                    level="warning",
                 )
 
     # endregion
@@ -626,9 +631,8 @@ class Engine:
         # Use the default timeframe if not provided in kwargs
         if ("timeframe" not in kwargs) or kwargs["timeframe"] is None:
             kwargs["timeframe"] = self.default_timeframe
-            logger_main.info(
+            logger_main.warning(
                 f"Using default timeframe {self.default_timeframe} for order on {symbol}",
-                level="warning",
             )
 
         parent_order = self.portfolio.create_order(
@@ -697,9 +701,8 @@ class Engine:
             bool: True if the order was successfully cancelled, False otherwise.
         """
         if order.details.strategy_id != strategy_id:
-            logger_main.info(
+            logger_main.warning(
                 f"Strategy {strategy_id} attempted to cancel an order it didn't create.",
-                level="warning",
             )
             return False
 

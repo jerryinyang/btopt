@@ -112,9 +112,8 @@ class DataView:
         # Handle existing data
         if timeframe in self.data[symbol]:
             if overwrite:
-                logger_main.info(
+                logger_main.warning(
                     f"Overwriting existing data for {symbol} at {timeframe} timeframe.",
-                    level="warning",
                 )
                 self.data[symbol][timeframe] = df
             else:
@@ -519,9 +518,8 @@ class DataView:
             pd.DataFrame: A DataFrame containing the requested market data.
         """
         if symbol not in self.data or timeframe not in self.data[symbol]:
-            logger_main.info(
+            logger_main.warning(
                 f"No data available for symbol {symbol} and timeframe {timeframe}",
-                level="warning",
             )
             return pd.DataFrame()
 

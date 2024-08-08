@@ -1,14 +1,15 @@
 import uuid
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-from ..data.bar import Bar
 from ..data.timeframe import Timeframe
+from ..indicator.indicator import Indicator
 from ..log_config import logger_main
 from ..order import Order
 from ..parameters import Parameters
 from ..trade import Trade
+from ..util.metaclasses import PreInitABCMeta
 from .helper import Data, DataTimeframe
 
 
@@ -21,18 +22,21 @@ def generate_unique_id() -> str:
     return str(uuid.uuid4())
 
 
-class Strategy(ABC):
+class Strategy(metaclass=PreInitABCMeta):
     def __init__(
         self,
         name: Optional[str] = None,
         primary_timeframe: Optional[Timeframe] = None,
         parameters: Optional[Dict[str, Any]] = None,
+        *args,
+        **kwargs,
     ) -> None:
         self._id: str = generate_unique_id()
         self.name: str = name or self._id
         self.datas: Dict[str, Data] = {}
 
         self._engine: Any = None
+        self._indicators: Dict[str, Indicator] = {}
         self._initialized: bool = False
         self._parameters: Parameters = Parameters(parameters or {})
         self._primary_symbol: Optional[str] = None
@@ -46,7 +50,9 @@ class Strategy(ABC):
 
         self._max_bars_back: int = 500
         self._warmup_period: int = 1
-        self._is_warmed = False
+        self._is_warmup_complete = False
+
+        self._base_init_called = True
 
     # region Initialization and Configuration
 
@@ -204,42 +210,23 @@ class Strategy(ABC):
         Returns:
             bool: True if all timeframes have sufficient data, False otherwise.
         """
-        if self._is_warmed:
+        if self._is_warmup_complete:
             return True
 
         for symbol, data in self.datas.items():
             for timeframe in self._strategy_timeframes:
                 if timeframe not in data.timeframes:
                     logger_main.warning(
-                        f"Symbol `{symbol}` does not contain any data for the timeframe `{timeframe}`. Available timeframes are {self._strategy_timeframes}"
+                        f"Timeframe `{repr(timeframe)}` was not found for symbol `{symbol}`. Available timeframes are {self._strategy_timeframes}"
                     )
                     return False
 
                 elif len(data[timeframe]) < self.warmup_period:
-                    logger_main.warning(
-                        f"Insufficient data for `{symbol}` on `{timeframe}` timeframe."
-                    )
                     return False
 
-        self._is_warmed = True
-        logger_main.warning(f"Strategy {self._id} has warmed up successfully.")
+        self._is_warmup_complete = True
+        logger_main.info(f"Strategy {self._id} warm up is complete.")
         return True
-
-    def _process_bar(self, bar: Bar) -> None:
-        """
-        Process a new bar and update the strategy's state.
-
-        This method is called by the Engine for each new bar. It updates the strategy's
-        internal data structures and calls the on_bar method for decision making if
-        the warmup period condition is met.
-
-        Args:
-            bar (Bar): The new price bar data.
-        """
-        self.datas[bar.ticker].add_bar(bar)
-
-        if self._check_warmup_period():
-            self.on_bar(bar)
 
     def get_data_timeframe(self, symbol: str, timeframe: Timeframe) -> DataTimeframe:
         """
@@ -258,6 +245,79 @@ class Strategy(ABC):
         if symbol not in self.datas:
             raise KeyError(f"Symbol {symbol} not found in strategy data.")
         return self.datas[symbol][timeframe]
+
+    def _on_data(self):
+        # Update indicators
+        # for indicator in self._indicators.values():
+        #     indicator.on_data()
+
+        if self._check_warmup_period():
+            self.on_data()
+
+    # endregion
+
+    # region Indicator Management
+    def add_indicator(
+        self, indicator: Type[Indicator], name: str, **kwargs: Any
+    ) -> None:
+        """
+        Add an indicator to the strategy.
+
+        This method creates an instance of the specified indicator and associates it with the strategy.
+
+        Args:
+            indicator (Type[Indicator]): The indicator class to instantiate.
+            name (str): A unique name for the indicator instance.
+            **kwargs: Additional keyword arguments to pass to the indicator constructor.
+
+        Raises:
+            ValueError: If an indicator with the same name already exists.
+        """
+        if name in self._indicators:
+            logger_main.log_and_raise(
+                ValueError(
+                    f"An indicator named '{name}' already exists in this strategy"
+                )
+            )
+
+        if self._primary_symbol is None:
+            logger_main.log_and_raise(
+                ValueError("No primary symbol set for the strategy")
+            )
+
+        indicator_instance = indicator(
+            self.get_data(self._primary_symbol), name=name, **kwargs
+        )
+
+        # Align indicator timeframe with strategy timeframe
+        indicator_instance._align_timeframes(self._primary_timeframe)
+
+        self._indicators[name] = indicator_instance
+        logger_main.info(f"Added indicator '{name}' to strategy '{self.name}'")
+
+    def get_indicator_output(self, indicator_name: str, output_name: str) -> Any:
+        """
+        Get the output of a specific indicator.
+
+        Args:
+            indicator_name (str): The name of the indicator.
+            output_name (str): The name of the output to retrieve.
+
+        Returns:
+            Any: The value of the specified indicator output.
+
+        Raises:
+            KeyError: If the specified indicator does not exist.
+            AttributeError: If the specified output does not exist for the indicator.
+        """
+        if indicator_name not in self._indicators:
+            logger_main.log_and_raise(
+                KeyError(
+                    f"Indicator '{indicator_name}' does not exist in this strategy"
+                )
+            )
+
+        return self._indicators[indicator_name].get_output(output_name)
 
     # endregion
 
@@ -817,7 +877,7 @@ class Strategy(ABC):
     # region Abstract Methods
 
     @abstractmethod
-    def on_bar(self, bar: Bar) -> None:
+    def on_data(self) -> None:
         """
         Handle the arrival of a new price bar.
 
@@ -872,6 +932,11 @@ class Strategy(ABC):
     # endregion
 
     # region Utility Methods
+    def universe_selection(self):
+        """
+        NotImplemented: Filter and sort self.datas based on a rule
+        """
+        pass
 
     def get_data(self, symbol: Optional[str] = None) -> Data:
         """
