@@ -1,7 +1,7 @@
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -12,17 +12,52 @@ from ..log_config import logger_main
 
 
 class Data:
-    """
-    A class to manage market data for a specific symbol across multiple timeframes.
+    """A class to manage market data for a specific symbol across multiple timeframes.
 
     This class provides efficient storage and access to OHLCV (Open, High, Low, Close, Volume)
     data for different timeframes, while maintaining compatibility with Bar objects.
+    It also allows for custom columns to be added and modified.
 
     Attributes:
         symbol (str): The market symbol (e.g., 'EURUSD', 'AAPL') this data represents.
         _max_length (int): The maximum number of data points to store for each timeframe.
         _data (Dict[Timeframe, Dict[str, np.ndarray]]): The internal data storage structure.
         _timestamps (Dict[Timeframe, np.ndarray]): Timestamps for each timeframe.
+        _custom_columns (Dict[Timeframe, Dict[str, np.ndarray]]): Custom columns for each timeframe.
+
+    Example:
+        >>> data = Data(symbol='AAPL', max_length=1000)
+
+        ### Add a new bar
+        >>> new_bar = Bar(open=100, high=105, low=99, close=102, volume=1000000,
+                      timestamp=datetime.now(), timeframe=Timeframe('1h'),
+                      ticker='AAPL')
+        >>> data.add_bar(new_bar)
+
+        ### Access OHLCV data
+        >>> latest_close = data[Timeframe('1h')]['close'][0]
+
+        ### Add and use a custom column
+        >>> data.add_custom_column(Timeframe('1h'), 'my_indicator')
+        >>> data[Timeframe('1h')]['my_indicator'] = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        >>> indicator_value = data[Timeframe('1h')]['my_indicator'][0]
+
+        ### Use the get method
+        >>> latest_bar = data.get(Timeframe('1h'), index=0)
+        >>> custom_values = data.get(Timeframe('1h'), index=0, size=5, value='my_indicator')
+
+        ### Convert to DataFrame
+        >>> df = data[Timeframe('1h')].to_dataframe()
+
+    Note:
+        - Supports multiple timeframes
+        - Maintains a fixed number of data points (max_length)
+        - Compatible with Bar objects
+        - Supports custom columns for indicators or other data
+        - Uses numpy arrays for efficient storage and operations
+        - Allows flexible data access (Bar objects, individual values, or ranges)
+        - Supports conversion to pandas DataFrame
+        - Implements a primary timeframe concept for easy access to the shortest timeframe
     """
 
     def __init__(self, symbol: str, max_length: int = 500):
@@ -41,6 +76,7 @@ class Data:
         self._timestamps: Dict[Timeframe, np.ndarray] = defaultdict(
             lambda: np.array([], dtype="datetime64[ns]")
         )
+        self._custom_columns: Dict[Timeframe, Dict[str, np.ndarray]] = defaultdict(dict)
 
     @staticmethod
     def _create_empty_timeframe_data() -> Dict[str, np.ndarray]:
@@ -81,6 +117,25 @@ class Data:
             )
         )
 
+        # Update custom columns
+        for column, values in self._custom_columns[timeframe].items():
+            self._custom_columns[timeframe][column] = np.concatenate(
+                ([np.nan], values[: self.max_length - 1])
+            )
+
+    def add_custom_column(self, timeframe: Timeframe, name: str) -> None:
+        """
+        Add a new custom column to the specified timeframe.
+
+        Args:
+            timeframe (Timeframe): The timeframe to add the column to.
+            name (str): The name of the new column.
+        """
+        if name in self._data[timeframe] or name in self._custom_columns[timeframe]:
+            logger_main.warning(f"Column '{name}' already exists. Overwriting.")
+
+        self._custom_columns[timeframe][name] = np.full(self._max_length, np.nan)
+
     def get(
         self,
         timeframe: Optional[Timeframe] = None,
@@ -90,27 +145,29 @@ class Data:
     ) -> Union[
         Optional[Bar],
         List[Bar],
-        Optional[Union[Decimal, int]],
-        List[Union[Decimal, int]],
+        Optional[Union[Decimal, int, float]],
+        List[Union[Decimal, int, float]],
     ]:
         """
-        Get Bar object(s) or specific value(s) for a given timeframe and index.
+        Get Bar object(s), specific value(s) for built-in columns, or custom column data for a given timeframe and index.
 
         Args:
             timeframe (Optional[Timeframe], optional): The timeframe to get data for. If None, uses the primary timeframe. Defaults to None.
             index (int, optional): The starting index of the bar to retrieve (0 is the most recent). Defaults to 0.
             size (int, optional): The number of bars to retrieve. Defaults to 1.
-            value (Optional[str], optional): If specified, returns only this attribute of the Bar(s).
-                                            Must be one of 'open', 'high', 'low', 'close', 'volume', 'timestamp', 'timeframe', 'ticker', or 'index'.
+            value (Optional[str], optional): If specified, returns only this attribute of the Bar(s) or custom column.
+                                            Must be one of 'open', 'high', 'low', 'close', 'volume', 'timestamp', 'timeframe', 'ticker', 'index',
+                                            or a custom column name.
                                             Defaults to None (returns full Bar object(s)).
 
         Returns:
-            Union[Optional[Bar], List[Bar], Optional[Union[Decimal, int]], List[Union[Decimal, int]]]:
+            Union[Optional[Bar], List[Bar], Optional[Union[Decimal, int, float]], List[Union[Decimal, int, float]]]:
                 - If value is None:
                     - If size is 1, returns a single Bar object or None if not available.
                     - If size > 1, returns a list of Bar objects (may be shorter than size if not enough data is available).
                 - If value is specified:
-                    - If size is 1, returns the specified value (Decimal for prices, int for volume, or appropriate type for other attributes) or None if not available.
+                    - If size is 1, returns the specified value (Decimal for prices, int for volume, float for custom columns,
+                      or appropriate type for other attributes) or None if not available.
                     - If size > 1, returns a list of the specified values.
 
         Raises:
@@ -133,29 +190,44 @@ class Data:
             "ticker",
             "index",
         }
+        valid_values.update(self._custom_columns[timeframe].keys())
+
         if value and value not in valid_values:
             raise ValueError(
                 f"Invalid value: {value}. Must be one of {', '.join(valid_values)}"
             )
 
         result = []
-        for i in range(index, min(index + size, len(self._data[timeframe]["open"]))):
-            bar = Bar(
-                open=Decimal(str(self._data[timeframe]["open"][i])),
-                high=Decimal(str(self._data[timeframe]["high"][i])),
-                low=Decimal(str(self._data[timeframe]["low"][i])),
-                close=Decimal(str(self._data[timeframe]["close"][i])),
-                volume=int(self._data[timeframe]["volume"][i]),
-                timestamp=self._timestamps[timeframe][i].astype(datetime),
-                timeframe=timeframe,
-                ticker=self.symbol,
-                index=i,
-            )
-
-            if value:
+        for i in range(index, min(index + size, len(self._data[timeframe]["close"]))):
+            if value in self._custom_columns[timeframe]:
+                result.append(self._custom_columns[timeframe][value][i])
+            elif value:
+                bar = Bar(
+                    open=Decimal(str(self._data[timeframe]["open"][i])),
+                    high=Decimal(str(self._data[timeframe]["high"][i])),
+                    low=Decimal(str(self._data[timeframe]["low"][i])),
+                    close=Decimal(str(self._data[timeframe]["close"][i])),
+                    volume=int(self._data[timeframe]["volume"][i]),
+                    timestamp=self._timestamps[timeframe][i].astype(datetime),
+                    timeframe=timeframe,
+                    ticker=self.symbol,
+                    index=i,
+                )
                 result.append(getattr(bar, value))
             else:
-                result.append(bar)
+                result.append(
+                    Bar(
+                        open=Decimal(str(self._data[timeframe]["open"][i])),
+                        high=Decimal(str(self._data[timeframe]["high"][i])),
+                        low=Decimal(str(self._data[timeframe]["low"][i])),
+                        close=Decimal(str(self._data[timeframe]["close"][i])),
+                        volume=int(self._data[timeframe]["volume"][i]),
+                        timestamp=self._timestamps[timeframe][i].astype(datetime),
+                        timeframe=timeframe,
+                        ticker=self.symbol,
+                        index=i,
+                    )
+                )
 
         if size == 1:
             return result[0] if result else None
@@ -190,7 +262,6 @@ class Data:
                 return DataTimeframe(self, key)
             else:
                 return None
-                raise KeyError(f"No data available for timeframe {key}")
         else:
             raise TypeError(
                 f"Invalid key type. Expected int or Timeframe, got {type(key).__name__}"
@@ -303,7 +374,7 @@ class DataTimeframe:
     A class to provide convenient access to market data for a specific timeframe.
 
     This class acts as a view into the Data object, providing easy access to OHLCV data
-    for a particular timeframe.
+    and custom columns for a particular timeframe.
 
     Attributes:
         _data (Data): The parent Data object this view is associated with.
@@ -332,20 +403,18 @@ class DataTimeframe:
         """
         return len(self._data._data[self._timeframe]["close"])
 
-    def __getitem__(
-        self, key: Union[str, int, slice]
-    ) -> Union[np.ndarray, Optional[Bar], List[Optional[Bar]]]:
+    def __getitem__(self, key: Union[str, int, slice]) -> Union[np.ndarray, Any]:
         """
-        Access OHLCV data using dictionary-style key access or get Bar object(s) by index or slice.
+        Access OHLCV data, custom columns, or Bar objects using dictionary-style key access.
 
         Args:
             key (Union[str, int, slice]):
-                - If str: The data to access ('open', 'high', 'low', 'close', 'volume')
+                - If str: The data to access ('open', 'high', 'low', 'close', 'volume', or custom column name)
                 - If int: The index of the Bar to retrieve
                 - If slice: A range of Bars to retrieve
 
         Returns:
-            Union[np.ndarray, Optional[Bar], List[Optional[Bar]]]:
+            Union[np.ndarray, Any]:
                 - If str: The requested data as a numpy array
                 - If int: A Bar object or None
                 - If slice: A list of Bar objects (may contain None for missing data)
@@ -355,21 +424,41 @@ class DataTimeframe:
             TypeError: If the key is not a string, integer, or slice.
         """
         if isinstance(key, str):
-            if key not in self.VALID_KEYS:
+            if key in self.VALID_KEYS:
+                return self._data._data[self._timeframe][key]
+            elif key in self._data._custom_columns[self._timeframe]:
+                return self._data._custom_columns[self._timeframe][key]
+            else:
                 raise KeyError(
-                    f"Invalid key: {key}. Must be one of {', '.join(self.VALID_KEYS)}."
+                    f"Invalid key: {key}. Must be one of {', '.join(self.VALID_KEYS)} or a custom column name."
                 )
-            return self._data._data[self._timeframe][key]
-        elif isinstance(key, int):
+        elif isinstance(key, (int, slice)):
             return self._data.get(self._timeframe, index=key)
-        elif isinstance(key, slice):
-            start, stop, step = key.indices(len(self))
-            return [
-                self._data.get(self._timeframe, index=i)
-                for i in range(start, stop, step)
-            ]
         else:
             raise TypeError("Key must be a string, integer, or slice.")
+
+    def __setitem__(self, key: str, value: np.ndarray) -> None:
+        """
+        Set values for a custom column.
+
+        Args:
+            key (str): The name of the custom column.
+            value (np.ndarray): The values to set for the custom column.
+
+        Raises:
+            KeyError: If trying to set a value for a non-custom column.
+            ValueError: If the length of the value array doesn't match the data length.
+        """
+        if key in self.VALID_KEYS:
+            raise KeyError(f"Cannot modify built-in column '{key}'")
+
+        if key not in self._data._custom_columns[self._timeframe]:
+            self._data.add_custom_column(self._timeframe, key)
+
+        if len(value) != len(self._data._data[self._timeframe]["close"]):
+            raise ValueError("Value length must match the data length")
+
+        self._data._custom_columns[self._timeframe][key] = value
 
     @property
     def timestamps(self) -> np.ndarray:
