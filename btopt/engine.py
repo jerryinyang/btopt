@@ -473,16 +473,13 @@ class Engine:
             self._validate_order_timeframes()
 
             for timestamp, data_point in self._dataview:
-                # Convert data points into Bar objects
-                data_point = self._create_bars_data(data_point)
-
                 # Data point contains missing data
                 if not data_point:
                     continue
 
                 self._current_timestamp = timestamp
-                self._current_market_data = data_point
-                self._process_timestamp(timestamp, data_point)
+                self._current_market_data = self._create_bars_data(data_point)
+                self._process_timestamp(timestamp, self._current_market_data)
 
                 if self._check_termination_condition():
                     break
@@ -519,16 +516,6 @@ class Engine:
         timestamp: pd.Timestamp,
         data_point: Dict[str, Dict[Timeframe, Bar]],
     ) -> None:
-        """
-        Process a single timestamp across all symbols and timeframes.
-
-        This method handles order fills, updates strategies, and manages the portfolio
-        for each timestamp in the backtest.
-
-        Args:
-            timestamp (pd.Timestamp): The current timestamp being processed.
-            data_point (Dict[str, Dict[Timeframe, pd.Series]]): Market data for the current timestamp.
-        """
         # Process order fills
         self._process_order_fills(data_point)
 
@@ -542,6 +529,11 @@ class Engine:
                         symbol, timeframe, timestamp
                     ):
                         bar = data_point[symbol][timeframe]
+
+                        # logger_main.warning(
+                        #     f"\nENGINE: {self._current_timestamp} \nBAR: {bar.timestamp}"
+                        # )
+                        # raise
 
                         # Add the bar
                         strategy.datas[bar.ticker].add_bar(bar)
@@ -653,7 +645,7 @@ class Engine:
         # Use the default timeframe if not provided in kwargs
         if ("timeframe" not in kwargs) or kwargs["timeframe"] is None:
             kwargs["timeframe"] = self.default_timeframe
-            logger_main.warning(
+            logger_main.info(
                 f"Using default timeframe {self.default_timeframe} for order on {symbol}",
             )
 

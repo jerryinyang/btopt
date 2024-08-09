@@ -228,7 +228,10 @@ class Portfolio:
             ]
         )
 
-        self.metrics = pd.concat([self.metrics, new_row], ignore_index=True)
+        if self.metrics.empty:
+            self.metrics = new_row
+        else:
+            self.metrics = pd.concat([self.metrics, new_row], ignore_index=True)
 
     def _get_current_price(self, symbol: str) -> Decimal:
         """

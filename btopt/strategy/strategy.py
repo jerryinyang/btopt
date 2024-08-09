@@ -1023,6 +1023,13 @@ class Strategy(metaclass=PreInitABCMeta):
         """
         self._engine = engine
 
+    def log(self, message: str):
+        timestamp = ""
+        if self._engine:
+            timestamp = f"\n\nDatetime: {self._engine._current_timestamp} | "
+
+        logger_main.warning(timestamp + message)
+
     def __repr__(self) -> str:
         """
         Return a string representation of the Strategy.
