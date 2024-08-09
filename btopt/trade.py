@@ -1,28 +1,45 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from decimal import Decimal
 from enum import Enum
 from typing import List, Optional
 
 from .data.bar import Bar
 from .log_config import logger_main
 from .order import Order
+from .util.decimal import ExtendedDecimal
 
 
 @dataclass
 class TradeMetrics:
     """Dataclass to store various metrics related to a trade."""
 
-    pnl: Decimal = Decimal("0")
-    pnl_percent: Decimal = Decimal("0")
-    realized_pnl: Decimal = Decimal("0")
-    unrealized_pnl: Decimal = Decimal("0")
-    commission: Decimal = Decimal("0")
-    slippage: Decimal = Decimal("0")
-    max_runup: Decimal = Decimal("0")
-    max_runup_percent: Decimal = Decimal("0")
-    max_drawdown: Decimal = Decimal("0")
-    max_drawdown_percent: Decimal = Decimal("0")
+    pnl: ExtendedDecimal = field(default_factory=lambda: ExtendedDecimal("0"))
+    pnl_percent: ExtendedDecimal = field(default_factory=lambda: ExtendedDecimal("0"))
+    realized_pnl: ExtendedDecimal = field(default_factory=lambda: ExtendedDecimal("0"))
+    unrealized_pnl: ExtendedDecimal = field(
+        default_factory=lambda: ExtendedDecimal("0")
+    )
+    commission: ExtendedDecimal = field(default_factory=lambda: ExtendedDecimal("0"))
+    slippage: ExtendedDecimal = field(default_factory=lambda: ExtendedDecimal("0"))
+    max_runup: ExtendedDecimal = field(default_factory=lambda: ExtendedDecimal("0"))
+    max_runup_percent: ExtendedDecimal = field(
+        default_factory=lambda: ExtendedDecimal("0")
+    )
+    max_drawdown: ExtendedDecimal = field(default_factory=lambda: ExtendedDecimal("0"))
+    max_drawdown_percent: ExtendedDecimal = field(
+        default_factory=lambda: ExtendedDecimal("0")
+    )
+
+    # pnl: ExtendedDecimal = ExtendedDecimal("0")
+    # pnl_percent: ExtendedDecimal = ExtendedDecimal("0")
+    # realized_pnl: ExtendedDecimal = ExtendedDecimal("0")
+    # unrealized_pnl: ExtendedDecimal = ExtendedDecimal("0")
+    # commission: ExtendedDecimal = ExtendedDecimal("0")
+    # slippage: ExtendedDecimal = ExtendedDecimal("0")
+    # max_runup: ExtendedDecimal = ExtendedDecimal("0")
+    # max_runup_percent: ExtendedDecimal = ExtendedDecimal("0")
+    # max_drawdown: ExtendedDecimal = ExtendedDecimal("0")
+    # max_drawdown_percent: ExtendedDecimal = ExtendedDecimal("0")
 
 
 class Trade:
@@ -40,24 +57,24 @@ class Trade:
         trade_id: int,
         entry_order: Order,
         entry_bar: Bar,
-        commission_rate: Optional[Decimal] = None,
+        commission_rate: Optional[ExtendedDecimal] = None,
         strategy_id: Optional[str] = None,
     ):
         """Initialize a new Trade instance."""
         self.id: int = trade_id
         self.ticker: str = entry_order.details.ticker
         self.direction: Order.Direction = entry_order.details.direction
-        self.initial_size: Decimal = entry_order.details.size
-        self.current_size: Decimal = Decimal("0")
+        self.initial_size: ExtendedDecimal = entry_order.details.size
+        self.current_size: ExtendedDecimal = ExtendedDecimal("0")
 
         self.entry_orders: List[Order] = [entry_order]
         self.exit_orders: List[Order] = []
 
-        self.entry_price: Decimal = Decimal("0")
+        self.entry_price: ExtendedDecimal = ExtendedDecimal("0")
         self.entry_timestamp: datetime = entry_bar.timestamp
         self.entry_bar: Bar = entry_bar
 
-        self.exit_price: Optional[Decimal] = None
+        self.exit_price: Optional[ExtendedDecimal] = None
         self.exit_timestamp: Optional[datetime] = None
         self.exit_bar: Optional[Bar] = None
 
@@ -68,7 +85,7 @@ class Trade:
             entry_order.details, "alpha_name", None
         )
 
-        self.commission_rate: Optional[Decimal] = commission_rate
+        self.commission_rate: Optional[ExtendedDecimal] = commission_rate
         self.strategy_id: Optional[str] = strategy_id or entry_order.details.strategy_id
 
         self._process_entry_order(entry_order)
@@ -119,7 +136,7 @@ class Trade:
         self._update_runup_drawdown(self.metrics.pnl, self.metrics.pnl_percent)
 
     def close(
-        self, exit_order: Order, exit_bar: Bar, size: Optional[Decimal] = None
+        self, exit_order: Order, exit_bar: Bar, size: Optional[ExtendedDecimal] = None
     ) -> None:
         """
         Close the trade (fully or partially) with the given exit order and update relevant information.
@@ -127,7 +144,7 @@ class Trade:
         Args:
             exit_order (Order): The order used to close the trade.
             exit_bar (Bar): The bar at which the trade is being closed.
-            size (Optional[Decimal]): The size to close. If None, closes the entire trade.
+            size (Optional[ExtendedDecimal]): The size to close. If None, closes the entire trade.
         """
         if exit_order.get_filled_size() > self.current_size:
             logger_main.warning(
@@ -158,7 +175,7 @@ class Trade:
         self.current_size -= size
 
         # Update trade status
-        if self.current_size == Decimal("0"):
+        if self.current_size == ExtendedDecimal("0"):
             self.status = self.Status.CLOSED
             self.exit_price = exit_price
             self.exit_timestamp = exit_order.fill_timestamp or exit_bar.timestamp
@@ -215,20 +232,22 @@ class Trade:
         )
 
     def _calculate_pnl(
-        self, current_price: Decimal, size: Optional[Decimal] = None
-    ) -> Decimal:
+        self, current_price: ExtendedDecimal, size: Optional[ExtendedDecimal] = None
+    ) -> ExtendedDecimal:
         """Calculates the profit/loss for the trade."""
         size = size or self.current_size
         price_diff = (current_price - self.entry_price) * self.direction.value
         return price_diff * size
 
-    def _calculate_pnl_percent(self, pnl: Decimal) -> Decimal:
+    def _calculate_pnl_percent(self, pnl: ExtendedDecimal) -> ExtendedDecimal:
         """Calculates the profit/loss percentage for the trade."""
-        if self.initial_size == Decimal("0"):
-            return Decimal("0")
-        return (pnl / (self.entry_price * self.initial_size)) * Decimal("100")
+        if self.initial_size == ExtendedDecimal("0"):
+            return ExtendedDecimal("0")
+        return (pnl / (self.entry_price * self.initial_size)) * ExtendedDecimal("100")
 
-    def _update_runup_drawdown(self, pnl: Decimal, pnl_percent: Decimal) -> None:
+    def _update_runup_drawdown(
+        self, pnl: ExtendedDecimal, pnl_percent: ExtendedDecimal
+    ) -> None:
         """Updates the maximum runup and drawdown for the trade."""
         if pnl > self.metrics.max_runup:
             self.metrics.max_runup = pnl
@@ -247,15 +266,15 @@ class Trade:
         end_time = self.exit_timestamp or datetime.now()
         return end_time - self.entry_timestamp
 
-    def get_average_entry_price(self) -> Decimal:
+    def get_average_entry_price(self) -> ExtendedDecimal:
         """Get the average entry price of the trade."""
         return self.entry_price
 
-    def get_realized_pnl(self) -> Decimal:
+    def get_realized_pnl(self) -> ExtendedDecimal:
         """Get the realized PNL of the trade."""
         return self.metrics.realized_pnl
 
-    def get_unrealized_pnl(self) -> Decimal:
+    def get_unrealized_pnl(self) -> ExtendedDecimal:
         """Get the unrealized PNL of the trade."""
         return self.metrics.unrealized_pnl
 
@@ -305,8 +324,8 @@ class Trade:
             details=Order.OrderDetails(
                 ticker=data["ticker"],
                 direction=Order.Direction[data["direction"]],
-                size=Decimal(data["initial_size"]),
-                price=Decimal(data["entry_price"]),
+                size=ExtendedDecimal(data["initial_size"]),
+                price=ExtendedDecimal(data["entry_price"]),
                 exectype=Order.ExecType.MARKET,
                 timestamp=datetime.fromisoformat(data["entry_timestamp"]),
                 timeframe=None,  # Timeframe information is not stored in the dict
@@ -314,10 +333,10 @@ class Trade:
             ),
         )
         entry_bar = Bar(
-            open=Decimal(data["entry_price"]),
-            high=Decimal(data["entry_price"]),
-            low=Decimal(data["entry_price"]),
-            close=Decimal(data["entry_price"]),
+            open=ExtendedDecimal(data["entry_price"]),
+            high=ExtendedDecimal(data["entry_price"]),
+            low=ExtendedDecimal(data["entry_price"]),
+            close=ExtendedDecimal(data["entry_price"]),
             volume=0,
             timestamp=datetime.fromisoformat(data["entry_timestamp"]),
             timeframe=None,  # Timeframe information is not stored in the dict
@@ -326,22 +345,22 @@ class Trade:
         trade = cls(
             data["id"], entry_order, entry_bar, strategy_id=data.get("strategy_id")
         )
-        trade.current_size = Decimal(data["current_size"])
+        trade.current_size = ExtendedDecimal(data["current_size"])
         trade.metrics = TradeMetrics(
-            realized_pnl=Decimal(data["realized_pnl"]),
-            unrealized_pnl=Decimal(data["unrealized_pnl"]),
-            pnl=Decimal(data["pnl"]),
-            pnl_percent=Decimal(data["pnl_percent"]),
-            commission=Decimal(data["commission"]),
-            slippage=Decimal(data["slippage"]),
-            max_runup=Decimal(data["max_runup"]),
-            max_runup_percent=Decimal(data["max_runup_percent"]),
-            max_drawdown=Decimal(data["max_drawdown"]),
-            max_drawdown_percent=Decimal(data["max_drawdown_percent"]),
+            realized_pnl=ExtendedDecimal(data["realized_pnl"]),
+            unrealized_pnl=ExtendedDecimal(data["unrealized_pnl"]),
+            pnl=ExtendedDecimal(data["pnl"]),
+            pnl_percent=ExtendedDecimal(data["pnl_percent"]),
+            commission=ExtendedDecimal(data["commission"]),
+            slippage=ExtendedDecimal(data["slippage"]),
+            max_runup=ExtendedDecimal(data["max_runup"]),
+            max_runup_percent=ExtendedDecimal(data["max_runup_percent"]),
+            max_drawdown=ExtendedDecimal(data["max_drawdown"]),
+            max_drawdown_percent=ExtendedDecimal(data["max_drawdown_percent"]),
         )
         trade.status = Trade.Status[data["status"]]
         trade.alpha_name = data["alpha_name"]
         if data["exit_price"]:
-            trade.exit_price = Decimal(data["exit_price"])
+            trade.exit_price = ExtendedDecimal(data["exit_price"])
             trade.exit_timestamp = datetime.fromisoformat(data["exit_timestamp"])
         return trade

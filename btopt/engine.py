@@ -1,5 +1,4 @@
 import inspect
-from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import pandas as pd
@@ -11,9 +10,10 @@ from .data.timeframe import Timeframe
 from .log_config import clear_log_file, logger_main
 from .order import Order
 from .portfolio import Portfolio
+from .reporter import Reporter
 from .strategy.strategy import Strategy
 from .trade import Trade
-from .types import ReporterType
+from .util.decimal import ExtendedDecimal
 
 
 class Engine:
@@ -81,6 +81,7 @@ class Engine:
         self._is_running: bool = False
         self._config: Dict[str, Any] = {}
         self._strategy_timeframes: Dict[str, List[Timeframe]] = {}
+        self.reporter: Optional[Reporter] = None
 
     # region Initialization and Configuration
 
@@ -238,10 +239,10 @@ class Engine:
             Bar: A Bar object representing the market data.
         """
         return Bar(
-            open=Decimal(str(data["open"])),
-            high=Decimal(str(data["high"])),
-            low=Decimal(str(data["low"])),
-            close=Decimal(str(data["close"])),
+            open=ExtendedDecimal(str(data["open"])),
+            high=ExtendedDecimal(str(data["high"])),
+            low=ExtendedDecimal(str(data["low"])),
+            close=ExtendedDecimal(str(data["close"])),
             volume=(data["volume"]),
             timestamp=self._current_timestamp,
             timeframe=timeframe,
@@ -440,12 +441,17 @@ class Engine:
 
     # region Backtesting Execution
 
-    def run(self) -> ReporterType:
+    def run(self) -> Reporter:
         """
         Execute the backtest and return the Reporter object for analysis.
 
+        This method runs the entire backtesting process, including data preparation,
+        strategy execution, and portfolio updates. After the backtest is complete,
+        it initializes the Reporter with the final portfolio state and returns it
+        for further analysis.
+
         Returns:
-            Reporter: The Reporter object containing all performance metrics and analysis tools.
+            ReporterType: The Reporter object containing all performance metrics and analysis tools.
 
         Raises:
             ValueError: If data validation fails.
@@ -456,7 +462,8 @@ class Engine:
 
         if self._is_running:
             logger_main.info("Backtest is already running.", level="warning")
-            return self.portfolio.reporter
+            return self.reporter if self.reporter else Reporter(self.portfolio, self)
+
         try:
             self._dataview.align_all_data()
 
@@ -484,21 +491,27 @@ class Engine:
                 if self._check_termination_condition():
                     break
 
-            # self._finalize_backtest()
+            # Initialize the Reporter with the final portfolio state
+            self.reporter = Reporter(self.portfolio, self)
+            logger_main.info("Backtest completed. Reporter initialized.")
+
         except Exception as e:
             logger_main.log_and_raise(Exception(f"Error during backtest: {str(e)}"))
         finally:
             self._is_running = False
 
-        logger_main.info("Backtest completed.")
-        return self.portfolio.initialize_reporter()
+        return self.reporter
 
     def _initialize_backtest(self) -> None:
         """
         Initialize all components for the backtest.
 
         This method sets up each strategy with the appropriate data and timeframes.
+        It also ensures that the Reporter is reset to None at the start of each backtest.
         """
+        # Reset the Reporter
+        self.reporter = None
+
         default_timeframe = self._dataview.lowest_timeframe
         for strategy_id, strategy in self._strategies.items():
             # Get the strategy timeframes
@@ -573,19 +586,6 @@ class Engine:
         """
         self.close_all_positions()
         logger_main.info("Finalized backtest. Closed all remaining trades.")
-
-    def _generate_results(self) -> Dict[str, Any]:
-        """
-        Generate and return the final backtest results.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing performance metrics, trade history, and equity curve.
-        """
-        return {
-            "performance_metrics": self.portfolio.get_performance_metrics(),
-            "trade_history": self.portfolio.get_trade_history(),
-            "equity_curve": self.portfolio.get_equity_curve(),
-        }
 
     def _validate_order_timeframes(self) -> None:
         """
@@ -791,16 +791,16 @@ class Engine:
         """
         return self.portfolio.get_trades_for_strategy(strategy_id)
 
-    def get_account_value(self) -> Decimal:
+    def get_account_value(self) -> ExtendedDecimal:
         """
         Get the current total account value (equity).
 
         Returns:
-            Decimal: The current account value.
+            ExtendedDecimal: The current account value.
         """
         return self.portfolio.get_account_value()
 
-    def get_position_size(self, symbol: str) -> Decimal:
+    def get_position_size(self, symbol: str) -> ExtendedDecimal:
         """
         Get the current position size for a given symbol.
 
@@ -808,16 +808,16 @@ class Engine:
             symbol (str): The symbol to check.
 
         Returns:
-            Decimal: The current position size (positive for long, negative for short).
+            ExtendedDecimal: The current position size (positive for long, negative for short).
         """
         return self.portfolio.get_position_size(symbol)
 
-    def get_available_margin(self) -> Decimal:
+    def get_available_margin(self) -> ExtendedDecimal:
         """
         Get the available margin for new trades.
 
         Returns:
-            Decimal: The amount of available margin.
+            ExtendedDecimal: The amount of available margin.
         """
         return self.portfolio.get_available_margin()
 
@@ -887,84 +887,5 @@ class Engine:
             "unrealized_pnl": sum(trade.metrics.unrealized_pnl for trade in trades),
             # Add more metrics as needed
         }
-
-    # endregion
-
-    # region Utility Methods
-
-    def calculate_performance_metrics(self) -> Dict[str, Any]:
-        """
-        Calculate overall performance metrics for the backtest.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing various performance metrics.
-        """
-        return self.portfolio.get_performance_metrics()
-
-    def get_equity_curve(self) -> pd.DataFrame:
-        """
-        Get the equity curve data.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing the equity curve data.
-        """
-        return self.portfolio.get_equity_curve()
-
-    def get_drawdown_curve(self) -> pd.DataFrame:
-        """
-        Get the drawdown curve data.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing the drawdown curve data.
-        """
-        equity_curve = self.get_equity_curve()
-        equity_curve["Drawdown"] = (
-            equity_curve["equity"].cummax() - equity_curve["equity"]
-        ) / equity_curve["equity"].cummax()
-        return equity_curve[["timestamp", "Drawdown"]]
-
-    def get_trade_history(self) -> List[Dict[str, Any]]:
-        """
-        Get the complete trade history.
-
-        Returns:
-            List[Dict[str, Any]]: A list of dictionaries, each representing a trade.
-        """
-        return self.portfolio.get_trade_history()
-
-    def save_results(self, filename: str) -> None:
-        """
-        Save backtest results to a file.
-
-        Args:
-            filename (str): The name of the file to save the results to.
-        """
-        results = self._generate_results()
-        # Implementation depends on the desired file format (e.g., JSON, CSV, pickle)
-        # For example, using JSON:
-        import json
-
-        with open(filename, "w") as f:
-            json.dump(results, f, default=str)
-        logger_main.info(f"Backtest results saved to {filename}")
-
-    def load_results(self, filename: str) -> Dict[str, Any]:
-        """
-        Load backtest results from a file.
-
-        Args:
-            filename (str): The name of the file to load the results from.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing the loaded backtest results.
-        """
-        # Implementation depends on the file format used in save_results
-        # For example, using JSON:
-        import json
-
-        with open(filename, "r") as f:
-            results = json.load(f)
-        logger_main.info(f"Backtest results loaded from {filename}")
-        return results
 
     # endregion

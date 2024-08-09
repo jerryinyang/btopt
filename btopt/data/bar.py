@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
 from typing import Any, Dict, Optional, Union
 
 from ..log_config import logger_main
+from ..util.decimal import ExtendedDecimal
 from .timeframe import Timeframe
 
 
@@ -17,10 +17,10 @@ class Bar:
     arithmetic operations, and data conversion.
 
     Attributes:
-        open (Decimal): The opening price of the bar.
-        high (Decimal): The highest price of the bar.
-        low (Decimal): The lowest price of the bar.
-        close (Decimal): The closing price of the bar.
+        open (ExtendedDecimal): The opening price of the bar.
+        high (ExtendedDecimal): The highest price of the bar.
+        low (ExtendedDecimal): The lowest price of the bar.
+        close (ExtendedDecimal): The closing price of the bar.
         volume (int): The trading volume during the bar period.
         timestamp (datetime): The timestamp of the bar.
         timeframe (Timeframe): The timeframe of the bar.
@@ -28,10 +28,10 @@ class Bar:
         index (Optional[int]): An optional index for the bar, defaults to None.
     """
 
-    open: Decimal
-    high: Decimal
-    low: Decimal
-    close: Decimal
+    open: ExtendedDecimal
+    high: ExtendedDecimal
+    low: ExtendedDecimal
+    close: ExtendedDecimal
     volume: int
     timestamp: datetime
     timeframe: Timeframe
@@ -42,18 +42,18 @@ class Bar:
         """
         Perform post-initialization processing.
 
-        Ensures all price fields are of type Decimal and validates the bar data.
+        Ensures all price fields are of type ExtendedDecimal and validates the bar data.
         """
-        # Ensure all price fields are Decimal
+        # Ensure all price fields are ExtendedDecimal
         for field in ["open", "high", "low", "close"]:
-            setattr(self, field, Decimal(str(getattr(self, field))))
+            setattr(self, field, ExtendedDecimal(str(getattr(self, field))))
 
         # Validate bar data
         self._validate()
 
     def __getitem__(
         self, key: Union[str, int]
-    ) -> Union[Decimal, int, datetime, Timeframe, str]:
+    ) -> Union[ExtendedDecimal, int, datetime, Timeframe, str]:
         """
         Access Bar attributes using dictionary-style key access or list-style index access.
 
@@ -63,7 +63,7 @@ class Bar:
                 - If int: 0 (open), 1 (high), 2 (low), 3 (close), 4 (volume)
 
         Returns:
-            Union[Decimal, int, datetime, Timeframe, str]: The value of the requested attribute.
+            Union[ExtendedDecimal, int, datetime, Timeframe, str]: The value of the requested attribute.
 
         Raises:
             KeyError: If the string key is not a valid attribute.
@@ -189,12 +189,12 @@ class Bar:
 
     # region Utility Methods
 
-    def fills_price(self, price: Decimal) -> bool:
+    def fills_price(self, price: ExtendedDecimal) -> bool:
         """
         Check if the given price is within the high and low values of the bar.
 
         Args:
-            price (Decimal): The price to check.
+            price (ExtendedDecimal): The price to check.
 
         Returns:
             bool: True if the price is within the bar's range, False otherwise.
@@ -236,10 +236,10 @@ class Bar:
         """
         try:
             return cls(
-                open=Decimal(str(data["open"])),
-                high=Decimal(str(data["high"])),
-                low=Decimal(str(data["low"])),
-                close=Decimal(str(data["close"])),
+                open=ExtendedDecimal(str(data["open"])),
+                high=ExtendedDecimal(str(data["high"])),
+                low=ExtendedDecimal(str(data["low"])),
+                close=ExtendedDecimal(str(data["close"])),
                 volume=(data["volume"]),
                 timestamp=datetime.fromisoformat(data["timestamp"]),
                 timeframe=Timeframe(data["timeframe"]),

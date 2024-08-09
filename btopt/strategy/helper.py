@@ -1,6 +1,5 @@
 from collections import defaultdict
 from datetime import datetime
-from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
@@ -9,6 +8,7 @@ import pandas as pd
 from ..data.bar import Bar
 from ..data.timeframe import Timeframe
 from ..log_config import logger_main
+from ..util.decimal import ExtendedDecimal
 
 
 class Data:
@@ -145,8 +145,8 @@ class Data:
     ) -> Union[
         Optional[Bar],
         List[Bar],
-        Optional[Union[Decimal, int, float]],
-        List[Union[Decimal, int, float]],
+        Optional[Union[ExtendedDecimal, int, float]],
+        List[Union[ExtendedDecimal, int, float]],
     ]:
         """
         Get Bar object(s), specific value(s) for built-in columns, or custom column data for a given timeframe and index.
@@ -161,12 +161,12 @@ class Data:
                                             Defaults to None (returns full Bar object(s)).
 
         Returns:
-            Union[Optional[Bar], List[Bar], Optional[Union[Decimal, int, float]], List[Union[Decimal, int, float]]]:
+            Union[Optional[Bar], List[Bar], Optional[Union[ExtendedDecimal, int, float]], List[Union[ExtendedDecimal, int, float]]]:
                 - If value is None:
                     - If size is 1, returns a single Bar object or None if not available.
                     - If size > 1, returns a list of Bar objects (may be shorter than size if not enough data is available).
                 - If value is specified:
-                    - If size is 1, returns the specified value (Decimal for prices, int for volume, float for custom columns,
+                    - If size is 1, returns the specified value (ExtendedDecimal for prices, int for volume, float for custom columns,
                       or appropriate type for other attributes) or None if not available.
                     - If size > 1, returns a list of the specified values.
 
@@ -203,10 +203,10 @@ class Data:
                 result.append(self._custom_columns[timeframe][value][i])
             elif value:
                 bar = Bar(
-                    open=Decimal(str(self._data[timeframe]["open"][i])),
-                    high=Decimal(str(self._data[timeframe]["high"][i])),
-                    low=Decimal(str(self._data[timeframe]["low"][i])),
-                    close=Decimal(str(self._data[timeframe]["close"][i])),
+                    open=ExtendedDecimal(str(self._data[timeframe]["open"][i])),
+                    high=ExtendedDecimal(str(self._data[timeframe]["high"][i])),
+                    low=ExtendedDecimal(str(self._data[timeframe]["low"][i])),
+                    close=ExtendedDecimal(str(self._data[timeframe]["close"][i])),
                     volume=int(self._data[timeframe]["volume"][i]),
                     timestamp=self._timestamps[timeframe][i].astype(datetime),
                     timeframe=timeframe,
@@ -217,10 +217,10 @@ class Data:
             else:
                 result.append(
                     Bar(
-                        open=Decimal(str(self._data[timeframe]["open"][i])),
-                        high=Decimal(str(self._data[timeframe]["high"][i])),
-                        low=Decimal(str(self._data[timeframe]["low"][i])),
-                        close=Decimal(str(self._data[timeframe]["close"][i])),
+                        open=ExtendedDecimal(str(self._data[timeframe]["open"][i])),
+                        high=ExtendedDecimal(str(self._data[timeframe]["high"][i])),
+                        low=ExtendedDecimal(str(self._data[timeframe]["low"][i])),
+                        close=ExtendedDecimal(str(self._data[timeframe]["close"][i])),
                         volume=int(self._data[timeframe]["volume"][i]),
                         timestamp=self._timestamps[timeframe][i].astype(datetime),
                         timeframe=timeframe,
