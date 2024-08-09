@@ -118,46 +118,101 @@ class Trade:
 
         self._update_runup_drawdown(self.metrics.pnl, self.metrics.pnl_percent)
 
-    def close(self, exit_order: Order, exit_bar: Bar) -> None:
-        """Closes the trade (fully or partially) with the given exit order and updates relevant information."""
+    def close(
+        self, exit_order: Order, exit_bar: Bar, size: Optional[Decimal] = None
+    ) -> None:
+        """
+        Close the trade (fully or partially) with the given exit order and update relevant information.
+
+        Args:
+            exit_order (Order): The order used to close the trade.
+            exit_bar (Bar): The bar at which the trade is being closed.
+            size (Optional[Decimal]): The size to close. If None, closes the entire trade.
+        """
         if exit_order.get_filled_size() > self.current_size:
             logger_main.warning(
-                f"Exit order size ({exit_order.get_filled_size()}) exceeds current trade size ({self.current_size}). Attempting trade reversal."
+                f"Exit order size ({exit_order.get_filled_size()}) exceeds current trade size ({self.current_size}). Closing entire trade."
             )
+            size = self.current_size
+        else:
+            size = size or self.current_size
 
-        self.exit_orders.append(exit_order)
-        exit_size = exit_order.get_filled_size()
         exit_price = exit_order.get_average_fill_price()
-
         if exit_price is None:
             logger_main.log_and_raise(ValueError("Exit order has no fill price"))
 
-        # Update the current size
-        self.current_size -= exit_size
-
         # Calculate P&L for this exit
-        exit_pnl = self._calculate_pnl(exit_price, exit_size)
+        exit_pnl = self._calculate_pnl(exit_price, size)
         self.metrics.realized_pnl += exit_pnl
 
         # Calculate and add commission and slippage for this exit
         if self.commission_rate:
-            exit_commission = exit_price * exit_size * self.commission_rate
+            exit_commission = exit_price * size * self.commission_rate
             self.metrics.commission += exit_commission
 
         if exit_order.details.slippage:
-            exit_slippage = abs(exit_order.details.price - exit_price) * exit_size
+            exit_slippage = abs(exit_order.details.price - exit_price) * size
             self.metrics.slippage += exit_slippage
+
+        # Update trade size
+        self.current_size -= size
 
         # Update trade status
         if self.current_size == Decimal("0"):
-            self.status = Trade.Status.CLOSED
+            self.status = self.Status.CLOSED
             self.exit_price = exit_price
             self.exit_timestamp = exit_order.fill_timestamp or exit_bar.timestamp
             self.exit_bar = exit_bar
         else:
-            self.status = Trade.Status.PARTIALLY_CLOSED
+            self.status = self.Status.PARTIALLY_CLOSED
 
         self._finalize_metrics()
+
+        logger_main.info(
+            f"Trade {self.id} {'closed' if self.status == self.Status.CLOSED else 'partially closed'}: "
+            f"exit price {exit_price}, size {size}, remaining size {self.current_size}"
+        )
+
+    def reverse(self, order: Order, bar: Bar) -> None:
+        """
+        Reverse the trade's direction and update relevant attributes.
+
+        This method closes the current trade and opens a new one in the opposite direction.
+
+        Args:
+            order (Order): The order that triggered the reversal.
+            bar (Bar): The current price bar.
+        """
+        # Close the current trade
+        self.close(order, bar)
+
+        # Reverse the direction
+        self.direction = (
+            Order.Direction.LONG
+            if self.direction == Order.Direction.SHORT
+            else Order.Direction.SHORT
+        )
+
+        # Update trade attributes
+        self.entry_price = order.get_average_fill_price()
+        self.entry_timestamp = bar.timestamp
+        self.entry_bar = bar
+        self.initial_size = order.get_filled_size()
+        self.current_size = self.initial_size
+        self.status = self.Status.ACTIVE
+
+        # Reset exit information
+        self.exit_price = None
+        self.exit_timestamp = None
+        self.exit_bar = None
+
+        # Reset metrics
+        self.metrics = TradeMetrics()
+
+        # Log the reversal
+        logger_main.info(
+            f"Trade {self.id} reversed: new direction {self.direction.name}, size {self.current_size}"
+        )
 
     def _calculate_pnl(
         self, current_price: Decimal, size: Optional[Decimal] = None

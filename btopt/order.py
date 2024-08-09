@@ -296,6 +296,39 @@ class Order:
         elif self.filled_size > Decimal("0"):
             self.status = self.Status.PARTIALLY_FILLED
 
+    def partial_fill(
+        self, fill_price: Decimal, fill_size: Decimal, timestamp: datetime
+    ) -> None:
+        """
+        Update the order's state for a partial fill.
+
+        Args:
+            fill_price (Decimal): The price at which the partial fill occurred.
+            fill_size (Decimal): The size that was filled in this partial fill.
+            timestamp (datetime): The timestamp of the partial fill.
+
+        Raises:
+            ValueError: If the fill size exceeds the remaining unfilled size.
+        """
+        if fill_size > self.get_remaining_size():
+            logger_main.log_and_raise(
+                ValueError("Fill size exceeds remaining unfilled size")
+            )
+
+        self.filled_size += fill_size
+        self.fill_price = (self.fill_price or Decimal("0")) + fill_price * fill_size
+        self.fill_timestamp = timestamp
+
+        if self.filled_size == self.details.size:
+            self.status = self.Status.FILLED
+        else:
+            self.status = self.Status.PARTIALLY_FILLED
+
+        logger_main.info(
+            f"Order {self.id} partially filled: price {fill_price}, size {fill_size}, "
+            f"total filled {self.filled_size}/{self.details.size}"
+        )
+
     def cancel(self):
         """Cancel the order and all its child orders."""
         if self.status not in [self.Status.FILLED, self.Status.CANCELED]:

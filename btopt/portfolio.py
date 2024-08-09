@@ -91,6 +91,7 @@ class Portfolio:
         self.margin_ratio = margin_ratio
         self.margin_call_threshold = margin_call_threshold
         self.engine = engine
+
         self.positions: Dict[str, Decimal] = {}
         self.avg_entry_prices: Dict[str, Decimal] = {}
         self.open_trades: Dict[str, List[Trade]] = {}
@@ -101,6 +102,10 @@ class Portfolio:
         self.buying_power = initial_capital / margin_ratio
         self.limit_exit_orders: List[Order] = []
 
+        self.updated_orders: List[Order] = []
+        self.updated_trades: List[Trade] = []
+
+        self.reporter: Optional[Reporter] = None
         self.metrics = pd.DataFrame(
             columns=[
                 "timestamp",
@@ -108,19 +113,10 @@ class Portfolio:
                 "equity",
                 "open_pnl",
                 "closed_pnl",
-                "commission",
-                "slippage",
-                "drawdown",
-                "max_drawdown",
             ]
         )
         self.peak_equity = initial_capital
         self.max_drawdown = Decimal("0")
-
-        self.updated_orders: List[Order] = []
-        self.updated_trades: List[Trade] = []
-
-        self.reporter: Optional[Reporter] = None
 
     # region Initialization and Configuration
 
@@ -130,6 +126,8 @@ class Portfolio:
         """
         self.reporter = Reporter(self, self.engine)
         logger_main.info("Reporter initialized for Portfolio.")
+
+        return self.reporter
 
     def set_config(self, config: Dict[str, Any]) -> None:
         """
@@ -194,17 +192,12 @@ class Portfolio:
         market_data: Dict[str, Dict[Timeframe, Bar]],
     ) -> None:
         open_pnl = Decimal("0")
-        commission = Decimal("0")
-        slippage = Decimal("0")
-
         for symbol, trades in self.open_trades.items():
             timeframe = min(market_data[symbol].keys())
             current_bar = market_data[symbol][timeframe]
             for trade in trades:
                 trade.update(current_bar)
                 open_pnl += trade.metrics.pnl
-                commission += trade.metrics.commission
-                slippage += trade.metrics.slippage
 
         closed_pnl = sum(trade.metrics.pnl for trade in self.closed_trades)
         equity = self.cash + open_pnl + closed_pnl
@@ -220,10 +213,6 @@ class Portfolio:
                     "equity": equity,
                     "open_pnl": open_pnl,
                     "closed_pnl": closed_pnl,
-                    "commission": commission,
-                    "slippage": slippage,
-                    "drawdown": drawdown,
-                    "max_drawdown": self.max_drawdown,
                 }
             ]
         )
@@ -303,11 +292,11 @@ class Portfolio:
         Args:
             order (Order): The order to execute.
             execution_price (Decimal): The price at which the order is executed.
-            bar (Bar): The current price bar
+            bar (Bar): The current price bar.
 
         Returns:
             Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
-                                          successfully, and the resulting Trade object if applicable.
+                                        successfully, and the resulting Trade object if applicable.
         """
         symbol = order.details.ticker
         size = order.details.size
@@ -324,26 +313,28 @@ class Portfolio:
 
         self._update_margin(order, cost)
 
+        # Update cash balance
         if direction == Order.Direction.LONG:
             self.cash -= cost + commission
         else:  # SHORT
             self.cash += cost - commission
 
-        position_change = size if direction == Order.Direction.LONG else -size
-        self._update_position(symbol, position_change, execution_price)
+        # Check if this order would result in a trade reversal
+        current_position = self.positions.get(symbol, Decimal("0"))
+        is_reversal = (current_position > 0 and direction == Order.Direction.SHORT) or (
+            current_position < 0 and direction == Order.Direction.LONG
+        )
 
-        if order.family_role == Order.FamilyRole.PARENT:
-            trade = self._create_or_update_trade(order, execution_price, bar)
-            for child_order in order.children:
-                self.add_pending_order(child_order)
-        elif order.family_role == Order.FamilyRole.CHILD_EXIT:
-            trade = self._close_or_reduce_trade(
-                symbol, size, execution_price, order, bar
-            )
+        if is_reversal:
+            trade = self._reverse_trade(order, execution_price, bar)
         else:
             trade = self._create_or_update_trade(order, execution_price, bar)
 
-        order.fill(execution_price, datetime.now(), size)
+        # Use partial_fill if the order is not completely filled, otherwise use fill
+        if order.get_remaining_size() > Decimal("0"):
+            order.partial_fill(execution_price, size, bar.timestamp)
+        else:
+            order.fill(execution_price, bar.timestamp, size)
 
         self.updated_orders.append(order)
         if trade:
@@ -603,40 +594,45 @@ class Portfolio:
                 self.updated_trades.append(trade)
 
     def _create_or_update_trade(
-        self, order: Order, execution_price: Decimal, bar: Bar
+        self,
+        order: Order,
+        execution_price: Decimal,
+        bar: Bar,
+        size: Optional[Decimal] = None,
     ) -> Trade:
         """
-        Create a new trade or update existing one based on the executed order.
+        Create a new trade based on the executed order.
 
         Args:
             order (Order): The executed order.
-            bar (Bar): The price at which the order was
+            execution_price (Decimal): The price at which the order was executed.
+            bar (Bar): The current price bar.
+            size (Optional[Decimal]): The size of the trade, if different from the order size.
 
         Returns:
-            Trade: The created or updated trade.
+            Trade: The newly created trade.
         """
         symbol = order.details.ticker
-        direction = order.details.direction
-        size = order.details.size
+        trade_size = size or order.details.size
 
         if symbol not in self.open_trades:
             self.open_trades[symbol] = []
 
-        # Check if this order closes or reduces an existing position
-        if (
-            direction == Order.Direction.LONG
-            and self.positions.get(symbol, Decimal("0")) < Decimal("0")
-        ) or (
-            direction == Order.Direction.SHORT
-            and self.positions.get(symbol, Decimal("0")) > Decimal("0")
-        ):
-            # This is a closing or reducing order
-            return self._close_or_reduce_trade(
-                symbol, size, execution_price, order, bar
-            )
-        else:
-            # This is a new or increasing position order
-            return self._open_or_increase_trade(symbol, order, bar)
+        # Always create a new trade
+        self.trade_count += 1
+        new_trade = Trade(
+            trade_id=self.trade_count,
+            entry_order=order,
+            entry_bar=bar,
+            commission_rate=self.commission_rate,
+        )
+        # Set the initial size of the trade
+        new_trade.initial_size = trade_size
+        new_trade.current_size = trade_size
+        self.open_trades[symbol].append(new_trade)
+
+        logger_main.info(f"Created new trade: {new_trade}")
+        return new_trade
 
     def _close_or_reduce_trade(
         self,
@@ -645,21 +641,22 @@ class Portfolio:
         execution_price: Decimal,
         order: Order,
         bar: Bar,
-    ) -> Trade:
+    ) -> Tuple[List[Trade], Decimal]:
         """
-        Close or reduce an existing trade.
+        Close or reduce existing trades based on the incoming order.
 
         Args:
             symbol (str): The symbol of the trade.
             size (Decimal): The size to close or reduce.
             execution_price (Decimal): The price at which to close or reduce the trade.
             order (Order): The order associated with this action.
+            bar (Bar): The current price bar.
 
         Returns:
-            Trade: The last affected trade.
+            Tuple[List[Trade], Decimal]: A tuple containing a list of affected trades and the remaining size.
         """
-        remaining_size = size  # Size of the
-        closed_trades = []
+        remaining_size = size
+        affected_trades = []
 
         for trade in self.open_trades[symbol]:
             if remaining_size <= Decimal("0"):
@@ -668,40 +665,61 @@ class Portfolio:
             if remaining_size >= trade.current_size:
                 # Fully close this trade
                 trade.close(order, bar)
-                closed_trades.append(trade)
-                remaining_size -= trade.current_size
             else:
                 # Partially close this trade
-                trade.close(order, bar)
-                remaining_size = Decimal("0")
+                trade.close(order, bar, size=remaining_size)
+
+            affected_trades.append(trade)
+            remaining_size -= trade.current_size
 
         # Remove closed trades from open trades
         self.open_trades[symbol] = [
-            t for t in self.open_trades[symbol] if t not in closed_trades
+            t for t in self.open_trades[symbol] if t not in affected_trades
         ]
-        self.closed_trades.extend(closed_trades)
-
-        if remaining_size > Decimal("0"):
-            # Update the order size
-            order.filled_size = Decimal(remaining_size)
-            order.fill_price = order.filled_size * execution_price
-
-            # If there's remaining size, it means we've reversed the position
-            return self._open_or_increase_trade(symbol, order, bar)
-        else:
-            return closed_trades[-1] if closed_trades else None
-
-    def _open_or_increase_trade(self, symbol: str, order: Order, bar: Bar) -> Trade:
-        self.trade_count += 1
-
-        trade = Trade(
-            trade_id=self.trade_count,
-            entry_order=order,
-            entry_bar=bar,
-            commission_rate=self.commission_rate,
+        self.closed_trades.extend(
+            [t for t in affected_trades if t.status == Trade.Status.CLOSED]
         )
-        self.open_trades[symbol].append(trade)
-        return trade
+
+        return affected_trades, remaining_size
+
+    def _reverse_trade(self, order: Order, execution_price: Decimal, bar: Bar) -> Trade:
+        """
+        Handle the creation of a new trade in the opposite direction after closing existing trades.
+
+        Args:
+            order (Order): The order that triggered the trade reversal.
+            execution_price (Decimal): The price at which the order is executed.
+            bar (Bar): The current price bar.
+
+        Returns:
+            Trade: The newly created trade in the opposite direction.
+        """
+        symbol = order.details.ticker
+        size = order.details.size
+        direction = order.details.direction
+
+        # Close existing trades in the opposite direction
+        affected_trades, remaining_size = self._close_or_reduce_trade(
+            symbol, size, execution_price, order, bar
+        )
+
+        # Update the position
+        for trade in affected_trades:
+            self._update_position(trade.ticker, -trade.current_size, execution_price)
+
+        # If there's remaining size, create a new trade in the opposite direction
+        if remaining_size > Decimal("0"):
+            new_trade = self._create_or_update_trade(
+                order, execution_price, bar, size=remaining_size
+            )
+            new_trade.reverse(order, bar)  # Use the new reverse method
+            self._update_position(
+                symbol, remaining_size * direction.value, execution_price
+            )
+            return new_trade
+        else:
+            # If no remaining size, return the last affected trade
+            return affected_trades[-1] if affected_trades else None
 
     # endregion
 
