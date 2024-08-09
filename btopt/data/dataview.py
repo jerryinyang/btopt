@@ -219,9 +219,6 @@ class DataView:
         # Fill missing values and propagate the 'is_original' indicator
         aligned_df = self._custom_fill(aligned_df)
 
-        if timeframe != self.lowest_timeframe:
-            aligned_df.to_csv("test.csv", index=False)
-
         # Update the stored data with the aligned dataframe
         self.data[symbol][timeframe] = aligned_df
 
@@ -378,21 +375,19 @@ class DataView:
     def _resample_dataframe(
         self, df: pd.DataFrame, to_timeframe: Timeframe
     ) -> pd.DataFrame:
-        """
-        Resample a dataframe to a higher timeframe.
-
-        Args:
-            df (pd.DataFrame): The dataframe to resample.
-            to_timeframe (Timeframe): The target timeframe for resampling.
-
-        Returns:
-            pd.DataFrame: The resampled dataframe.
-        """
         # Define the resampling rules
         resample_rule = self._get_resample_rule(to_timeframe)
 
-        # Resample the data
-        resampled = df.resample(resample_rule).agg(
+        # Create a new index with the desired frequency
+        new_index = pd.date_range(
+            start=df.index.min(), end=df.index.max(), freq=resample_rule
+        )
+
+        # Reindex the dataframe to the new frequency, forward filling missing values
+        resampled = df.reindex(new_index, method="ffill")
+
+        # Aggregate the data
+        resampled = resampled.groupby(level=0).agg(
             {
                 "open": "first",
                 "high": "max",
@@ -401,6 +396,9 @@ class DataView:
                 "volume": "sum",
             }
         )
+
+        # Remove any rows that don't correspond to original data points
+        resampled = resampled.loc[resampled.index.isin(df.index)]
 
         # Add the is_original column
         resampled["is_original"] = True

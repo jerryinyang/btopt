@@ -218,6 +218,16 @@ class Engine:
             timeframe if isinstance(timeframe, Timeframe) else Timeframe(timeframe)
         )
 
+        # for data in resampled_dataloader.dataframes.values():
+        #     # Test
+        #     _df = data[data.index.normalize() == pd.to_datetime("2022-01-08")]
+
+        #     if not _df.empty:
+        #         logger_main.log_and_raise(
+        #             "YAAAAAAAAAAAAAAAAASDASDUGYIABOSDYYASYOBCDQASYCDIVABDUQWAECVTQWKECQWIVYEQVWECIVQWEVUCYOQWEVUWQVEY"
+        #         )
+        #     # Test
+
         # Add the resampled dataloader to the engine
         self.add_data(resampled_dataloader)
 
@@ -533,9 +543,6 @@ class Engine:
                         # logger_main.warning(
                         #     f"\nENGINE: {self._current_timestamp} \nBAR: {bar.timestamp}"
                         # )
-                        # raise
-
-                        # Add the bar
                         strategy.datas[bar.ticker].add_bar(bar)
 
             # Run strategy.on_data
