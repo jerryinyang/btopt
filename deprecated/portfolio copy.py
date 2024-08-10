@@ -65,7 +65,7 @@ class Portfolio:
         pyramiding: int = 1,
         margin_ratio: ExtendedDecimal = ExtendedDecimal("0.5"),
         margin_call_threshold: ExtendedDecimal = ExtendedDecimal("0.3"),
-        engine: "EngineType" = None,
+        engine: EngineType = None,
     ):
         """
         Initialize the Portfolio with given parameters.
@@ -77,7 +77,7 @@ class Portfolio:
             pyramiding (int): The maximum number of allowed positions per symbol.
             margin_ratio (ExtendedDecimal): The required margin ratio for trades.
             margin_call_threshold (ExtendedDecimal): The threshold for triggering a margin call.
-            engine (Engine): The Engine instance managing the trading system.
+            engine (Optional['Engine']): The Engine instance managing the trading system.
         """
         self.initial_capital = initial_capital
         self.cash = initial_capital
@@ -88,32 +88,23 @@ class Portfolio:
         self.margin_call_threshold = margin_call_threshold
         self.engine = engine
 
-        # New attributes for improved equity calculation
-        self.asset_value = ExtendedDecimal("0")
-        self.liabilities = ExtendedDecimal("0")
-        self.buying_power = initial_capital
-
-        # Existing attributes
-        self.positions: Dict[str, ExtendedDecimal] = {}
-        self.avg_entry_prices: Dict[str, ExtendedDecimal] = {}
+        self.positions: Dict[str, Dict[str, ExtendedDecimal]] = {}
         self.open_trades: Dict[str, List[Trade]] = {}
         self.closed_trades: List[Trade] = []
         self.pending_orders: List[Order] = []
+        self.limit_exit_orders: List[Order] = []
         self.trade_count = 0
         self.margin_used = ExtendedDecimal("0")
-        self.limit_exit_orders: List[Order] = []
+        self.buying_power = initial_capital / margin_ratio
 
         self.updated_orders: List[Order] = []
         self.updated_trades: List[Trade] = []
 
-        # Initialize the metrics DataFrame with new columns
         self.metrics = pd.DataFrame(
             columns=[
                 "timestamp",
                 "cash",
                 "equity",
-                "asset_value",
-                "liabilities",
                 "open_pnl",
                 "closed_pnl",
                 "portfolio_return",
@@ -178,67 +169,43 @@ class Portfolio:
         self._update_metrics(timestamp, market_data)
 
     def _update_metrics(
-        self,
-        timestamp: pd.Timestamp,
-        market_data: Dict[str, Dict[Timeframe, Bar]],
+        self, timestamp: pd.Timestamp, market_data: Dict[str, Dict[Timeframe, Bar]]
     ) -> None:
         """
         Update the portfolio metrics based on the current market data.
 
-        This method calculates and stores essential metrics including cash, equity,
-        asset value, liabilities, open/closed PnL, and portfolio returns.
-
         Args:
             timestamp (pd.Timestamp): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
-
-        Returns:
-            None
         """
-        open_pnl = ExtendedDecimal("0")
-        self.asset_value = ExtendedDecimal("0")
-        self.liabilities = ExtendedDecimal("0")
+        self.update_position_values(market_data)
 
-        for symbol, trades in self.open_trades.items():
-            timeframe = min(market_data[symbol].keys())
-            current_bar = market_data[symbol][timeframe]
-            for trade in trades:
-                trade.update(current_bar)
-                open_pnl += trade.metrics.pnl
-                if trade.direction == Order.Direction.LONG:
-                    self.asset_value += trade.current_size * current_bar.close
-                else:  # SHORT
-                    self.liabilities += trade.current_size * current_bar.close
-
-        closed_pnl = sum(trade.metrics.pnl for trade in self.closed_trades)
         equity = self.calculate_equity()
+        open_pnl = sum(
+            trade.metrics.unrealized_pnl
+            for trades in self.open_trades.values()
+            for trade in trades
+        )
+        closed_pnl = sum(trade.metrics.realized_pnl for trade in self.closed_trades)
 
-        # Calculate portfolio return
         if not self.metrics.empty:
             previous_equity = self.metrics.iloc[-1]["equity"]
             portfolio_return = (equity - previous_equity) / previous_equity
         else:
             portfolio_return = ExtendedDecimal("0")
 
-        # Create a new row for the metrics DataFrame
         new_row = pd.DataFrame(
             {
                 "timestamp": [timestamp],
                 "cash": [self.cash],
                 "equity": [equity],
-                "asset_value": [self.asset_value],
-                "liabilities": [self.liabilities],
                 "open_pnl": [open_pnl],
                 "closed_pnl": [closed_pnl],
                 "portfolio_return": [portfolio_return],
             }
         )
 
-        # Append the new row to the metrics DataFrame
         self.metrics = pd.concat([self.metrics, new_row], ignore_index=True)
-
-        # Update buying power
-        self._update_buying_power()
 
     def _get_current_price(self, symbol: str) -> ExtendedDecimal:
         """
@@ -249,16 +216,18 @@ class Portfolio:
 
         Returns:
             ExtendedDecimal: The current price of the symbol.
+
+        Raises:
+            ValueError: If unable to get the current price for the symbol.
         """
         if self.engine and hasattr(self.engine, "_current_market_data"):
             market_data = self.engine._current_market_data[symbol]
             current_data = market_data[min(market_data.keys())]
             if current_data is not None:
-                return ExtendedDecimal(str(current_data["close"]))
+                return ExtendedDecimal(str(current_data.close))
 
-        # If we can't get the current price, use the last known price
         logger_main.log_and_raise(
-            ValueError(f"Unable to get current price for {symbol} {self.engine}")
+            ValueError(f"Unable to get current price for {symbol}")
         )
 
     # endregion
@@ -307,9 +276,6 @@ class Portfolio:
         """
         Execute an order and update the portfolio accordingly.
 
-        This method handles the execution of an order, updating cash, asset value,
-        liabilities, and creating or updating trades as necessary.
-
         Args:
             order (Order): The order to execute.
             execution_price (ExtendedDecimal): The price at which the order is executed.
@@ -330,42 +296,40 @@ class Portfolio:
             logger_main.info(f"Insufficient margin to execute order: {order}")
             return False, None
 
-        # Update cash, asset value, and liabilities based on order direction
-        if direction == Order.Direction.LONG:
-            self.cash -= cost + commission
-            self.asset_value += cost
-        else:  # SHORT
-            self.cash += cost - commission
-            self.liabilities += cost
-
         self._update_margin(order, cost)
 
-        # Check if this order would result in a trade reversal
-        current_position = self.positions.get(symbol, ExtendedDecimal("0"))
-        is_reversal = (current_position > 0 and direction == Order.Direction.SHORT) or (
-            current_position < 0 and direction == Order.Direction.LONG
+        # Update cash based on the order direction
+        if direction == Order.Direction.LONG:
+            self.cash -= cost + commission
+        else:  # SHORT
+            self.cash += cost - commission
+
+        # Update or create position
+        self._update_position(symbol, size * direction.value, execution_price)
+
+        # Create or update trade
+        if symbol not in self.open_trades:
+            self.open_trades[symbol] = []
+
+        self.trade_count += 1
+        new_trade = Trade(
+            trade_id=self.trade_count,
+            entry_order=order,
+            entry_bar=bar,
+            commission_rate=self.commission_rate,
         )
+        new_trade.initial_size = size
+        new_trade.current_size = size
+        self.open_trades[symbol].append(new_trade)
 
-        if is_reversal:
-            trade = self._reverse_trade(order, execution_price, bar)
-        else:
-            trade = self._create_or_update_trade(order, execution_price, bar)
-
-        # Use partial_fill if the order is not completely filled, otherwise use fill
-        if order.get_remaining_size() > ExtendedDecimal("0"):
-            order.partial_fill(execution_price, size, bar.timestamp)
-        else:
-            order.fill(execution_price, bar.timestamp, size)
+        # Update order status
+        order.fill(execution_price, bar.timestamp, size)
 
         self.updated_orders.append(order)
-        if trade:
-            self.updated_trades.append(trade)
+        self.updated_trades.append(new_trade)
 
-        # Update buying power
-        self._update_buying_power()
-
-        logger_main.info(f"Executed order: {order}, resulting trade: {trade}")
-        return True, trade
+        logger_main.info(f"Executed order: {order}, resulting trade: {new_trade}")
+        return True, new_trade
 
     def add_pending_order(self, order: Order) -> None:
         """
@@ -431,6 +395,22 @@ class Portfolio:
         logger_main.info(f"Order with ID {order_id} not found in pending orders.")
         return False
 
+    def update_position_values(
+        self, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> None:
+        """
+        Update the current market value of all open positions.
+
+        Args:
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols.
+        """
+        for symbol, position in self.positions.items():
+            if symbol in market_data:
+                timeframe = min(market_data[symbol].keys())
+                current_price = market_data[symbol][timeframe].close
+                position["current_price"] = current_price
+                position["market_value"] = position["size"] * current_price
+
     def close_positions(self, strategy_id: str, symbol: Optional[str] = None) -> bool:
         """
         Close positions for a specific strategy and/or symbol.
@@ -479,6 +459,44 @@ class Portfolio:
 
         logger_main.info("Closed all open positions.")
 
+    def close_trade(self, trade: Trade, current_price: ExtendedDecimal) -> None:
+        """
+        Close a specific trade.
+
+        Args:
+            trade (Trade): The trade to close.
+            current_price (ExtendedDecimal): The current market price to close the trade at.
+        """
+        symbol = trade.ticker
+        close_size = trade.current_size
+        close_value = close_size * current_price
+        commission = close_value * self.commission_rate
+
+        # Update cash
+        if trade.direction == Order.Direction.LONG:
+            self.cash += close_value - commission
+        else:  # SHORT
+            self.cash -= close_value + commission
+
+        # Update position
+        self._update_position(
+            symbol, -close_size * trade.direction.value, current_price
+        )
+
+        # Close the trade
+        trade.close(None, current_price)
+
+        # Move trade from open to closed
+        if symbol in self.open_trades:
+            self.open_trades[symbol].remove(trade)
+            if not self.open_trades[symbol]:
+                del self.open_trades[symbol]
+        self.closed_trades.append(trade)
+
+        self.updated_trades.append(trade)
+
+        logger_main.info(f"Closed trade: {trade}")
+
     def _get_open_trades(
         self, strategy_id: str, symbol: Optional[str] = None
     ) -> List[Trade]:
@@ -497,40 +515,6 @@ class Portfolio:
             if symbol is None or sym == symbol:
                 trades.extend([t for t in trade_list if t.strategy_id == strategy_id])
         return trades
-
-    def close_trade(self, trade: Trade, current_price: ExtendedDecimal) -> None:
-        """
-        Close a specific trade and update the portfolio accordingly.
-
-        This method handles the closing of a trade, updating cash, asset value,
-        liabilities, and moving the trade from open to closed trades.
-
-        Args:
-            trade (Trade): The trade to close.
-            current_price (ExtendedDecimal): The current market price to close the trade at.
-        """
-        trade.close(None, current_price)
-        if trade.ticker in self.open_trades:
-            self.open_trades[trade.ticker].remove(trade)
-            if not self.open_trades[trade.ticker]:
-                del self.open_trades[trade.ticker]
-        self.closed_trades.append(trade)
-
-        # Update cash, asset value, and liabilities
-        trade_value = trade.current_size * current_price
-        commission = trade_value * self.commission_rate
-
-        if trade.direction == Order.Direction.LONG:
-            self.cash += trade_value - commission
-            self.asset_value -= trade_value
-        else:  # SHORT
-            self.cash -= trade_value + commission
-            self.liabilities -= trade_value
-
-        self._update_position(trade.ticker, -trade.current_size, current_price)
-        self._update_buying_power()
-
-        logger_main.info(f"Closed trade: {trade}")
 
     def _process_pending_orders(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
@@ -596,33 +580,49 @@ class Portfolio:
         )
 
     def _update_position(
-        self, symbol: str, position_change: ExtendedDecimal, price: ExtendedDecimal
+        self, symbol: str, size_change: ExtendedDecimal, price: ExtendedDecimal
     ) -> None:
         """
-        Update position and average entry price for a symbol.
+        Update the position for a given symbol.
 
         Args:
-            symbol (str): The symbol to update.
-            position_change (ExtendedDecimal): The change in position size.
-            price (ExtendedDecimal): The price at which the position change occurred.
+            symbol (str): The symbol of the position to update.
+            size_change (ExtendedDecimal): The change in position size (positive for buy, negative for sell).
+            price (ExtendedDecimal): The price at which the position is being updated.
         """
-        current_position = self.positions.get(symbol, ExtendedDecimal("0"))
-        new_position = current_position + position_change
+        if symbol not in self.positions:
+            self.positions[symbol] = {
+                "size": ExtendedDecimal("0"),
+                "avg_price": ExtendedDecimal("0"),
+            }
 
-        if current_position == ExtendedDecimal("0"):
-            self.avg_entry_prices[symbol] = price
-        else:
-            current_value = current_position * self.avg_entry_prices[symbol]
-            new_value = abs(position_change) * price
-            self.avg_entry_prices[symbol] = (current_value + new_value) / abs(
-                new_position
-            )
+        current_size = self.positions[symbol]["size"]
+        current_avg_price = self.positions[symbol]["avg_price"]
 
-        self.positions[symbol] = new_position
+        new_size = current_size + size_change
 
-        if new_position == ExtendedDecimal("0"):
+        if new_size == ExtendedDecimal("0"):
             del self.positions[symbol]
-            del self.avg_entry_prices[symbol]
+        else:
+            if current_size == ExtendedDecimal("0"):
+                new_avg_price = price
+            else:
+                if (
+                    current_size > ExtendedDecimal("0")
+                    and size_change > ExtendedDecimal("0")
+                ) or (
+                    current_size < ExtendedDecimal("0")
+                    and size_change < ExtendedDecimal("0")
+                ):
+                    # Increasing position
+                    new_avg_price = (
+                        current_size * current_avg_price + size_change * price
+                    ) / new_size
+                else:
+                    # Reducing position
+                    new_avg_price = current_avg_price
+
+            self.positions[symbol] = {"size": new_size, "avg_price": new_avg_price}
 
     def _update_open_trades(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
         for symbol, trades in self.open_trades.items():
@@ -670,7 +670,9 @@ class Portfolio:
         new_trade.current_size = trade_size
         self.open_trades[symbol].append(new_trade)
 
-        logger_main.info(f"Created new trade: {new_trade}")
+        logger_main.info(
+            f"{self.engine._current_timestamp} | Created new trade: \n{new_trade}"
+        )
         return new_trade
 
     def _close_or_reduce_trade(
@@ -790,10 +792,6 @@ class Portfolio:
         """
         Update margin and buying power after executing an order.
 
-        This method calculates the required margin based on the order type and updates
-        the margin_used attribute. It also recalculates the buying power based on
-        the new equity and margin situation.
-
         Args:
             order (Order): The executed order.
             cost (ExtendedDecimal): The cost of the order.
@@ -803,15 +801,6 @@ class Portfolio:
         else:  # SHORT
             self.margin_used += cost * self.margin_ratio * ExtendedDecimal("2")
 
-        self._update_buying_power()
-
-    def _update_buying_power(self) -> None:
-        """
-        Update the buying power based on current equity and margin used.
-
-        This method recalculates the available buying power considering the current
-        equity, margin used, and margin ratio.
-        """
         self.buying_power = (
             self.calculate_equity() - self.margin_used
         ) / self.margin_ratio
@@ -877,12 +866,12 @@ class Portfolio:
         """
         return self.cash
 
-    def get_open_positions(self) -> Dict[str, ExtendedDecimal]:
+    def get_open_positions(self) -> Dict[str, Dict[str, ExtendedDecimal]]:
         """
         Get the current open positions in the portfolio.
 
         Returns:
-            Dict[str, ExtendedDecimal]: A dictionary mapping symbols to their position sizes.
+            Dict[str, Dict[str, ExtendedDecimal]]: A dictionary mapping symbols to their position details.
         """
         return self.positions
 
@@ -912,14 +901,15 @@ class Portfolio:
         """
         Calculate the total portfolio equity.
 
-        This method computes the total equity by summing the cash balance,
-        the value of long positions (asset_value), and subtracting the value
-        of short positions (liabilities).
-
         Returns:
             ExtendedDecimal: The total portfolio equity.
         """
-        return self.cash + self.asset_value - self.liabilities
+        position_value = sum(
+            abs(position["size"] * position["current_price"])
+            for position in self.positions.values()
+            if "current_price" in position
+        )
+        return self.cash + position_value
 
     def get_account_value(self) -> ExtendedDecimal:
         """
@@ -992,18 +982,13 @@ class Portfolio:
         """
         Get the current state of the portfolio.
 
-        This method returns a comprehensive dictionary containing the current
-        state of the portfolio, including cash, equity, asset value, liabilities,
-        open trades, pending orders, and other relevant metrics.
-
         Returns:
             Dict[str, Any]: A dictionary containing the current portfolio state.
         """
         return {
             "cash": self.cash,
             "equity": self.calculate_equity(),
-            "asset_value": self.asset_value,
-            "liabilities": self.liabilities,
+            "open_positions": self.get_open_positions(),
             "open_trades": {
                 symbol: [trade.to_dict() for trade in trades]
                 for symbol, trades in self.open_trades.items()
@@ -1013,7 +998,6 @@ class Portfolio:
             "closed_trades": len(self.closed_trades),
             "margin_used": self.margin_used,
             "buying_power": self.buying_power,
-            "margin_ratio": self.margin_ratio,
         }
 
     def _generate_order_id(self) -> int:

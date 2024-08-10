@@ -242,9 +242,7 @@ class Portfolio:
 
         # Check if there's enough margin to execute the order
         if not self._check_margin_requirements(order, cost):
-            logger_main.log_and_print(
-                f"Insufficient margin to execute order: {order}", level="warning"
-            )
+            logger_main.log_and_print(f"Insufficient margin to execute order: {order}")
             return False, None
 
         self._update_margin(order, cost)
@@ -345,7 +343,7 @@ class Portfolio:
                 logger_main.log_and_print(f"Modified order: {order}", level="info")
                 return True
         logger_main.log_and_print(
-            f"Order with ID {order_id} not found in pending orders.", level="warning"
+            f"Order with ID {order_id} not found in pending orders."
         )
         return False
 
@@ -758,7 +756,7 @@ class Portfolio:
         """
         equity = self.calculate_equity()
         if equity / self.margin_used < self.margin_call_threshold:
-            logger_main.log_and_print("Margin call triggered!", level="warning")
+            logger_main.log_and_print("Margin call triggered!")
             return True
         return False
 

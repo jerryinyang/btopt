@@ -13,12 +13,20 @@ class CustomFormatter(logging.Formatter):
     def __init__(self):
         super().__init__()
         self.formats = {
-            logging.DEBUG: "%(asctime)s - %(levelname)s [%(name)s] - %(message)s",
-            logging.INFO: "%(asctime)s - %(levelname)s [%(name)s] - %(message)s",
-            logging.WARNING: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
-            logging.ERROR: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
-            logging.CRITICAL: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
+            logging.DEBUG: "%(levelname)s [%(name)s] - %(message)s",
+            logging.INFO: "%(levelname)s [%(name)s] - %(message)s",
+            logging.WARNING: "%(levelname)s [%(name)s]\n%(message)s\n   Source: %(pathname)s:%(lineno)d",
+            logging.ERROR: "%(levelname)s [%(name)s]\n%(message)s\n     Source: %(pathname)s:%(lineno)d",
+            logging.CRITICAL: "%(levelname)s [%(name)s]\n%(message)s\n  Source: %(pathname)s:%(lineno)d",
         }
+
+        # self.formats = {
+        #     logging.DEBUG: "%(asctime)s - %(levelname)s [%(name)s] - %(message)s",
+        #     logging.INFO: "%(asctime)s - %(levelname)s [%(name)s] - %(message)s",
+        #     logging.WARNING: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
+        #     logging.ERROR: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
+        #     logging.CRITICAL: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
+        # }
 
     def format(self, record: logging.LogRecord) -> str:
         """

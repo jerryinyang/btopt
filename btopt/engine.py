@@ -134,22 +134,20 @@ class Engine:
             bool: True if the data is valid and sufficient, False otherwise.
         """
         if not self._dataview.has_data:
-            logger_main.info("No data has been loaded.", level="warning")
+            logger_main.info("No data has been loaded.")
             return False
 
         if len(self._dataview.symbols) == 0:
-            logger_main.info("No symbols found in the loaded data.", level="warning")
+            logger_main.info("No symbols found in the loaded data.")
             return False
 
         if len(self._dataview.timeframes) == 0:
-            logger_main.info("No timeframes found in the loaded data.", level="warning")
+            logger_main.info("No timeframes found in the loaded data.")
             return False
 
         date_range = self._dataview.get_data_range()
         if date_range[0] == date_range[1]:
-            logger_main.info(
-                "Insufficient data: only one data point available.", level="warning"
-            )
+            logger_main.info("Insufficient data: only one data point available.")
             return False
 
         logger_main.info("Data validation passed.")
@@ -392,9 +390,7 @@ class Engine:
             del self._strategies[strategy_id]
             logger_main.info(f"Removed strategy with ID: {strategy_id}")
         else:
-            logger_main.info(
-                f"Strategy not found with ID: {strategy_id}", level="warning"
-            )
+            logger_main.info(f"Strategy not found with ID: {strategy_id}")
 
     def get_strategy_by_id(self, strategy_id: str) -> Optional[Strategy]:
         """
@@ -423,9 +419,7 @@ class Engine:
             strategy.parameters = new_parameters
             logger_main.info(f"Updated parameters for strategy {strategy_id}")
         else:
-            logger_main.info(
-                f"Strategy with ID {strategy_id} not found.", level="warning"
-            )
+            logger_main.info(f"Strategy with ID {strategy_id} not found.")
 
     def log_strategy_activity(self, strategy_id: str, message: str) -> None:
         """
@@ -461,7 +455,7 @@ class Engine:
         clear_log_file()
 
         if self._is_running:
-            logger_main.info("Backtest is already running.", level="warning")
+            logger_main.info("Backtest is already running.")
             return self.reporter if self.reporter else Reporter(self.portfolio, self)
 
         try:
@@ -556,11 +550,13 @@ class Engine:
     def _process_order_fills(self, data_point: Dict[str, Dict[Timeframe, Bar]]) -> None:
         for order in self.portfolio.pending_orders + self.portfolio.limit_exit_orders:
             symbol = order.details.ticker
-            current_bar = data_point[symbol][order.details.timeframe].close
+            current_bar = data_point[symbol][order.details.timeframe]
 
             is_filled, fill_price = order.is_filled(current_bar)
             if is_filled:
-                executed, trade = self.portfolio.execute_order(order, fill_price)
+                executed, trade = self.portfolio.execute_order(
+                    order, fill_price, current_bar
+                )
                 if executed:
                     self._notify_order_fill(order, trade)
 
@@ -872,9 +868,7 @@ class Engine:
         """
         strategy = self.get_strategy_by_id(strategy_id)
         if not strategy:
-            logger_main.info(
-                f"Strategy with ID {strategy_id} not found.", level="warning"
-            )
+            logger_main.info(f"Strategy with ID {strategy_id} not found.")
             return {}
 
         trades = self.get_trades_for_strategy(strategy_id)

@@ -154,9 +154,7 @@ class DataView:
         self._calculate_master_timeline()
 
         if self.master_timeline is None:
-            logger_main.info(
-                "No master timeline available. Cannot align data.", level="warning"
-            )
+            logger_main.info("No master timeline available. Cannot align data.")
             return
 
         for symbol in self.data:
