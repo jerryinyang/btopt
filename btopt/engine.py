@@ -13,7 +13,7 @@ from .portfolio import Portfolio
 from .reporter import Reporter
 from .strategy.strategy import Strategy
 from .trade import Trade
-from .util.decimal import ExtendedDecimal
+from .util.ext_decimal import ExtendedDecimal
 
 
 class Engine:
@@ -74,7 +74,7 @@ class Engine:
 
     def __init__(self):
         self._dataview: DataView = DataView()
-        self.portfolio: Portfolio = Portfolio(engine=self)
+        self.portfolio: Portfolio = None
         self._strategies: Dict[str, Strategy] = {}
         self._current_timestamp: Optional[pd.Timestamp] = None
         self._current_market_data: Optional[Dict[str, Dict[Timeframe, Bar]]] = None
@@ -108,8 +108,6 @@ class Engine:
             config (Dict[str, Any]): A dictionary containing configuration parameters.
         """
         self._config = config
-        self.portfolio.set_config(config)
-        logger_main.info("Backtest configuration set.")
 
     def reset(self) -> None:
         """
@@ -503,6 +501,11 @@ class Engine:
         This method sets up each strategy with the appropriate data and timeframes.
         It also ensures that the Reporter is reset to None at the start of each backtest.
         """
+
+        # Initialize the Portfolio object
+        self.portfolio = Portfolio(self)
+        self.portfolio.set_config(self._config)
+
         # Reset the Reporter
         self.reporter = None
 
@@ -765,7 +768,7 @@ class Engine:
         """
         strategy = self.get_strategy_by_id(order.details.strategy_id)
         if strategy:
-            strategy._on_order_update(order)
+            strategy.on_order_update(order)
 
     def _notify_strategies(self) -> None:
         """
@@ -774,7 +777,7 @@ class Engine:
         This method informs all strategies about any changes to their orders or trades
         that occurred during the current timestamp processing.
         """
-        logger_main.warning(f"NOTIFY TRADE: {self.portfolio.updated_trades}")
+        # logger_main.warning(f"NOTIFY TRADE: {self.portfolio.updated_trades}")
         for order in self.portfolio.updated_orders:
             self._notify_order_update(order)
         for trade in self.portfolio.updated_trades:
@@ -789,7 +792,7 @@ class Engine:
         """
         strategy = self.get_strategy_by_id(trade.strategy_id)
         if strategy:
-            strategy._on_trade_update(trade)
+            strategy.on_trade_update(trade)
 
     # endregion
 
@@ -827,6 +830,57 @@ class Engine:
             ExtendedDecimal: The current position size (positive for long, negative for short).
         """
         return self.portfolio.get_position_size(symbol)
+
+    def calculate_position_size(
+        self,
+        strategy_id: str,
+        symbol: str,
+        entry_price: Union[float, ExtendedDecimal],
+        stop_loss: Union[float, ExtendedDecimal],
+    ) -> ExtendedDecimal:
+        """
+        Retrieve the calculated position size from the Portfolio based on the given parameters.
+
+        This method acts as an intermediary between the Strategy and the Portfolio,
+        ensuring that position sizing adheres to the overall risk management rules
+        set in the Portfolio.
+
+        Args:
+            strategy_id (str): The ID of the strategy requesting the position size.
+            symbol (str): The trading symbol for which to calculate the position size.
+            entry_price (Union[float, Decimal]): The proposed entry price for the trade.
+            stop_loss (Union[float, Decimal]): The proposed stop-loss price for the trade.
+
+        Returns:
+            ExtendedDecimal: The calculated position size.
+
+        Raises:
+            ValueError: If the entry_price or stop_loss are invalid, or if the calculation fails.
+        """
+        try:
+            # Convert entry_price and stop_loss to ExtendedDecimal if they're not already
+            entry_price_dec = ExtendedDecimal(str(entry_price))
+            stop_loss_dec = ExtendedDecimal(str(stop_loss))
+
+            # Validate input
+            if entry_price_dec <= 0 or stop_loss_dec <= 0:
+                raise ValueError("Entry price and stop loss must be positive values.")
+
+            # Call the Portfolio's calculate_position_size method
+            position_size = self.portfolio.calculate_position_size(
+                entry_price_dec, stop_loss_dec
+            )
+
+            logger_main.info(
+                f"Calculated position size for strategy {strategy_id}, symbol {symbol}: {position_size}"
+            )
+            return position_size
+
+        except Exception as e:
+            logger_main.error(
+                f"Error calculating position size for strategy {strategy_id}, symbol {symbol}: {str(e)}"
+            )
+            raise ValueError(f"Failed to calculate position size: {str(e)}")
 
     def get_available_margin(self) -> ExtendedDecimal:
         """
@@ -901,5 +955,99 @@ class Engine:
             "unrealized_pnl": sum(trade.metrics.unrealized_pnl for trade in trades),
             # Add more metrics as needed
         }
+
+    # endregion
+
+    # region Risk Managament
+    def get_risk_amount(self, symbol: str, strategy_id: str) -> ExtendedDecimal:
+        """
+        Get the risk amount for a specific symbol and strategy.
+
+        This method retrieves the risk amount allocated to a symbol from the Portfolio,
+        considering the current market conditions and strategy requirements.
+
+        Args:
+            symbol (str): The trading symbol to get the risk amount for.
+            strategy_id (str): The ID of the strategy requesting the risk amount.
+
+        Returns:
+            ExtendedDecimal: The calculated risk amount for the symbol.
+
+        Raises:
+            ValueError: If the symbol is not found in the portfolio or the strategy doesn't exist.
+        """
+        if symbol not in self._dataview.symbols:
+            raise ValueError(f"Symbol {symbol} not found in the portfolio")
+        if strategy_id not in self._strategies:
+            raise ValueError(f"Strategy with ID {strategy_id} does not exist")
+
+        return self.portfolio.get_risk_amount_for_symbol(symbol)
+
+    def set_symbol_weight(self, symbol: str, weight: float) -> None:
+        """
+        Set the weight for a specific symbol in the portfolio.
+
+        This method updates the weight of a given symbol in the portfolio and ensures
+        that all weights are normalized.
+
+        Args:
+            symbol (str): The symbol to set the weight for.
+            weight (float): The new weight for the symbol (between 0 and 1).
+
+        Raises:
+            ValueError: If the symbol is not found in the portfolio or the weight is invalid.
+        """
+        if symbol not in self._dataview.symbols:
+            raise ValueError(f"Symbol {symbol} not found in the portfolio")
+
+        self.portfolio.set_symbol_weight(symbol, weight)
+        logger_main.info(f"Updated weight for symbol {symbol} to {weight}")
+
+    def get_symbol_weight(self, symbol: str) -> ExtendedDecimal:
+        """
+        Get the weight of a specific symbol in the portfolio.
+
+        Args:
+            symbol (str): The symbol to get the weight for.
+
+        Returns:
+            ExtendedDecimal: The weight of the symbol.
+
+        Raises:
+            ValueError: If the symbol is not found in the portfolio.
+        """
+        if symbol not in self._dataview.symbols:
+            raise ValueError(f"Symbol {symbol} not found in the portfolio")
+
+        return self.portfolio.get_symbol_weight(symbol)
+
+    def set_all_symbol_weights(self, weights: Dict[str, float]) -> None:
+        """
+        Set weights for all symbols in the portfolio.
+
+        This method updates the weights for all provided symbols and recalculates
+        the weights to ensure they sum to 1 (100%).
+
+        Args:
+            weights (Dict[str, float]): A dictionary mapping symbols to their weights.
+
+        Raises:
+            ValueError: If any symbol is not found in the portfolio or any weight is invalid.
+        """
+        for symbol in weights.keys():
+            if symbol not in self._dataview.symbols:
+                raise ValueError(f"Symbol {symbol} not found in the portfolio")
+
+        self.portfolio.set_all_symbol_weights(weights)
+        logger_main.info("Updated weights for all symbols in the portfolio")
+
+    def get_all_symbol_weights(self) -> Dict[str, ExtendedDecimal]:
+        """
+        Get the weights of all symbols in the portfolio.
+
+        Returns:
+            Dict[str, ExtendedDecimal]: A dictionary mapping symbols to their weights.
+        """
+        return self.portfolio.get_all_symbol_weights()
 
     # endregion

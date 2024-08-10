@@ -7,7 +7,7 @@ import quantstats_lumi as qs
 
 from .log_config import logger_main
 from .types import EngineType, PortfolioType
-from .util.decimal import ExtendedDecimal
+from .util.ext_decimal import ExtendedDecimal
 
 
 class Reporter:

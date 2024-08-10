@@ -9,76 +9,35 @@ from .log_config import logger_main
 from .order import Order, OrderDetails
 from .trade import Trade
 from .types import EngineType
-from .util.decimal import ExtendedDecimal
+from .util.ext_decimal import ExtendedDecimal
 
 
 class Portfolio:
-    """
-    A comprehensive portfolio management system for trading and backtesting.
-
-    The Portfolio class represents a trading account and provides functionality for
-    order management, trade execution, position tracking, risk management, and
-    performance analysis. It supports multiple assets, various order types, and
-    margin trading.
-
-    Key Features:
-    - Order management: Create, execute, modify, and cancel orders
-    - Position tracking: Monitor open positions and average entry prices
-    - Trade management: Open, close, and partially close trades
-    - Risk management: Implement margin trading with configurable ratios and margin calls
-    - Performance analysis: Calculate key metrics such as total return, Sharpe ratio, and drawdown
-    - Multi-strategy support: Track trades and orders for multiple trading strategies
-    - Reporting: Generate comprehensive reports and visualizations using the integrated Reporter class
-
-    Attributes:
-        initial_capital (ExtendedDecimal): The starting capital of the portfolio.
-        cash (ExtendedDecimal): The current cash balance.
-        commission_rate (ExtendedDecimal): The commission rate for trades.
-        slippage (ExtendedDecimal): The slippage rate for trades.
-        pyramiding (int): The maximum number of allowed positions per symbol.
-        margin_ratio (ExtendedDecimal): The required margin ratio for trades.
-        margin_call_threshold (ExtendedDecimal): The threshold for triggering a margin call.
-        positions (Dict[str, ExtendedDecimal]): Current positions for each symbol.
-        avg_entry_prices (Dict[str, ExtendedDecimal]): Average entry prices for each symbol.
-        open_trades (Dict[str, List[Trade]]): Open trades grouped by symbol.
-        closed_trades (List[Trade]): List of closed trades.
-        pending_orders (List[Order]): List of pending orders.
-        limit_exit_orders (List[Order]): List of pending limit exit orders.
-        trade_count (int): Total number of trades executed.
-        margin_used (ExtendedDecimal): Amount of margin currently in use.
-        buying_power (ExtendedDecimal): Available buying power for new trades.
-        metrics (pd.DataFrame): DataFrame storing portfolio metrics over time.
-        engine (Engine): Instance of the Engine class managing the trading system.
-
-    Usage:
-        portfolio = Portfolio(initial_capital=ExtendedDecimal("100000"), commission_rate=ExtendedDecimal("0.001"))
-        portfolio.create_order("AAPL", Order.Direction.LONG, 100, Order.ExecType.MARKET)
-        portfolio.update(timestamp, market_data)
-        performance = portfolio.get_performance_metrics()
-    """
-
     def __init__(
         self,
+        engine: EngineType,
         initial_capital: ExtendedDecimal = ExtendedDecimal("100000"),
         commission_rate: ExtendedDecimal = ExtendedDecimal("0.001"),
         slippage: ExtendedDecimal = ExtendedDecimal("0"),
         pyramiding: int = 1,
         margin_ratio: ExtendedDecimal = ExtendedDecimal("0.5"),
         margin_call_threshold: ExtendedDecimal = ExtendedDecimal("0.3"),
-        engine: "EngineType" = None,
+        risk_percentage: ExtendedDecimal = ExtendedDecimal("0.02"),
     ):
         """
-        Initialize the Portfolio with given parameters.
+        Initialize the Portfolio with given parameters and engine.
 
         Args:
+            engine (EngineType): The Engine instance managing the trading system.
             initial_capital (ExtendedDecimal): The starting capital of the portfolio.
             commission_rate (ExtendedDecimal): The commission rate for trades.
             slippage (ExtendedDecimal): The slippage rate for trades.
             pyramiding (int): The maximum number of allowed positions per symbol.
             margin_ratio (ExtendedDecimal): The required margin ratio for trades.
             margin_call_threshold (ExtendedDecimal): The threshold for triggering a margin call.
-            engine (Engine): The Engine instance managing the trading system.
+            risk_percentage (ExtendedDecimal): The default risk percentage for the portfolio.
         """
+        self.engine = engine
         self.initial_capital = initial_capital
         self.cash = initial_capital
         self.commission_rate = commission_rate
@@ -86,14 +45,12 @@ class Portfolio:
         self.pyramiding = pyramiding
         self.margin_ratio = margin_ratio
         self.margin_call_threshold = margin_call_threshold
-        self.engine = engine
+        self.risk_percentage = risk_percentage
 
-        # New attributes for improved equity calculation
         self.asset_value = ExtendedDecimal("0")
         self.liabilities = ExtendedDecimal("0")
         self.buying_power = initial_capital
 
-        # Existing attributes
         self.positions: Dict[str, ExtendedDecimal] = {}
         self.avg_entry_prices: Dict[str, ExtendedDecimal] = {}
         self.open_trades: Dict[str, List[Trade]] = {}
@@ -105,6 +62,10 @@ class Portfolio:
 
         self.updated_orders: List[Order] = []
         self.updated_trades: List[Trade] = []
+
+        # Initialize symbol weights
+        self._symbol_weights: Dict[str, ExtendedDecimal] = {}
+        self._initialize_symbol_weights()
 
         # Initialize the metrics DataFrame with new columns
         self.metrics = pd.DataFrame(
@@ -121,6 +82,17 @@ class Portfolio:
         )
 
     # region Initialization and Configuration
+
+    def _initialize_symbol_weights(self) -> None:
+        """
+        Initialize the symbol weights based on the symbols provided by the engine.
+
+        This method sets equal weights for all symbols in the engine's DataView.
+        """
+        symbols = self.engine._dataview.symbols
+        weight = ExtendedDecimal("1") / ExtendedDecimal(str(len(symbols)))
+        for symbol in symbols:
+            self._symbol_weights[symbol] = weight
 
     def set_config(self, config: Dict[str, Any]) -> None:
         """
@@ -142,6 +114,9 @@ class Portfolio:
         )
         self.margin_call_threshold = ExtendedDecimal(
             str(config.get("margin_call_threshold", self.margin_call_threshold))
+        )
+        self.risk_percentage = ExtendedDecimal(
+            str(config.get("risk_percentage", self.risk_percentage))
         )
 
     def reset(self) -> None:
@@ -260,6 +235,146 @@ class Portfolio:
         logger_main.log_and_raise(
             ValueError(f"Unable to get current price for {symbol} {self.engine}")
         )
+
+    # endregion
+
+    # region Risk Amount Management
+    def calculate_risk_amount(self, percentage: float = 1.0) -> ExtendedDecimal:
+        """
+        Calculate the total risk amount based on available equity and margin requirements.
+
+        This method computes the total amount that can be risked in trading, considering
+        the current equity and margin requirements. It allows for specifying a percentage
+        of this total to be used.
+
+        Args:
+            percentage (float): The percentage of the total available equity to use.
+                                Defaults to 1.0 (100%).
+
+        Returns:
+            ExtendedDecimal: The calculated risk amount.
+
+        Raises:
+            ValueError: If the percentage is not between 0 and 1.
+        """
+        if not 0 <= percentage <= 1:
+            raise ValueError("Percentage must be between 0 and 1")
+
+        total_equity = self.calculate_equity()
+        available_margin = self.get_available_margin()
+
+        # Use the lesser of total equity and available margin to be conservative
+        base_risk_amount = min(total_equity, available_margin)
+
+        return base_risk_amount * ExtendedDecimal(str(percentage))
+
+    def set_symbol_weight(self, symbol: str, weight: float) -> None:
+        """
+        Set the weight for a specific symbol in the portfolio.
+
+        This method updates the weight of a given symbol and recalculates all weights
+        to ensure they sum to 1 (100%).
+
+        Args:
+            symbol (str): The symbol to set the weight for.
+            weight (float): The new weight for the symbol (between 0 and 1).
+
+        Raises:
+            ValueError: If the weight is not between 0 and 1 or if the symbol is not in the portfolio.
+        """
+        if symbol not in self._symbol_weights:
+            raise ValueError(f"Symbol {symbol} not found in portfolio")
+        if not 0 <= weight <= 1:
+            raise ValueError("Weight must be between 0 and 1")
+
+        self._symbol_weights[symbol] = ExtendedDecimal(str(weight))
+        self._normalize_weights()
+
+    def get_symbol_weight(self, symbol: str) -> ExtendedDecimal:
+        """
+        Get the weight of a specific symbol in the portfolio.
+
+        Args:
+            symbol (str): The symbol to get the weight for.
+
+        Returns:
+            ExtendedDecimal: The weight of the symbol.
+
+        Raises:
+            KeyError: If the symbol is not found in the portfolio.
+        """
+        if symbol not in self._symbol_weights:
+            raise KeyError(f"Symbol {symbol} not found in portfolio")
+        return self._symbol_weights[symbol]
+
+    def set_all_symbol_weights(self, weights: Dict[str, float]) -> None:
+        """
+        Set weights for all symbols in the portfolio.
+
+        This method updates the weights for all provided symbols and recalculates
+        the weights to ensure they sum to 1 (100%).
+
+        Args:
+            weights (Dict[str, float]): A dictionary mapping symbols to their weights.
+
+        Raises:
+            ValueError: If any weight is not between 0 and 1 or if any symbol is not in the portfolio.
+        """
+        for symbol, weight in weights.items():
+            if symbol not in self._symbol_weights:
+                raise ValueError(f"Symbol {symbol} not found in portfolio")
+            if not 0 <= weight <= 1:
+                raise ValueError(f"Weight for {symbol} must be between 0 and 1")
+            self._symbol_weights[symbol] = ExtendedDecimal(str(weight))
+
+        self._normalize_weights()
+
+    def get_all_symbol_weights(self) -> Dict[str, ExtendedDecimal]:
+        """
+        Get the weights of all symbols in the portfolio.
+
+        Returns:
+            Dict[str, ExtendedDecimal]: A dictionary mapping symbols to their weights.
+        """
+        return self._symbol_weights.copy()
+
+    def get_risk_amount_for_symbol(self, symbol: str) -> ExtendedDecimal:
+        """
+        Calculate the risk amount for a specific symbol based on its weight.
+
+        This method computes the portion of the total risk amount allocated to a
+        specific symbol, based on the symbol's weight in the portfolio.
+
+        Args:
+            symbol (str): The symbol to calculate the risk amount for.
+
+        Returns:
+            ExtendedDecimal: The calculated risk amount for the symbol.
+
+        Raises:
+            KeyError: If the symbol is not found in the portfolio.
+        """
+        if symbol not in self._symbol_weights:
+            raise KeyError(f"Symbol {symbol} not found in portfolio")
+
+        total_risk_amount = self.calculate_risk_amount()
+        symbol_weight = self._symbol_weights[symbol]
+
+        return total_risk_amount * symbol_weight
+
+    def _normalize_weights(self) -> None:
+        """
+        Normalize the symbol weights to ensure they sum to 1 (100%).
+
+        This private method is called after weight updates to maintain the
+        integrity of the weight distribution across all symbols.
+        """
+        total_weight = sum(self._symbol_weights.values())
+        if total_weight == 0:
+            return  # Avoid division by zero
+
+        for symbol in self._symbol_weights:
+            self._symbol_weights[symbol] /= total_weight
 
     # endregion
 
@@ -575,6 +690,7 @@ class Portfolio:
                 )
                 continue
 
+            # logger_main.warning(f"ORDER SIZE: {order.details.size}")
             is_filled, fill_price = order.is_filled(current_bar)
             if is_filled:
                 executed, trade = self.execute_order(order, fill_price, current_bar)
@@ -686,6 +802,8 @@ class Portfolio:
 
         # Always create a new trade
         self.trade_count += 1
+
+        logger_main.warning(f"TIME: {self.engine._current_timestamp} | ORDER: {order}")
         new_trade = Trade(
             trade_id=self.trade_count,
             entry_order=order,

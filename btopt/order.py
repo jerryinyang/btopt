@@ -6,7 +6,7 @@ from typing import List, Optional
 from .data.bar import Bar
 from .data.timeframe import Timeframe
 from .log_config import logger_main
-from .util.decimal import ExtendedDecimal
+from .util.ext_decimal import ExtendedDecimal
 
 
 @dataclass(frozen=True)
@@ -301,6 +301,7 @@ class Order:
         size: Optional[ExtendedDecimal] = None,
     ):
         """Mark the order as filled (fully or partially) at the specified price and timestamp."""
+
         fill_size = size or (self.details.size - self.filled_size)
         self.filled_size += fill_size
         self.fill_price = (self.fill_price or ExtendedDecimal("0")) + price * fill_size

@@ -8,7 +8,7 @@ import pandas as pd
 from ..data.bar import Bar
 from ..data.timeframe import Timeframe
 from ..log_config import logger_main
-from ..util.decimal import ExtendedDecimal
+from ..util.ext_decimal import ExtendedDecimal
 
 
 class Data:

@@ -6,7 +6,7 @@ from typing import List, Optional
 from .data.bar import Bar
 from .log_config import logger_main
 from .order import Order
-from .util.decimal import ExtendedDecimal
+from .util.ext_decimal import ExtendedDecimal
 
 
 @dataclass

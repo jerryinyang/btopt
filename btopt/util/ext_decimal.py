@@ -113,19 +113,21 @@ def ed_log(x):
 
 
 if __name__ == "__main__":
-    # Example usage
-    a = ExtendedDecimal("10.5")
-    b = a + 5  # ExtendedDecimal + int
-    c = 7.5 - a  # float - ExtendedDecimal
-    d = a * 2.5  # ExtendedDecimal * float
-    e = 20 / a  # int / ExtendedDecimal
-    f = a**2  # ExtendedDecimal ** int
-    g = ed_sin(a)  # Sine of ExtendedDecimal
+    # # Example usage
+    # a = ExtendedDecimal("10.5")
+    # b = a + 5  # ExtendedDecimal + int
+    # c = 7.5 - a  # float - ExtendedDecimal
+    # d = a * 2.5  # ExtendedDecimal * float
+    # e = 20 / a  # int / ExtendedDecimal
+    # f = a**2  # ExtendedDecimal ** int
+    # g = ed_sin(a)  # Sine of ExtendedDecimal
 
-    print(f"a: {a}, type: {type(a)}")
-    print(f"b: {b}, type: {type(b)}")
-    print(f"c: {c}, type: {type(c)}")
-    print(f"d: {d}, type: {type(d)}")
-    print(f"e: {e}, type: {type(e)}")
-    print(f"f: {f}, type: {type(f)}")
-    print(f"g: {g}, type: {type(g)}")
+    # print(f"a: {a}, type: {type(a)}")
+    # print(f"b: {b}, type: {type(b)}")
+    # print(f"c: {c}, type: {type(c)}")
+    # print(f"d: {d}, type: {type(d)}")
+    # print(f"e: {e}, type: {type(e)}")
+    # print(f"f: {f}, type: {type(f)}")
+    # print(f"g: {g}, type: {type(g)}")
+
+    print(ExtendedDecimal.ROUNDNUM)

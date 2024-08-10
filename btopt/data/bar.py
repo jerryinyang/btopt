@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Union
 
 from ..log_config import logger_main
-from ..util.decimal import ExtendedDecimal
+from ..util.ext_decimal import ExtendedDecimal
 from .timeframe import Timeframe
 
 
