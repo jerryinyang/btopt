@@ -10,31 +10,44 @@ DEFAULT_LOG_LEVEL = "info"
 DEFAULT_CONSOLE_LEVEL = "error"
 
 
-def clear_log_file():
-    """
-    Clears the content of the specified log file.
+def clear_log_files():
+    def clear(log_file_path: Path):
+        """
+        Clears the content of the specified log file.
 
-    :param log_file_path: Path to the log file to be cleared.
-    """
-    log_file_path = DEFAULT_LOG_FILE
-    try:
-        # Ensure the directory exists
-        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        :param log_file_path: Path to the log file to be cleared.
+        """
 
-        # Open the file in write mode to clear its content
-        with open(log_file_path, "w") as file:
-            file.truncate(0)
-        # print(f"Log file '{log_file_path}' has been cleared successfully.")
-        ...
-    except Exception:
-        # print(f"An error occurred while clearing the log file: {e}")
-        ...
+        try:
+            # Ensure the directory exists
+            log_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Open the file in write mode to clear its content
+            with open(log_file_path, "w") as file:
+                file.truncate(0)
+        except Exception:
+            return
+
+    paths = [
+        DEFAULT_LOG_FILE,
+        PROJECT_ROOT / "logs/test.log",
+    ]
+
+    for path in paths:
+        clear(path)
 
 
 # Create a pre-configured logger
 logger_main = get_logger(
     name="main",
     file_location=DEFAULT_LOG_FILE,
-    level=DEFAULT_LOG_LEVEL,
+    level="warning",
+    console_level=DEFAULT_CONSOLE_LEVEL,
+)
+
+logger_test = get_logger(
+    name="test",
+    file_location=PROJECT_ROOT / "logs/test.log",
+    level="info",
     console_level=DEFAULT_CONSOLE_LEVEL,
 )

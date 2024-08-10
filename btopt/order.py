@@ -124,6 +124,7 @@ class Order:
             timeframe=self.details.timeframe,
             parent_id=self.id,
             slippage=self.details.slippage,
+            strategy_id=self.details.strategy_id,
         )
         child_order = Order(order_id=hash(child_details), details=child_details)
         child_order.family_role = self.FamilyRole.CHILD_EXIT

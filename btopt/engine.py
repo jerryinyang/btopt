@@ -7,7 +7,7 @@ from .data.bar import Bar
 from .data.dataloader import BaseDataLoader
 from .data.dataview import DataView
 from .data.timeframe import Timeframe
-from .log_config import clear_log_file, logger_main
+from .log_config import clear_log_files, logger_main
 from .order import Order
 from .portfolio import Portfolio
 from .reporter import Reporter
@@ -452,7 +452,7 @@ class Engine:
             Exception: If an error occurs during the backtest.
         """
         # Clear log file
-        clear_log_file()
+        clear_log_files()
 
         if self._is_running:
             logger_main.info("Backtest is already running.")
@@ -523,10 +523,21 @@ class Engine:
         timestamp: pd.Timestamp,
         data_point: Dict[str, Dict[Timeframe, Bar]],
     ) -> None:
+        """
+        Process a single timestamp in the backtest.
+
+        This method handles all operations for a given timestamp, including
+        processing order fills, updating strategies, updating the portfolio,
+        and notifying strategies of any changes.
+
+        Args:
+            timestamp (pd.Timestamp): The current timestamp being processed.
+            data_point (Dict[str, Dict[Timeframe, Bar]]): The market data for this timestamp.
+        """
         # Process order fills
         self._process_order_fills(data_point)
 
-        # Update each strategy datas
+        # Update each strategy's data
         for strategy in self._strategies.values():
             # Load new data for all symbols
             for symbol in strategy.datas:
@@ -547,6 +558,9 @@ class Engine:
         # Notify strategies of updates
         self._notify_strategies()
 
+        # Clear updated orders and trades in the portfolio
+        self.portfolio.clear_updated_orders_and_trades()
+
     def _process_order_fills(self, data_point: Dict[str, Dict[Timeframe, Bar]]) -> None:
         for order in self.portfolio.pending_orders + self.portfolio.limit_exit_orders:
             symbol = order.details.ticker
@@ -558,7 +572,7 @@ class Engine:
                     order, fill_price, current_bar
                 )
                 if executed:
-                    self._notify_order_fill(order, trade)
+                    self._notify_order_update(order, trade)
 
     def _check_termination_condition(self) -> bool:
         """
@@ -639,7 +653,13 @@ class Engine:
             )
 
         parent_order = self.portfolio.create_order(
-            symbol, direction, size, order_type, price, **kwargs
+            symbol,
+            direction,
+            size,
+            order_type,
+            price,
+            strategy_id=strategy_id,
+            **kwargs,
         )
         child_orders = self.create_limit_exit_orders(
             parent_order, stop_loss, take_profit
@@ -736,27 +756,27 @@ class Engine:
         self.portfolio.close_all_positions(self._current_timestamp)
         logger_main.info("Closed all open positions.")
 
-    def _notify_order_fill(self, order: Order, trade: Optional[Trade]) -> None:
+    def _notify_order_update(self, order: Order) -> None:
         """
-        Notify the relevant strategy of an order fill.
+        Notify the relevant strategy of an order updated.
 
         Args:
-            order (Order): The order that was filled.
-            trade (Optional[Trade]): The resulting trade, if any.
+            order (Order): The order that was updated.
         """
         strategy = self.get_strategy_by_id(order.details.strategy_id)
         if strategy:
-            strategy.on_order_fill(order, trade)
+            strategy._on_order_update(order)
 
     def _notify_strategies(self) -> None:
         """
         Notify strategies of updates to orders and trades.
 
-        This method is called after processing each timestamp to inform strategies
-        of any changes to their orders or trades.
+        This method informs all strategies about any changes to their orders or trades
+        that occurred during the current timestamp processing.
         """
+        logger_main.warning(f"NOTIFY TRADE: {self.portfolio.updated_trades}")
         for order in self.portfolio.updated_orders:
-            self._notify_order_fill(order, None)
+            self._notify_order_update(order)
         for trade in self.portfolio.updated_trades:
             self._notify_trade_update(trade)
 

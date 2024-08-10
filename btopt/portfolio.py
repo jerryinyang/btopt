@@ -308,7 +308,8 @@ class Portfolio:
         Execute an order and update the portfolio accordingly.
 
         This method handles the execution of an order, updating cash, asset value,
-        liabilities, and creating or updating trades as necessary.
+        liabilities, and creating or updating trades as necessary. It also adds
+        the affected trade to the updated_trades list for strategy notification.
 
         Args:
             order (Order): The order to execute.
@@ -316,8 +317,12 @@ class Portfolio:
             bar (Bar): The current price bar.
 
         Returns:
-            Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
-                                        successfully, and the resulting Trade object if applicable.
+            Tuple[bool, Optional[Trade]]: A tuple containing:
+                - bool: True if the order was executed successfully, False otherwise.
+                - Optional[Trade]: The resulting Trade object if applicable, None otherwise.
+
+        Raises:
+            ValueError: If there's insufficient margin to execute the order.
         """
         symbol = order.details.ticker
         size = order.details.size
@@ -351,15 +356,17 @@ class Portfolio:
         else:
             trade = self._create_or_update_trade(order, execution_price, bar)
 
-        # Use partial_fill if the order is not completely filled, otherwise use fill
+        # Add the affected trade to updated_trades for strategy notification
+        if trade:
+            self._add_to_updated_trades(trade)
+
+        # Update order status based on fill
         if order.get_remaining_size() > ExtendedDecimal("0"):
             order.partial_fill(execution_price, size, bar.timestamp)
         else:
             order.fill(execution_price, bar.timestamp, size)
 
         self.updated_orders.append(order)
-        if trade:
-            self.updated_trades.append(trade)
 
         # Update buying power
         self._update_buying_power()
@@ -503,7 +510,8 @@ class Portfolio:
         Close a specific trade and update the portfolio accordingly.
 
         This method handles the closing of a trade, updating cash, asset value,
-        liabilities, and moving the trade from open to closed trades.
+        liabilities, and moving the trade from open to closed trades. It also adds
+        the closed trade to the updated_trades list for strategy notification.
 
         Args:
             trade (Trade): The trade to close.
@@ -529,6 +537,9 @@ class Portfolio:
 
         self._update_position(trade.ticker, -trade.current_size, current_price)
         self._update_buying_power()
+
+        # Add the closed trade to updated_trades for strategy notification
+        self._add_to_updated_trades(trade)
 
         logger_main.info(f"Closed trade: {trade}")
 
@@ -625,12 +636,28 @@ class Portfolio:
             del self.avg_entry_prices[symbol]
 
     def _update_open_trades(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
+        """
+        Update all open trades based on current market data.
+
+        This method iterates through all open trades, updates them with the latest
+        market data, and adds any modified trades to the updated_trades list for
+        strategy notification.
+
+        Args:
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
+        """
         for symbol, trades in self.open_trades.items():
             timeframe = min(market_data[symbol].keys())
             current_bar = market_data[symbol][timeframe]
             for trade in trades:
+                # Store the trade's state before update
+                pre_update_state = trade.to_dict()
+
                 trade.update(current_bar)
-                self.updated_trades.append(trade)
+
+                # Check if the trade state has changed
+                if trade.to_dict() != pre_update_state:
+                    self._add_to_updated_trades(trade)
 
     def _create_or_update_trade(
         self,
@@ -684,6 +711,9 @@ class Portfolio:
         """
         Close or reduce existing trades based on the incoming order.
 
+        This method processes the closure or reduction of trades and adds
+        affected trades to the updated_trades list for strategy notification.
+
         Args:
             symbol (str): The symbol of the trade.
             size (ExtendedDecimal): The size to close or reduce.
@@ -692,7 +722,9 @@ class Portfolio:
             bar (Bar): The current price bar.
 
         Returns:
-            Tuple[List[Trade], ExtendedDecimal]: A tuple containing a list of affected trades and the remaining size.
+            Tuple[List[Trade], ExtendedDecimal]: A tuple containing:
+                - List[Trade]: A list of affected trades.
+                - ExtendedDecimal: The remaining size after closing or reducing trades.
         """
         remaining_size = size
         affected_trades = []
@@ -711,6 +743,9 @@ class Portfolio:
             affected_trades.append(trade)
             remaining_size -= trade.current_size
 
+            # Add the affected trade to updated_trades for strategy notification
+            self._add_to_updated_trades(trade)
+
         # Remove closed trades from open trades
         self.open_trades[symbol] = [
             t for t in self.open_trades[symbol] if t not in affected_trades
@@ -723,9 +758,12 @@ class Portfolio:
 
     def _reverse_trade(
         self, order: Order, execution_price: ExtendedDecimal, bar: Bar
-    ) -> Trade:
+    ) -> Optional[Trade]:
         """
         Handle the creation of a new trade in the opposite direction after closing existing trades.
+
+        This method processes trade reversal, closes existing trades, creates a new trade
+        if necessary, and adds affected trades to the updated_trades list for strategy notification.
 
         Args:
             order (Order): The order that triggered the trade reversal.
@@ -733,7 +771,8 @@ class Portfolio:
             bar (Bar): The current price bar.
 
         Returns:
-            Trade: The newly created trade in the opposite direction.
+            Optional[Trade]: The newly created trade in the opposite direction or the last affected trade.
+                             Returns None if no trades were affected or created.
         """
         symbol = order.details.ticker
         size = order.details.size
@@ -744,23 +783,55 @@ class Portfolio:
             symbol, size, execution_price, order, bar
         )
 
-        # Update the position
+        # Update the position for closed trades
         for trade in affected_trades:
             self._update_position(trade.ticker, -trade.current_size, execution_price)
+            self._add_to_updated_trades(trade)
 
         # If there's remaining size, create a new trade in the opposite direction
         if remaining_size > ExtendedDecimal("0"):
             new_trade = self._create_or_update_trade(
                 order, execution_price, bar, size=remaining_size
             )
-            new_trade.reverse(order, bar)  # Use the new reverse method
+            new_trade.reverse(order, bar)
             self._update_position(
                 symbol, remaining_size * direction.value, execution_price
             )
+            # Add the new trade to updated_trades for strategy notification
+            self._add_to_updated_trades(new_trade)
             return new_trade
-        else:
+        elif affected_trades:
             # If no remaining size, return the last affected trade
-            return affected_trades[-1] if affected_trades else None
+            return affected_trades[-1]
+        else:
+            # If no trades were affected or created
+            return None
+
+    def _add_to_updated_trades(self, trade: Trade) -> None:
+        """
+        Add a trade to the updated_trades list if it's not already present.
+
+        This method ensures that each trade is only added once to the updated_trades
+        list during a single update cycle.
+
+        Args:
+            trade (Trade): The trade to be added to the updated_trades list.
+        """
+        if trade not in self.updated_trades:
+            self.updated_trades.append(trade)
+            logger_main.debug(f"Added trade {trade.id} to updated_trades list")
+
+    def clear_updated_orders_and_trades(self) -> None:
+        """
+        Clear the lists of updated orders and trades.
+
+        This method should be called by the Engine after notifying strategies
+        of order and trade updates. It resets the updated_orders and updated_trades
+        lists, preparing them for the next timestamp cycle.
+        """
+        self.updated_orders.clear()
+        self.updated_trades.clear()
+        logger_main.debug("Cleared updated orders and trades lists")
 
     # endregion
 
@@ -833,6 +904,9 @@ class Portfolio:
     def _handle_margin_call(self) -> None:
         """
         Handle a margin call by closing positions until margin requirements are met.
+
+        This method closes the largest trades until the margin call is satisfied,
+        and adds all closed trades to the updated_trades list for strategy notification.
         """
         while self._check_margin_call() and self.open_trades:
             largest_trade = max(
@@ -840,6 +914,7 @@ class Portfolio:
                 key=lambda t: abs(t.current_size * t.entry_price),
             )
             self.close_trade(largest_trade, largest_trade.current_price)
+            # The close_trade method now handles adding to updated_trades
 
     # endregion
 

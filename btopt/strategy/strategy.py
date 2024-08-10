@@ -725,13 +725,13 @@ class Strategy(metaclass=PreInitABCMeta):
         Args:
             transaction (Union[Order, Trade]): The Order or Trade object to update the position from.
         """
-        symbol = transaction.ticker
+        symbol = transaction.details.ticker
         if isinstance(transaction, Order):
             size = transaction.details.size
         else:  # Trade
             size = transaction.current_size
 
-        if transaction.direction == Order.Direction.LONG:
+        if transaction.details.direction == Order.Direction.LONG:
             self._positions[symbol] = self._positions.get(symbol, 0) + size
         else:  # SHORT
             self._positions[symbol] = self._positions.get(symbol, 0) - size

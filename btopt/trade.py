@@ -30,17 +30,6 @@ class TradeMetrics:
         default_factory=lambda: ExtendedDecimal("0")
     )
 
-    # pnl: ExtendedDecimal = ExtendedDecimal("0")
-    # pnl_percent: ExtendedDecimal = ExtendedDecimal("0")
-    # realized_pnl: ExtendedDecimal = ExtendedDecimal("0")
-    # unrealized_pnl: ExtendedDecimal = ExtendedDecimal("0")
-    # commission: ExtendedDecimal = ExtendedDecimal("0")
-    # slippage: ExtendedDecimal = ExtendedDecimal("0")
-    # max_runup: ExtendedDecimal = ExtendedDecimal("0")
-    # max_runup_percent: ExtendedDecimal = ExtendedDecimal("0")
-    # max_drawdown: ExtendedDecimal = ExtendedDecimal("0")
-    # max_drawdown_percent: ExtendedDecimal = ExtendedDecimal("0")
-
 
 class Trade:
     """Represents a trading position, including entry and exit information, and various metrics."""
