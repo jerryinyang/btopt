@@ -32,15 +32,6 @@ class OrderDetails:
     slippage: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
 
 
-@dataclass
-class Fill:
-    """Represents a single fill for an order."""
-
-    price: ExtendedDecimal
-    size: ExtendedDecimal
-    timestamp: datetime
-
-
 class Order:
     """Represents a trading order with various execution types and statuses."""
 
@@ -84,7 +75,9 @@ class Order:
         self.id = order_id
         self.details = details
         self.status = self.Status.CREATED
-        self.fills: List[Fill] = []
+        self.fill_price: Optional[ExtendedDecimal] = None
+        self.fill_timestamp: Optional[datetime] = None
+        self.filled_size: ExtendedDecimal = ExtendedDecimal("0")
         self.children: List["Order"] = []
         self.family_role = (
             self.FamilyRole.PARENT
@@ -154,7 +147,7 @@ class Order:
     def is_filled(self, bar: "Bar") -> tuple[bool, Optional[ExtendedDecimal]]:
         """Check if the order is filled based on the current price bar."""
         if self.status == self.Status.FILLED:
-            return True, self.get_last_fill_price()
+            return True, self.fill_price
 
         filled, price = self._check_fill_conditions(bar)
         if filled:
@@ -308,30 +301,54 @@ class Order:
         timestamp: datetime,
         size: Optional[ExtendedDecimal] = None,
     ):
-        """Record a fill for the order at the specified price, timestamp, and size."""
-        fill_size = size or self.get_remaining_size()
+        """Mark the order as filled (fully or partially) at the specified price and timestamp."""
 
+        fill_size = size or (self.details.size - self.filled_size)
+        self.filled_size += fill_size
+        self.fill_price = (self.fill_price or ExtendedDecimal("0")) + price * fill_size
+        self.fill_timestamp = timestamp
+
+        if self.filled_size >= self.details.size:
+            self.status = self.Status.FILLED
+        elif self.filled_size > ExtendedDecimal("0"):
+            self.status = self.Status.PARTIALLY_FILLED
+
+    def partial_fill(
+        self,
+        fill_price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        timestamp: datetime,
+    ) -> None:
+        """
+        Update the order's state for a partial fill.
+
+        Args:
+            fill_price (ExtendedDecimal): The price at which the partial fill occurred.
+            fill_size (ExtendedDecimal): The size that was filled in this partial fill.
+            timestamp (datetime): The timestamp of the partial fill.
+
+        Raises:
+            ValueError: If the fill size exceeds the remaining unfilled size.
+        """
         if fill_size > self.get_remaining_size():
             logger_main.log_and_raise(
-                ValueError("Order fill size exceeds remaining unfilled size.")
+                ValueError("Fill size exceeds remaining unfilled size")
             )
 
-        self.fills.append(
-            Fill(
-                price=price,
-                size=fill_size,
-                timestamp=timestamp,
-            )
-        )
+        self.filled_size += fill_size
+        self.fill_price = (
+            self.fill_price or ExtendedDecimal("0")
+        ) + fill_price * fill_size
+        self.fill_timestamp = timestamp
 
-        if self.get_remaining_size() == ExtendedDecimal("0"):
+        if self.filled_size == self.details.size:
             self.status = self.Status.FILLED
         else:
             self.status = self.Status.PARTIALLY_FILLED
 
         logger_main.info(
-            f"Order {self.id} filled: price {price}, size {fill_size}, "
-            f"Total filled {self.get_filled_size()}/{self.details.size}"
+            f"Order {self.id} partially filled: price {fill_price}, size {fill_size}, "
+            f"total filled {self.filled_size}/{self.details.size}"
         )
 
     def cancel(self):
@@ -383,35 +400,21 @@ class Order:
 
     def get_filled_size(self) -> ExtendedDecimal:
         """Get the total filled size of the order."""
-        return sum(fill.size for fill in self.fills)
+        return self.filled_size
 
     def get_remaining_size(self) -> ExtendedDecimal:
         """Get the remaining unfilled size of the order."""
-        return self.details.size - self.get_filled_size()
+        return self.details.size - self.filled_size
 
     def get_average_fill_price(self) -> Optional[ExtendedDecimal]:
         """Get the average fill price of the order."""
-        if self.fills:
-            total_value = sum(fill.price * fill.size for fill in self.fills)
-            total_size = self.get_filled_size()
-            return total_value / total_size
-        return None
-
-    def get_last_fill_price(self) -> Optional[ExtendedDecimal]:
-        """Get the price of the last fill."""
-        if self.fills:
-            return self.fills[-1].price
-        return None
-
-    def get_last_fill_timestamp(self) -> Optional[datetime]:
-        """Get the timestamp of the last fill."""
-        if self.fills:
-            return self.fills[-1].timestamp
+        if self.filled_size > ExtendedDecimal("0"):
+            return self.fill_price / self.filled_size
         return None
 
     def update_size(self, new_size: ExtendedDecimal):
         """Update the order size, ensuring it doesn't decrease below the filled size."""
-        if new_size < self.get_filled_size():
+        if new_size < self.filled_size:
             logger_main.log_and_raise(
                 ValueError("New size cannot be less than the filled size")
             )
@@ -434,5 +437,5 @@ class Order:
             f"direction={self.details.direction.name}, "
             f"price={self.details.price}, status={self.status.name}, "
             f"exectype={self.details.exectype.name}, "
-            f"filled={self.get_filled_size()}/{self.details.size})"
+            f"filled={self.filled_size}/{self.details.size})"
         )

@@ -54,12 +54,12 @@ class Trade:
         self.ticker: str = entry_order.details.ticker
         self.direction: Order.Direction = entry_order.details.direction
         self.initial_size: ExtendedDecimal = entry_order.get_filled_size()
-        self.current_size: ExtendedDecimal = self.initial_size
+        self.current_size: ExtendedDecimal = ExtendedDecimal("0")
 
-        self.entry_order: Order = entry_order
+        self.entry_orders: List[Order] = [entry_order]
         self.exit_orders: List[Order] = []
 
-        self.entry_price: ExtendedDecimal = entry_order.get_last_fill_price()
+        self.entry_price: ExtendedDecimal = ExtendedDecimal("0")
         self.entry_timestamp: datetime = entry_bar.timestamp
         self.entry_bar: Bar = entry_bar
 
@@ -77,22 +77,43 @@ class Trade:
         self.commission_rate: Optional[ExtendedDecimal] = commission_rate
         self.strategy_id: Optional[str] = strategy_id or entry_order.details.strategy_id
 
-        self._calculate_entry_commission_and_slippage(entry_order)
+        self._process_entry_order(entry_order)
+
+    def _process_entry_order(self, order: Order):
+        """Process an entry order, updating the trade's size and average entry price."""
+        filled_size = order.get_filled_size()
+        fill_price = order.get_average_fill_price()
+
+        if fill_price is None:
+            logger_main.log_and_raise(ValueError("Entry order has no fill price"))
+
+        new_size = self.current_size + filled_size
+        self.entry_price = (
+            self.entry_price * self.current_size + fill_price * filled_size
+        ) / new_size
+        self.current_size = new_size
+
+        self._calculate_entry_commission_and_slippage(order)
 
     def _calculate_entry_commission_and_slippage(self, order: Order):
-        """Calculates and sets the commission and slippage for the entry order."""
+        """Calculates and sets the commission and slippage for an entry order."""
         if self.commission_rate:
-            self.metrics.commission = (
+            self.metrics.commission += (
                 order.get_filled_size()
-                * order.get_last_fill_price()
+                * order.get_average_fill_price()
                 * self.commission_rate
             )
 
         if order.details.slippage:
-            self.metrics.slippage = (
-                abs(order.details.price - order.get_last_fill_price())
+            self.metrics.slippage += (
+                abs(order.details.price - order.get_average_fill_price())
                 * order.get_filled_size()
             )
+
+    def add_entry(self, order: Order):
+        """Add an additional entry order to the trade (e.g., for pyramiding)."""
+        self.entry_orders.append(order)
+        self._process_entry_order(order)
 
     def update(self, current_bar: Bar) -> None:
         """Updates the trade metrics based on the current market price."""
@@ -159,19 +180,57 @@ class Trade:
         if self.current_size == ExtendedDecimal("0"):
             self.status = self.Status.CLOSED
             self.exit_price = exit_price
-            self.exit_timestamp = (
-                exit_order.get_last_fill_timestamp() or exit_bar.timestamp
-            )
+            self.exit_timestamp = exit_order.fill_timestamp or exit_bar.timestamp
             self.exit_bar = exit_bar
         else:
             self.status = self.Status.PARTIALLY_CLOSED
 
-        self.exit_orders.append(exit_order)
         self._finalize_metrics()
 
         logger_main.info(
             f"Trade {self.id} {'closed' if self.status == self.Status.CLOSED else 'partially closed'}: "
             f"exit price {exit_price}, size {size}, remaining size {self.current_size}"
+        )
+
+    def reverse(self, order: Order, bar: Bar) -> None:
+        """
+        Reverse the trade's direction and update relevant attributes.
+
+        This method closes the current trade and opens a new one in the opposite direction.
+
+        Args:
+            order (Order): The order that triggered the reversal.
+            bar (Bar): The current price bar.
+        """
+        # Close the current trade
+        self.close(order, bar)
+
+        # Reverse the direction
+        self.direction = (
+            Order.Direction.LONG
+            if self.direction == Order.Direction.SHORT
+            else Order.Direction.SHORT
+        )
+
+        # Update trade attributes
+        self.entry_price = order.get_average_fill_price()
+        self.entry_timestamp = bar.timestamp
+        self.entry_bar = bar
+        self.initial_size = order.get_filled_size()
+        self.current_size = self.initial_size
+        self.status = self.Status.ACTIVE
+
+        # Reset exit information
+        self.exit_price = None
+        self.exit_timestamp = None
+        self.exit_bar = None
+
+        # Reset metrics
+        self.metrics = TradeMetrics()
+
+        # Log the reversal
+        logger_main.info(
+            f"Trade {self.id} reversed: new direction {self.direction.name}, size {self.current_size}"
         )
 
     def _calculate_pnl(

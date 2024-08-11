@@ -777,7 +777,7 @@ class Engine:
         This method informs all strategies about any changes to their orders or trades
         that occurred during the current timestamp processing.
         """
-        # logger_main.warning(f"NOTIFY TRADE: {self.portfolio.updated_trades}")
+        # logger_main.warning(f"NOTIFY TRADE: {self.portfolio.updated_orders}")
         for order in self.portfolio.updated_orders:
             self._notify_order_update(order)
         for trade in self.portfolio.updated_trades:
