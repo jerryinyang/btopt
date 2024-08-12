@@ -538,7 +538,7 @@ class Engine:
             data_point (Dict[str, Dict[Timeframe, Bar]]): The market data for this timestamp.
         """
         # Process order fills
-        self._process_order_fills(data_point)
+        self.portfolio._process_pending_orders(timestamp, data_point)
 
         # Update each strategy's data
         for strategy in self._strategies.values():
@@ -555,7 +555,7 @@ class Engine:
             # Run strategy.on_data
             strategy._on_data()
 
-        # Update portfolio
+        # Update portfolio; Process new pending order, update existing trades and positions; update Portfolio metrics
         self.portfolio.update(timestamp, data_point)
 
         # Notify strategies of updates
@@ -563,20 +563,6 @@ class Engine:
 
         # Clear updated orders and trades in the portfolio
         self.portfolio.clear_updated_orders_and_trades()
-
-    def _process_order_fills(self, data_point: Dict[str, Dict[Timeframe, Bar]]) -> None:
-        for order in self.portfolio.pending_orders + self.portfolio.limit_exit_orders:
-            symbol = order.details.ticker
-            current_bar = data_point[symbol][order.details.timeframe]
-
-            is_filled, fill_price = order.is_filled(current_bar)
-            if is_filled:
-                executed, trade = self.portfolio.execute_order(
-                    order, fill_price, current_bar
-                )
-                if executed:
-                    self._notify_order_update(order)
-                    self._notify_trade_update(trade)
 
     def _check_termination_condition(self) -> bool:
         """

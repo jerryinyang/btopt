@@ -61,19 +61,26 @@ class Reporter:
 
     def get_portfolio_returns(self) -> pd.Series:
         """
-        Retrieve the portfolio returns series, converting ExtendedDecimal to float.
+        Retrieve the portfolio returns series, calculated from equity values.
 
         Returns:
             pd.Series: A series of portfolio returns indexed by timestamp.
         """
-        metrics = self.portfolio.get_metrics_data()
-        # Convert ExtendedDecimal to float
-        return pd.Series(
-            metrics["portfolio_return"].astype(float).values,
+        metrics = self.get_metrics_data()
+
+        # Create a series of equity values
+        equity_values = pd.Series(
+            metrics["equity"].values,
             index=metrics["timestamp"],
         )
 
-    # endregion
+        # Calculate and return the percentage changes (returns)
+        returns = equity_values.pct_change()
+
+        # Set the first return to 0 instead of NaN
+        returns.iloc[0] = 0
+
+        return returns
 
     # region Performance Metrics
 

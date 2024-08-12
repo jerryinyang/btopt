@@ -4,7 +4,9 @@ if TYPE_CHECKING:
     from .engine import Engine
     from .portfolio import Portfolio
     from .reporter import Reporter
+    from .strategy.strategy import Strategy
 
 EngineType = Union["Engine", None]
 PortfolioType = Union["Portfolio", None]
 ReporterType = Union["Reporter", None]
+StrategyType = Union["Strategy", None]

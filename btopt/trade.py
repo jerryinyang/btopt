@@ -70,12 +70,14 @@ class Trade:
         self.parent_id: Optional[int] = entry_order.details.parent_id
         self.status: Trade.Status = Trade.Status.ACTIVE
         self.metrics: TradeMetrics = TradeMetrics()
-        self.alpha_name: Optional[str] = getattr(
-            entry_order.details, "alpha_name", None
-        )
 
         self.commission_rate: Optional[ExtendedDecimal] = commission_rate
         self.strategy_id: Optional[str] = strategy_id or entry_order.details.strategy_id
+
+        if not self.strategy_id:
+            logger_main.log_and_raise(
+                "strategy_id cannot be of NoneType for Trade objects."
+            )
 
         self._calculate_entry_commission_and_slippage(entry_order)
 
@@ -255,7 +257,6 @@ class Trade:
             "max_runup_percent": str(self.metrics.max_runup_percent),
             "max_drawdown": str(self.metrics.max_drawdown),
             "max_drawdown_percent": str(self.metrics.max_drawdown_percent),
-            "alpha_name": self.alpha_name,
             "strategy_id": self.strategy_id,
         }
 

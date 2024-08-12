@@ -3,13 +3,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from .data.bar import Bar
-from .data.timeframe import Timeframe
-from .log_config import logger_main
-from .order import Order, OrderDetails
-from .trade import Trade
-from .types import EngineType
-from .util.ext_decimal import ExtendedDecimal
+from ..btopt.data.bar import Bar
+from ..btopt.data.timeframe import Timeframe
+from ..btopt.log_config import logger_main
+from ..btopt.order import Order, OrderDetails
+from ..btopt.trade import Trade
+from ..btopt.types import EngineType
+from ..btopt.util.ext_decimal import ExtendedDecimal
 
 
 class Portfolio:
@@ -59,6 +59,7 @@ class Portfolio:
         self.trade_count = 0
         self.margin_used = ExtendedDecimal("0")
         self.limit_exit_orders: List[Order] = []
+        self.transaction_log: List[Dict[str, Any]] = []
 
         self.current_market_data: Dict[str, Dict[Timeframe, Bar]] = {}
 
@@ -82,6 +83,8 @@ class Portfolio:
                 "portfolio_return",
             ]
         )
+
+        self.realized_pnl_since_last_update = ExtendedDecimal("0")
 
     # region Initialization and Configuration
 
@@ -146,60 +149,59 @@ class Portfolio:
         """
         Update the portfolio state based on the current market data.
 
+        This method processes pending orders, updates open trades, and refreshes portfolio metrics.
+
         Args:
             timestamp (datetime): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+
+        Side effects:
+            - Updates self.current_market_data
+            - Processes pending orders
+            - Updates open trades
+            - Updates portfolio metrics
+            - May trigger margin calls
         """
         self.current_market_data = market_data
 
         self._process_pending_orders(timestamp, market_data)
         self._update_open_trades(market_data)
-        self._update_metrics(timestamp, market_data)
+        self._update_metrics(timestamp)
+        self._update_margin_and_buying_power()
 
-    def _update_metrics(
-        self,
-        timestamp: pd.Timestamp,
-        market_data: Dict[str, Dict[Timeframe, Bar]],
-    ) -> None:
+        if self._check_margin_call():
+            self._handle_margin_call()
+
+    def _update_metrics(self, timestamp: datetime) -> None:
         """
-        Update the portfolio metrics based on the current market data.
+        Update the portfolio metrics based on the current state.
 
         This method calculates and stores essential metrics including cash, equity,
         asset value, liabilities, open/closed PnL, and portfolio returns.
 
         Args:
-            timestamp (pd.Timestamp): The current timestamp.
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+            timestamp (datetime): The current timestamp for the metrics update.
 
-        Returns:
-            None
+        Side effects:
+            - Updates self.metrics DataFrame
         """
-        open_pnl = ExtendedDecimal("0")
-        self.long_position_value = ExtendedDecimal("0")
-        self.short_position_value = ExtendedDecimal("0")
+        realized_pnl, unrealized_pnl = self._calculate_pnl()
 
-        for symbol, trades in self.open_trades.items():
-            timeframe = min(market_data[symbol].keys())
-            current_bar = market_data[symbol][timeframe]
-            for trade in trades:
-                trade.update(current_bar)
-                open_pnl += trade.metrics.pnl
-                if trade.direction == Order.Direction.LONG:
-                    self.long_position_value += trade.current_size * current_bar.close
-                else:  # SHORT
-                    self.short_position_value += trade.current_size * current_bar.close
+        # Add the accumulated realized_pnl to the total realized_pnl
+        realized_pnl += self.realized_pnl_since_last_update
 
-        closed_pnl = sum(trade.metrics.pnl for trade in self.closed_trades)
         equity = self.calculate_equity()
 
-        # Calculate portfolio return
         if not self.metrics.empty:
             previous_equity = self.metrics.iloc[-1]["equity"]
-            portfolio_return = (equity - previous_equity) / previous_equity
+            # Adjust the equity change by the realized_pnl since last update
+            equity_change = (
+                equity - previous_equity + self.realized_pnl_since_last_update
+            )
+            portfolio_return = equity_change / previous_equity
         else:
             portfolio_return = ExtendedDecimal("0")
 
-        # Create a new row for the metrics DataFrame
         new_row = pd.DataFrame(
             {
                 "timestamp": [timestamp],
@@ -207,17 +209,19 @@ class Portfolio:
                 "equity": [equity],
                 "asset_value": [self.long_position_value],
                 "liabilities": [self.short_position_value],
-                "open_pnl": [open_pnl],
-                "closed_pnl": [closed_pnl],
+                "realized_pnl": [realized_pnl],
+                "unrealized_pnl": [unrealized_pnl],
                 "portfolio_return": [portfolio_return],
             }
         )
 
-        # Append the new row to the metrics DataFrame
-        self.metrics = pd.concat([self.metrics, new_row], ignore_index=True)
+        # Reset the accumulated realized_pnl
+        self.realized_pnl_since_last_update = ExtendedDecimal("0")
 
-        # Update buying power
-        self._update_buying_power()
+        # Avoid FutureWarning
+        if self.metrics.empty:
+            self.metrics = new_row
+        self.metrics = pd.concat([self.metrics, new_row], ignore_index=True)
 
     def _get_current_price(self, symbol: str) -> ExtendedDecimal:
         """
@@ -239,6 +243,46 @@ class Portfolio:
         logger_main.log_and_raise(
             ValueError(f"Unable to get current price for {symbol} {self.engine}")
         )
+
+    def _update_cash(self, amount: ExtendedDecimal, reason: str) -> None:
+        """
+        Update the cash balance of the portfolio.
+
+        Args:
+            amount (ExtendedDecimal): The amount to add (positive) or subtract (negative) from the cash balance.
+            reason (str): The reason for the cash update (e.g., "Trade execution", "Commission", "Dividend").
+
+        Side effects:
+            - Updates self.cash
+            - Logs the transaction
+        """
+        self.cash += amount
+        self._log_transaction("Cash", amount, reason)
+
+    def _update_margin_and_buying_power(self) -> None:
+        """
+        Update the margin used and buying power based on current positions and equity.
+
+        This method recalculates the margin used based on all open positions and
+        updates the buying power accordingly.
+
+        Side effects:
+            - Updates self.margin_used
+            - Updates self.buying_power
+        """
+        self.margin_used = ExtendedDecimal("0")
+        for symbol, position in self.positions.items():
+            current_price = self._get_current_price(symbol)
+            position_value = abs(position) * current_price
+            if position > ExtendedDecimal("0"):
+                self.margin_used += position_value * self.margin_ratio
+            else:  # SHORT
+                self.margin_used += (
+                    position_value * self.margin_ratio * ExtendedDecimal("2")
+                )
+
+        equity = self.calculate_equity()
+        self.buying_power = (equity - self.margin_used) / self.margin_ratio
 
     # endregion
 
@@ -428,7 +472,7 @@ class Portfolio:
         Execute an order and update the portfolio accordingly.
 
         This method handles the execution of an order, updating cash, creating or updating trades,
-        and managing position changes. It also handles trade reversals when necessary.
+        and managing position changes.
 
         Args:
             order (Order): The order to execute.
@@ -440,16 +484,11 @@ class Portfolio:
                 - bool: True if the order was executed successfully, False otherwise.
                 - Optional[Trade]: The resulting Trade object if applicable, None otherwise.
 
-        Side Effects:
-            - Updates self.cash
-            - May create new trades or update existing ones
-            - Updates self.positions through _update_position
-            - Updates self.margin_used
-            - May add trades to self.updated_trades
-            - Updates self.buying_power
-
-        Raises:
-            ValueError: If there's insufficient margin to execute the order.
+        Side effects:
+            - Calls self._update_cash
+            - Calls self._manage_trade
+            - Calls self._update_margin_and_buying_power
+            - May update self.updated_orders
         """
         symbol = order.details.ticker
         size = order.details.size
@@ -458,43 +497,28 @@ class Portfolio:
         cost = execution_price * size
         commission = cost * self.commission_rate
 
+        # Check margin requirements
         if not self._check_margin_requirements(order, cost):
             logger_main.warning(f"Insufficient margin to execute order: {order}")
             return False, None
 
-        # Update cash based on order direction
-        if direction == Order.Direction.LONG:
-            self.cash -= cost + commission
-        else:  # SHORT
-            self.cash += cost - commission
-
-        self._update_margin(order, cost)
-
-        # Check if this order would result in a trade reversal
-        current_position = self.positions.get(symbol, ExtendedDecimal("0"))
-        is_reversal = (current_position > 0 and direction == Order.Direction.SHORT) or (
-            current_position < 0 and direction == Order.Direction.LONG
+        # Update cash
+        cash_change = (
+            -cost - commission
+            if direction == Order.Direction.LONG
+            else cost - commission
         )
+        self._update_cash(cash_change, f"Order execution for {symbol}")
 
-        if is_reversal:
-            trade = self._reverse_trade(order, execution_price, bar)
-        else:
-            trade = self._create_or_update_trade(order, bar)
+        # Manage trade
+        trade = self._manage_trade(order, execution_price, bar)
 
-        # Add the affected trade to updated_trades for strategy notification
-        if trade:
-            self._add_to_updated_trades(trade)
+        # Update margin and buying power
+        self._update_margin_and_buying_power()
 
-        # Update self.positions
-        position_change = (
-            order.get_filled_size()
-            if trade.direction == Order.Direction.LONG
-            else -order.get_filled_size()
-        )
-        self._update_position(trade.ticker, position_change, execution_price)
-
-        # Update buying power
-        self._update_buying_power()
+        # Update order status
+        order.status = Order.Status.FILLED
+        self.updated_orders.append(order)
 
         logger_main.info(f"Executed order: {order}, resulting trade: {trade}")
         return True, trade
@@ -623,90 +647,284 @@ class Portfolio:
         """
         Close a specific trade and update the portfolio accordingly.
 
-        This method handles the closing of a trade, updating cash, moving the trade
-        from open to closed trades, and updating relevant portfolio metrics.
-
         Args:
             trade (Trade): The trade to close.
             current_price (ExtendedDecimal): The current market price to close the trade at.
             order (Optional[Order]): The order that triggered the trade closure, if any.
 
-        Side Effects:
-            - Updates self.cash
+        Side effects:
+            - Calls self._update_cash
+            - Calls self._update_positions
             - Moves trade from self.open_trades to self.closed_trades
-            - Updates self.positions through _update_position
+            - Calls self._update_margin_and_buying_power
             - Updates self.updated_trades
-            - Updates self.buying_power
         """
-        dummy_bar = Bar(
-            open=current_price,
-            high=current_price,
-            low=current_price,
-            close=current_price,
-            volume=0,
-            timestamp=self.engine._current_timestamp,
-            timeframe=trade.entry_bar.timeframe,
-            ticker=trade.ticker,
-        )
+        symbol = trade.ticker
+        close_size = trade.current_size
+        close_value = close_size * current_price
+        commission = close_value * self.commission_rate
 
-        # Create a dummy order for the close operation if not provided
-        close_order = order or Order(
-            order_id=self._generate_order_id(),
-            details=Order.OrderDetails(
-                ticker=trade.ticker,
-                direction=Order.Direction.SHORT
-                if trade.direction == Order.Direction.LONG
-                else Order.Direction.LONG,
-                size=trade.current_size,
-                price=current_price,
-                exectype=Order.ExecType.MARKET,
-                timestamp=self.engine._current_timestamp,
-                timeframe=trade.entry_bar.timeframe,
-                strategy_id=trade.strategy_id,
-            ),
+        # Update cash
+        cash_change = (
+            close_value - commission
+            if trade.direction == Order.Direction.LONG
+            else -close_value - commission
         )
+        self._update_cash(cash_change, f"Trade closure for {symbol}")
+
+        # Update positions
+        position_change = (
+            -close_size if trade.direction == Order.Direction.LONG else close_size
+        )
+        self._update_positions(symbol, position_change, current_price)
 
         # Close the trade
         trade.close(
-            order or close_order,
+            order or self._generate_close_order(trade, current_price),
             current_price,
-            dummy_bar,
+            self._create_dummy_bar(current_price, trade),
         )
+        # Calculate and accumulate realized PnL
+        self.realized_pnl_since_last_update += trade.metrics.pnl()
+        logger_main.warning(f"REALIZED PROFIT: {self.realized_pnl_since_last_update}")
 
-        if trade.ticker in self.open_trades:
-            try:
-                self.open_trades[trade.ticker].remove(trade)
-            except Exception as e:
-                logger_main.warning(
-                    f"Tried to delete Trade {trade.id}. Available trades are {[t.id for t in self.open_trades[trade.ticker]]}"
-                )
-                raise e
-            if not self.open_trades[trade.ticker]:
-                del self.open_trades[trade.ticker]
-
+        # Move trade from open to closed
+        self.open_trades[symbol].remove(trade)
+        if not self.open_trades[symbol]:
+            del self.open_trades[symbol]
         self.closed_trades.append(trade)
+
+        # Update margin and buying power
+        self._update_margin_and_buying_power()
+
+        # Add to updated trades
         self._add_to_updated_trades(trade)
 
-        # Update cash and commission
-        trade_value = trade.current_size * current_price
-        commission = trade_value * self.commission_rate
-
-        if trade.direction == Order.Direction.LONG:
-            self.cash += trade_value - commission
-        else:  # SHORT
-            self.cash -= trade_value + commission
-
-        # Update self.positions
-        position_change = (
-            -trade.current_size
-            if trade.direction == Order.Direction.LONG
-            else trade.current_size
-        )
-        self._update_position(trade.ticker, position_change, current_price)
-        self._update_buying_power()
-
-        # Add the closed trade to updated_trades for strategy notification
         logger_main.info(f"Closed trade: {trade}")
+
+    def _process_pending_orders(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> None:
+        """
+        Process all pending orders based on current market data.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+
+        Side effects:
+            - May execute orders
+            - May cancel expired orders
+            - Updates self.pending_orders and self.limit_exit_orders
+        """
+        orders_to_process = self.pending_orders[:] + self.limit_exit_orders[:]
+
+        for order in orders_to_process:
+            symbol = order.details.ticker
+            timeframe = order.details.timeframe or min(market_data[symbol].keys())
+
+            try:
+                current_bar = market_data[symbol][timeframe]
+            except KeyError:
+                logger_main.warning(
+                    f"No market data for {symbol} at timeframe {timeframe}. Skipping order."
+                )
+                continue
+
+            is_filled, fill_price = order.is_filled(current_bar)
+            if is_filled:
+                executed, _ = self.execute_order(order, fill_price, current_bar)
+                if executed:
+                    self._remove_executed_order(order)
+            elif order.is_expired(timestamp):
+                self._cancel_expired_order(order)
+
+    def _manage_trade(
+        self, order: Order, execution_price: ExtendedDecimal, bar: Bar
+    ) -> Optional[Trade]:
+        """
+        Manage trade creation, updates, closures, and reversals.
+
+        This method handles all aspects of trade management, including creating new trades,
+        updating existing trades, closing trades, and handling trade reversals.
+
+        Args:
+            order (Order): The order being executed.
+            execution_price (ExtendedDecimal): The price at which the order is executed.
+            bar (Bar): The current price bar.
+
+        Returns:
+            Optional[Trade]: The newly created or updated trade, if applicable.
+
+        Side effects:
+            - May create new trades in self.open_trades
+            - May update existing trades in self.open_trades
+            - May close trades and move them to self.closed_trades
+            - Updates self.trade_count
+            - Calls self._update_positions
+            - Adds affected trades to self.updated_trades
+        """
+        symbol = order.details.ticker
+        size = order.get_filled_size()
+        direction = order.details.direction
+
+        existing_position = self.positions.get(symbol, ExtendedDecimal("0"))
+        is_reversal = (
+            existing_position > ExtendedDecimal("0")
+            and direction == Order.Direction.SHORT
+        ) or (
+            existing_position < ExtendedDecimal("0")
+            and direction == Order.Direction.LONG
+        )
+
+        if is_reversal:
+            # Close existing position
+            self._close_position(symbol, existing_position, execution_price, bar, order)
+            remaining_size = size - abs(existing_position)
+            if remaining_size > ExtendedDecimal("0"):
+                # Open new position in opposite direction
+                return self._create_new_trade(
+                    order, execution_price, bar, remaining_size
+                )
+        else:
+            return self._create_new_trade(order, execution_price, bar, size)
+
+        return None
+
+    def _calculate_pnl(self) -> Tuple[ExtendedDecimal, ExtendedDecimal]:
+        """
+        Calculate the realized and unrealized Profit and Loss (PnL) for the portfolio.
+
+        Returns:
+            Tuple[ExtendedDecimal, ExtendedDecimal]: A tuple containing:
+                - ExtendedDecimal: The realized PnL
+                - ExtendedDecimal: The unrealized PnL
+        """
+        realized_pnl = sum(trade.metrics.pnl for trade in self.closed_trades)
+        unrealized_pnl = ExtendedDecimal("0")
+
+        for trades in self.open_trades.values():
+            for trade in trades:
+                unrealized_pnl += trade.metrics.unrealized_pnl
+
+        return realized_pnl, unrealized_pnl
+
+    def _log_transaction(
+        self, transaction_type: str, amount: ExtendedDecimal, details: str
+    ) -> None:
+        """
+        Log a transaction to the transaction log.
+
+        Args:
+            transaction_type (str): The type of transaction (e.g., "Cash", "Position", "Trade").
+            amount (ExtendedDecimal): The amount involved in the transaction.
+            details (str): Additional details about the transaction.
+
+        Side effects:
+            - Appends a new entry to self.transaction_log
+        """
+        self.transaction_log.append(
+            {
+                "timestamp": datetime.now(),
+                "type": transaction_type,
+                "amount": amount,
+                "details": details,
+            }
+        )
+
+    def _create_new_trade(
+        self,
+        order: Order,
+        execution_price: ExtendedDecimal,
+        bar: Bar,
+        size: ExtendedDecimal,
+    ) -> Trade:
+        """
+        Create a new trade based on the executed order.
+
+        Args:
+            order (Order): The executed order.
+            execution_price (ExtendedDecimal): The price at which the order was executed.
+            bar (Bar): The current price bar.
+            size (ExtendedDecimal): The size of the new trade.
+
+        Returns:
+            Trade: The newly created trade.
+
+        Side effects:
+            - Creates a new Trade object and adds it to self.open_trades
+            - Increments self.trade_count
+            - Calls self._update_positions
+            - Adds the new trade to self.updated_trades
+        """
+        symbol = order.details.ticker
+        self.trade_count += 1
+        new_trade = Trade(
+            trade_id=self.trade_count,
+            entry_order=order,
+            entry_bar=bar,
+            commission_rate=self.commission_rate,
+        )
+        new_trade.initial_size = size
+        new_trade.current_size = size
+
+        if symbol not in self.open_trades:
+            self.open_trades[symbol] = []
+        self.open_trades[symbol].append(new_trade)
+
+        self._update_positions(
+            symbol,
+            size if order.details.direction == Order.Direction.LONG else -size,
+            execution_price,
+        )
+        self._add_to_updated_trades(new_trade)
+
+        return new_trade
+
+    def _close_position(
+        self,
+        symbol: str,
+        position_size: ExtendedDecimal,
+        execution_price: ExtendedDecimal,
+        bar: Bar,
+        order: Order,
+    ) -> None:
+        """
+        Close an existing position for a given symbol.
+
+        Args:
+            symbol (str): The symbol of the position to close.
+            position_size (ExtendedDecimal): The size of the position to close.
+            execution_price (ExtendedDecimal): The price at which to close the position.
+            bar (Bar): The current price bar.
+            order (Order): The order that triggered the position closure.
+
+        Side effects:
+            - Updates or closes trades in self.open_trades
+            - May move trades to self.closed_trades
+            - Calls self._update_positions
+            - Updates self.updated_trades
+        """
+        remaining_size = abs(position_size)
+        for trade in self.open_trades.get(symbol, [])[
+            :
+        ]:  # Create a copy of the list to iterate
+            if remaining_size <= ExtendedDecimal("0"):
+                break
+
+            if remaining_size >= trade.current_size:
+                # Fully close this trade
+                self.close_trade(trade, execution_price, order)
+                remaining_size -= trade.current_size
+            else:
+                # Partially close this trade
+                partial_close_size = remaining_size
+                trade.partial_close(partial_close_size, execution_price, bar)
+                self._add_to_updated_trades(trade)
+                remaining_size = ExtendedDecimal("0")
+
+        # Update positions
+        self._update_positions(symbol, -position_size, execution_price)
 
     def _get_open_trades(
         self, strategy_id: str, symbol: Optional[str] = None
@@ -727,59 +945,37 @@ class Portfolio:
                 trades.extend([t for t in trade_list if t.strategy_id == strategy_id])
         return trades
 
-    def _process_pending_orders(
-        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
-    ) -> None:
+    def _generate_close_order(
+        self, trade: Trade, current_price: ExtendedDecimal
+    ) -> Order:
         """
-        Process all pending orders based on current market data.
+        Generate a closing order for a trade.
 
         Args:
-            timestamp (datetime): The current timestamp.
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+            trade (Trade): The trade to close.
+            current_price (ExtendedDecimal): The current market price for closing the trade.
+
+        Returns:
+            Order: A new Order object representing the closing order for the trade.
         """
-        orders_to_process: List[Order] = (
-            self.pending_orders[:] + self.limit_exit_orders[:]
+        close_direction = (
+            Order.Direction.SHORT
+            if trade.direction == Order.Direction.LONG
+            else Order.Direction.LONG
         )
 
-        for order in orders_to_process:
-            symbol = order.details.ticker
-            timeframe = order.details.timeframe
+        order_details = OrderDetails(
+            ticker=trade.ticker,
+            direction=close_direction,
+            size=trade.current_size,
+            price=current_price,
+            exectype=Order.ExecType.MARKET,
+            timestamp=datetime.now(),
+            timeframe=trade.entry_bar.timeframe,
+            strategy_id=trade.strategy_id,
+        )
 
-            # Handle case where order timeframe is None
-            if timeframe is None:
-                available_timeframes = list(market_data[symbol].keys())
-                if not available_timeframes:
-                    logger_main.warning(
-                        f"No market data available for symbol {symbol}. Skipping order processing.",
-                    )
-                    continue
-                timeframe = min(available_timeframes)
-                logger_main.warning(
-                    f"Order for {symbol} has no timeframe. Using lowest available: {timeframe}",
-                )
-
-            try:
-                current_bar = market_data[symbol][timeframe]
-            except KeyError:
-                logger_main.warning(
-                    f"No market data for {symbol} at timeframe {timeframe}. Skipping order.",
-                )
-                continue
-
-            # Check for order fill
-            is_filled, fill_price = order.is_filled(current_bar)
-            if is_filled:
-                executed, _ = self.execute_order(order, fill_price, current_bar)
-                if executed:
-                    self._remove_executed_order(order)
-                    self.updated_orders.append(order)
-
-            elif order.is_expired(timestamp):
-                self._cancel_expired_order(order)
-
-        # Check for margin call after processing orders
-        if self._check_margin_call():
-            self._handle_margin_call()
+        return Order(order_id=self._generate_order_id(), details=order_details)
 
     def _remove_executed_order(self, order: Order) -> None:
         """Remove an executed order from the appropriate list."""
@@ -797,36 +993,35 @@ class Portfolio:
             f"Order {order.id} for {order.details.ticker} has expired and been canceled.",
         )
 
-    def _update_position(
-        self, symbol: str, position_change: ExtendedDecimal, price: ExtendedDecimal
+    def _update_positions(
+        self, symbol: str, quantity: ExtendedDecimal, price: ExtendedDecimal
     ) -> None:
         """
-        Update the position for a given symbol and recalculate related metrics.
-
-        This method updates the position size, average entry price, and position values
-        (long and short) based on the given position change and current price.
+        Update the positions for a given symbol.
 
         Args:
-            symbol (str): The symbol for which to update the position.
-            position_change (ExtendedDecimal): The change in position size (positive for increase, negative for decrease).
-            price (ExtendedDecimal): The current price of the symbol.
+            symbol (str): The symbol of the asset.
+            quantity (ExtendedDecimal): The quantity to add (positive) or subtract (negative) from the position.
+            price (ExtendedDecimal): The price at which the position is being updated.
 
-        Side Effects:
+        Side effects:
             - Updates self.positions
             - Updates self.avg_entry_prices
             - Updates self.long_position_value and self.short_position_value
+            - Logs the transaction
         """
         current_position = self.positions.get(symbol, ExtendedDecimal("0"))
-        new_position = current_position + position_change
+        new_position = current_position + quantity
 
         if current_position == ExtendedDecimal("0"):
             self.avg_entry_prices[symbol] = price
         else:
             current_value = current_position * self.avg_entry_prices[symbol]
-            new_value = abs(position_change) * price
-            self.avg_entry_prices[symbol] = (current_value + new_value) / abs(
-                new_position
-            )
+            new_value = abs(quantity) * price
+            if new_position != ExtendedDecimal("0"):
+                self.avg_entry_prices[symbol] = (current_value + new_value) / abs(
+                    new_position
+                )
 
         self.positions[symbol] = new_position
 
@@ -845,27 +1040,25 @@ class Portfolio:
             self.long_position_value = ExtendedDecimal("0")
             self.short_position_value = ExtendedDecimal("0")
 
+        self._log_transaction("Position", quantity, f"Update for {symbol} at {price}")
+
     def _update_open_trades(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
         """
         Update all open trades based on current market data.
 
-        This method iterates through all open trades, updates them with the latest
-        market data, and adds any modified trades to the updated_trades list for
-        strategy notification.
-
         Args:
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
+
+        Side effects:
+            - Updates trade metrics for all open trades
+            - May add trades to self.updated_trades if their state changes
         """
         for symbol, trades in self.open_trades.items():
             timeframe = min(market_data[symbol].keys())
             current_bar = market_data[symbol][timeframe]
             for trade in trades:
-                # Store the trade's state before update
                 pre_update_state = trade.to_dict()
-
                 trade.update(current_bar)
-
-                # Check if the trade state has changed
                 if trade.to_dict() != pre_update_state:
                     self._add_to_updated_trades(trade)
 
@@ -1039,7 +1232,7 @@ class Portfolio:
         self.updated_trades.clear()
         logger_main.debug("Cleared updated orders and trades lists")
 
-    # endregion
+    # endregions
 
     # region Margin Related Methods
 
@@ -1275,28 +1468,28 @@ class Portfolio:
         """
         Get the current state of the portfolio.
 
-        This method returns a comprehensive dictionary containing the current
-        state of the portfolio, including cash, equity, asset value, liabilities,
-        open trades, pending orders, and other relevant metrics.
-
         Returns:
-            Dict[str, Any]: A dictionary containing the current portfolio state.
+            Dict[str, Any]: A dictionary containing the current portfolio state,
+                            including cash, equity, positions, trades, and other relevant metrics.
         """
+        realized_pnl, unrealized_pnl = self._calculate_pnl()
         return {
             "cash": self.cash,
             "equity": self.calculate_equity(),
-            "asset_value": self.long_position_value,
-            "liabilities": self.short_position_value,
+            "long_position_value": self.long_position_value,
+            "short_position_value": self.short_position_value,
             "open_trades": {
                 symbol: [trade.to_dict() for trade in trades]
                 for symbol, trades in self.open_trades.items()
             },
+            "closed_trades_count": len(self.closed_trades),
             "pending_orders": [order.to_dict() for order in self.pending_orders],
-            "total_trades": self.trade_count,
-            "closed_trades": len(self.closed_trades),
+            "realized_pnl": realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
             "margin_used": self.margin_used,
             "buying_power": self.buying_power,
-            "margin_ratio": self.margin_ratio,
+            "total_trades": self.trade_count,
+            "positions": self.positions,
         }
 
     def _generate_order_id(self) -> int:
@@ -1307,5 +1500,27 @@ class Portfolio:
             int: A unique order ID.
         """
         return hash(f"order_{datetime.now().timestamp()}_{len(self.pending_orders)}")
+
+    def _create_dummy_bar(self, price: ExtendedDecimal, trade: Trade) -> Bar:
+        """
+        Create a dummy Bar object for trade closing operations.
+
+        Args:
+            price (ExtendedDecimal): The price to use for the dummy bar.
+            trade (Trade): The trade associated with this bar, used for timeframe and ticker information.
+
+        Returns:
+            Bar: A dummy Bar object with the given price and current timestamp.
+        """
+        return Bar(
+            open=price,
+            high=price,
+            low=price,
+            close=price,
+            volume=0,
+            timestamp=self.engine._current_timestamp,
+            timeframe=trade.entry_bar.timeframe,
+            ticker=trade.ticker,
+        )
 
     # endregion

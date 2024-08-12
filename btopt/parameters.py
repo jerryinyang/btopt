@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Optional, Type, Union
 
 from .log_config import logger_main
 
@@ -126,6 +126,27 @@ class Parameters:
         """
         return self._params.get(name, default)
 
+    def update(self, other: Union["Parameters", Dict[str, Any]]) -> None:
+        """
+        Update parameters from another Parameters object or a dictionary.
+
+        Args:
+            other (Union["Parameters", Dict[str, Any]]): The source of new parameter values.
+
+        Raises:
+            TypeError: If the input is neither a Parameters object nor a dictionary.
+        """
+        if isinstance(other, Parameters):
+            for key, value in other.items():
+                self.set(key, value, other._types.get(key))
+        elif isinstance(other, dict):
+            for key, value in other.items():
+                self.set(key, value)
+        else:
+            logger_main.log_and_raise(
+                TypeError("Input must be a Parameters object or a dictionary")
+            )
+
     def validate(self) -> bool:
         """
         Validate all parameters against their specified types.
@@ -188,5 +209,4 @@ class Parameters:
         Returns:
             Dict[str, Any]: A dictionary representation of the parameters.
         """
-        return self._params.copy()
         return self._params.copy()

@@ -771,16 +771,6 @@ class Portfolio:
                     order, execution_price, bar, remaining_size
                 )
         else:
-            # # Check if we're adding to an existing position or creating a new one
-            # existing_trades = self.open_trades.get(symbol, [])
-            # if existing_trades and existing_trades[0].direction == direction:
-            #     # Add to existing position
-            #     trade = existing_trades[0]
-            #     trade.add_to_position(order, execution_price, size)
-            #     self._add_to_updated_trades(trade)
-            #     return trade
-            # else:
-            # Create new trade
             return self._create_new_trade(order, execution_price, bar, size)
 
         return None
@@ -1025,15 +1015,14 @@ class Portfolio:
 
         # Update long_position_value and short_position_value
         if new_position > ExtendedDecimal("0"):
-            self.long_position_value += quantity * price
-            self.short_position_value = max(
-                ExtendedDecimal("0"), self.short_position_value - quantity * price
-            )
+            self.long_position_value = new_position * price
+            self.short_position_value = ExtendedDecimal("0")
         elif new_position < ExtendedDecimal("0"):
-            self.short_position_value += abs(quantity) * price
-            self.long_position_value = max(
-                ExtendedDecimal("0"), self.long_position_value - abs(quantity) * price
-            )
+            self.short_position_value = abs(new_position) * price
+            self.long_position_value = ExtendedDecimal("0")
+        else:
+            self.long_position_value = ExtendedDecimal("0")
+            self.short_position_value = ExtendedDecimal("0")
 
         self._log_transaction("Position", quantity, f"Update for {symbol} at {price}")
 
@@ -1191,9 +1180,7 @@ class Portfolio:
         # direction = order.details.direction
 
         # Close existing trades in the opposite direction
-        affected_trades, remaining_size = self._close_or_reduce_trade(
-            order, execution_price, bar
-        )
+        remaining_size = self._close_or_reduce_trade(order, execution_price, bar)
 
         # If there's remaining size, create a new trade in the opposite direction
         new_trade = None
@@ -1229,7 +1216,7 @@ class Portfolio:
         self.updated_trades.clear()
         logger_main.debug("Cleared updated orders and trades lists")
 
-    # endregion
+    # endregions
 
     # region Margin Related Methods
 

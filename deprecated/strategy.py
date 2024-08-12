@@ -1,5 +1,6 @@
 import uuid
 from abc import abstractmethod
+from decimal import ROUND_DOWN
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 from ..data.bar import Bar
@@ -8,7 +9,6 @@ from ..indicator.indicator import Indicator
 from ..log_config import logger_main
 from ..order import Order
 from ..parameters import Parameters
-from ..sizer import NaiveSizer, Sizer
 from ..trade import Trade
 from ..types import EngineType
 from ..util.ext_decimal import ExtendedDecimal
@@ -59,8 +59,8 @@ class Strategy(metaclass=PreInitABCMeta):
             **kwargs: Arbitrary keyword arguments.
         """
         self._id: str = self._generate_unique_id()
+        self.name: str = name or self._id
         self._engine: EngineType = None
-        self._indicators: Dict[str, Indicator] = {}
         self._parameters: Parameters = Parameters(parameters or {})
         self._primary_symbol: Optional[str] = None
         self._primary_timeframe: Optional[Timeframe] = primary_timeframe
@@ -69,16 +69,14 @@ class Strategy(metaclass=PreInitABCMeta):
         self._warmup_period: int = 1
         self._is_warmup_complete: bool = False
         self._risk_percentage: ExtendedDecimal = ExtendedDecimal("0.05")
+        self._unit_value: ExtendedDecimal = ExtendedDecimal("1")
         self._initialized: bool = False
 
         self._configs: Dict[str, Any] = {}
 
         # Reintegrated data management attributes
-        self.name: str = name or self._id
         self.datas: Dict[str, Data] = {}
-
-        # Initialize the position sizer with the default NaivePositionSizer
-        self._sizer: Sizer = NaiveSizer()
+        self._indicators: Dict[str, Indicator] = {}
 
     # region Initialization and Configuration
 
@@ -132,26 +130,6 @@ class Strategy(metaclass=PreInitABCMeta):
             engine (EngineType): The trading engine instance.
         """
         self._engine = engine
-
-    def set_sizer(self, sizer: Sizer) -> None:
-        """
-        Set a new position sizer for the strategy.
-
-        This method allows changing the position sizing method at runtime, providing
-        flexibility to adapt to different market conditions or trading requirements.
-
-        Args:
-            sizer (Sizer): The new position sizer to be used by the strategy.
-
-        Raises:
-            TypeError: If the provided sizer is not an instance of Sizer.
-        """
-        if not isinstance(sizer, Sizer):
-            logger_main.error(f"Invalid position sizer type: {type(sizer)}")
-            raise TypeError("sizer must be an instance of Sizer")
-
-        self._sizer = sizer
-        logger_main.info(f"Position sizer updated to: {sizer.get_info()['name']}")
 
     @property
     def parameters(self) -> Parameters:
@@ -231,6 +209,17 @@ class Strategy(metaclass=PreInitABCMeta):
             raise ValueError("Risk percentage must be between 0 and 1")
         self._risk_percentage = ExtendedDecimal(str(value))
         logger_main.info(f"Updated risk percentage to {value}")
+
+    @property
+    def unit_value(self) -> ExtendedDecimal:
+        return self._unit_value
+
+    @unit_value.setter
+    def unit_value(self, value: float) -> None:
+        if not 0 <= value:
+            raise ValueError("Risk percentage must be greater than 0")
+        self._unit_value = ExtendedDecimal(str(value))
+        logger_main.warning(f"Updated unit value to {value}")
 
     @property
     def warmup_period(self) -> int:
@@ -576,50 +565,58 @@ class Strategy(metaclass=PreInitABCMeta):
         self,
         symbol: str,
         entry_price: ExtendedDecimal,
-        exit_price: Optional[ExtendedDecimal],
+        exit_price: ExtendedDecimal,
+        max_position_size: Optional[ExtendedDecimal] = None,
     ) -> ExtendedDecimal:
         """
-        Calculate the position size using the current position sizer.
+        Calculate the position size based on the strategy's risk parameters and current market conditions.
 
-        This method delegates the position size calculation to the current position sizer,
-        providing a consistent interface regardless of the specific sizing method in use.
+        This method retrieves the risk amount for the symbol, applies the strategy's risk percentage,
+        and calculates the position size based on the entry and exit prices.
 
         Args:
-            symbol (str): The trading symbol for which to calculate the position size.
-            entry_price (ExtendedDecimal): The entry price for the trade.
-            exit_price (Optional[ExtendedDecimal]): The exit price for the trade (e.g., stop loss).
+            symbol (str): The symbol to calculate the position size for.
+            entry_price (ExtendedDecimal): The proposed entry price for the trade.
+            exit_price (ExtendedDecimal): The proposed exit price (stop loss) for the trade.
+            max_position_size (Optional[ExtendedDecimal]): The maximum allowed position size. Defaults to None.
 
         Returns:
             ExtendedDecimal: The calculated position size.
 
         Raises:
-            ValueError: If the input parameters are invalid.
-            RuntimeError: If the trading engine is not set or the sizer is not set.
+            ValueError: If the risk amount is 0, the price difference is 0, or if the calculated position size exceeds the maximum allowed size.
         """
-        if self._engine is None:
-            logger_main.error("Trading engine is not set")
-            raise RuntimeError(
-                "Trading engine must be set before calculating position size"
+        if not self._engine:
+            raise ValueError("Strategy is not connected to an engine.")
+
+        # Retrieve the risk amount for the symbol from the Engine
+        risk_amount = self._engine.get_risk_amount(symbol, self._id)
+
+        if risk_amount == 0:
+            raise ValueError("Risk amount is 0. Cannot calculate position size.")
+
+        # Apply the strategy's risk percentage to the risk amount
+        strategy_risk_amount = risk_amount * self._risk_percentage
+
+        # Calculate the price difference
+        price_difference = abs(entry_price - exit_price) / self._unit_value
+        if price_difference == 0:
+            raise ValueError(
+                "Entry price and exit price are the same. Cannot calculate position size."
             )
 
-        if not hasattr(self, "_sizer") or self._sizer is None:
-            logger_main.error("Position sizer is not set")
-            raise RuntimeError(
-                "Position sizer must be set before calculating position size"
-            )
+        # Calculate the position size
+        position_size = strategy_risk_amount / price_difference
 
-        try:
-            position_size = self._sizer.calculate_position_size(
-                strategy=self,
-                symbol=symbol,
-                entry_price=entry_price,
-                exit_price=exit_price,
-            )
-            logger_main.info(f"Calculated position size: {position_size}")
-            return position_size
-        except ValueError as e:
-            logger_main.error(f"Position size calculation failed: {str(e)}")
-            raise
+        # Apply safeguards against extreme position sizes
+        if max_position_size is not None:
+            position_size = min(position_size, max_position_size)
+
+        # Round to the 2 decimal places
+        position_size = position_size.quantize(
+            ExtendedDecimal("0.01"), rounding=ROUND_DOWN
+        )
+        return position_size
 
     def validate_position_size(
         self,

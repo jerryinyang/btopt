@@ -84,6 +84,8 @@ class Portfolio:
             ]
         )
 
+        self._configured = False
+
     # region Initialization and Configuration
 
     def _initialize_symbol_weights(self) -> None:
@@ -107,6 +109,8 @@ class Portfolio:
         self.initial_capital = ExtendedDecimal(
             str(config.get("initial_capital", self.initial_capital))
         )
+        self.cash = self.initial_capital
+        self.buying_power = self.initial_capital
         self.commission_rate = ExtendedDecimal(
             str(config.get("commission_rate", self.commission_rate))
         )
@@ -121,6 +125,7 @@ class Portfolio:
         self.risk_percentage = ExtendedDecimal(
             str(config.get("risk_percentage", self.risk_percentage))
         )
+        self._configured = True
 
     def reset(self) -> None:
         """
@@ -160,6 +165,23 @@ class Portfolio:
             - Updates portfolio metrics
             - May trigger margin calls
         """
+        if not self._configured:
+            logger_main.log_and_raise("Portfolio has not been properly configured")
+
+        if self.metrics.empty:
+            self.metrics = pd.DataFrame(
+                {
+                    "timestamp": [self.engine._current_timestamp],
+                    "cash": [self.initial_capital],
+                    "equity": [self.initial_capital],
+                    "asset_value": [ExtendedDecimal("0")],
+                    "liabilities": [ExtendedDecimal("0")],
+                    "open_pnl": [ExtendedDecimal("0")],
+                    "closed_pnl": [ExtendedDecimal("0")],
+                    "portfolio_return": [ExtendedDecimal("0")],
+                }
+            )
+
         self.current_market_data = market_data
 
         self._process_pending_orders(timestamp, market_data)
@@ -208,7 +230,7 @@ class Portfolio:
         # Avoid FutureWarning
         if self.metrics.empty:
             self.metrics = new_row
-        self.metrics = pd.concat([self.metrics, new_row], ignore_index=True)
+        self.metrics = pd.concat([self.metrics, new_row], ignore_index=True).fillna(0)
 
     def _get_current_price(self, symbol: str) -> ExtendedDecimal:
         """
@@ -771,16 +793,6 @@ class Portfolio:
                     order, execution_price, bar, remaining_size
                 )
         else:
-            # # Check if we're adding to an existing position or creating a new one
-            # existing_trades = self.open_trades.get(symbol, [])
-            # if existing_trades and existing_trades[0].direction == direction:
-            #     # Add to existing position
-            #     trade = existing_trades[0]
-            #     trade.add_to_position(order, execution_price, size)
-            #     self._add_to_updated_trades(trade)
-            #     return trade
-            # else:
-            # Create new trade
             return self._create_new_trade(order, execution_price, bar, size)
 
         return None
@@ -858,6 +870,7 @@ class Portfolio:
             entry_order=order,
             entry_bar=bar,
             commission_rate=self.commission_rate,
+            strategy_id=order.details.strategy_id,
         )
         new_trade.initial_size = size
         new_trade.current_size = size
@@ -1025,15 +1038,14 @@ class Portfolio:
 
         # Update long_position_value and short_position_value
         if new_position > ExtendedDecimal("0"):
-            self.long_position_value += quantity * price
-            self.short_position_value = max(
-                ExtendedDecimal("0"), self.short_position_value - quantity * price
-            )
+            self.long_position_value = new_position * price
+            self.short_position_value = ExtendedDecimal("0")
         elif new_position < ExtendedDecimal("0"):
-            self.short_position_value += abs(quantity) * price
-            self.long_position_value = max(
-                ExtendedDecimal("0"), self.long_position_value - abs(quantity) * price
-            )
+            self.short_position_value = abs(new_position) * price
+            self.long_position_value = ExtendedDecimal("0")
+        else:
+            self.long_position_value = ExtendedDecimal("0")
+            self.short_position_value = ExtendedDecimal("0")
 
         self._log_transaction("Position", quantity, f"Update for {symbol} at {price}")
 
@@ -1191,9 +1203,7 @@ class Portfolio:
         # direction = order.details.direction
 
         # Close existing trades in the opposite direction
-        affected_trades, remaining_size = self._close_or_reduce_trade(
-            order, execution_price, bar
-        )
+        remaining_size = self._close_or_reduce_trade(order, execution_price, bar)
 
         # If there's remaining size, create a new trade in the opposite direction
         new_trade = None
