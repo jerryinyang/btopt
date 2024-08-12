@@ -1,5 +1,5 @@
 import uuid
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from decimal import ROUND_DOWN
 from typing import Any, Dict, List, Optional, Tuple, Type
 
@@ -20,7 +20,7 @@ class StrategyError(Exception):
     pass
 
 
-class Strategy(ABC, metaclass=PreInitABCMeta):
+class Strategy(metaclass=PreInitABCMeta):
     """
     Abstract base class for trading strategies.
 
@@ -69,7 +69,10 @@ class Strategy(ABC, metaclass=PreInitABCMeta):
         self._warmup_period: int = 1
         self._is_warmup_complete: bool = False
         self._risk_percentage: ExtendedDecimal = ExtendedDecimal("0.05")
+        self._unit_value: ExtendedDecimal = ExtendedDecimal("1")
         self._initialized: bool = False
+
+        self._configs: Dict[str, Any] = {}
 
         # Reintegrated data management attributes
         self.datas: Dict[str, Data] = {}
@@ -205,7 +208,18 @@ class Strategy(ABC, metaclass=PreInitABCMeta):
         if not 0 <= value <= 1:
             raise ValueError("Risk percentage must be between 0 and 1")
         self._risk_percentage = ExtendedDecimal(str(value))
-        logger_main.info(f"Updated risk percentage for strategy {self._id} to {value}")
+        logger_main.info(f"Updated risk percentage to {value}")
+
+    @property
+    def unit_value(self) -> ExtendedDecimal:
+        return self._unit_value
+
+    @unit_value.setter
+    def unit_value(self, value: float) -> None:
+        if not 0 <= value:
+            raise ValueError("Risk percentage must be greater than 0")
+        self._unit_value = ExtendedDecimal(str(value))
+        logger_main.warning(f"Updated unit value to {value}")
 
     @property
     def warmup_period(self) -> int:
@@ -585,7 +599,8 @@ class Strategy(ABC, metaclass=PreInitABCMeta):
         strategy_risk_amount = risk_amount * self._risk_percentage
 
         # Calculate the price difference
-        price_difference = abs(entry_price - exit_price)
+        price_difference = abs(entry_price - exit_price) / self._unit_value
+        logger_main.warning(f"UNIT VALUE: {self._unit_value}")
         if price_difference == 0:
             raise ValueError(
                 "Entry price and exit price are the same. Cannot calculate position size."
@@ -602,7 +617,7 @@ class Strategy(ABC, metaclass=PreInitABCMeta):
         position_size = position_size.quantize(
             ExtendedDecimal("0.01"), rounding=ROUND_DOWN
         )
-
+        logger_main.warning(f"TEST RISK AMOUNT: {strategy_risk_amount}")
         return position_size
 
     def validate_position_size(

@@ -2,13 +2,8 @@ from abc import ABCMeta
 
 
 class PreInitMeta(type):
-    """
-    Metaclass that ensures all base classes' __init__ methods are called,
-    even if the child class does not explicitly call them.
-    """
-
     def __call__(cls, *args, **kwargs):
-        instance = super().__call__(*args, **kwargs)
+        instance = cls.__new__(cls)
 
         # Store called __init__ methods to avoid duplicate calls
         called_inits = set()
@@ -25,8 +20,13 @@ class PreInitMeta(type):
                 base.__init__(instance, *args, **kwargs)
                 called_inits.add(base.__init__)
 
+        # Call parent initializers first
         for base in cls.__bases__:
             call_base_inits(base)
+
+        # Now call the current class's __init__
+        if cls.__init__ is not object.__init__:
+            cls.__init__(instance, *args, **kwargs)
 
         return instance
 

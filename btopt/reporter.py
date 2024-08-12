@@ -69,7 +69,8 @@ class Reporter:
         metrics = self.portfolio.get_metrics_data()
         # Convert ExtendedDecimal to float
         return pd.Series(
-            metrics["portfolio_return"].astype(float).values, index=metrics["timestamp"]
+            metrics["portfolio_return"].astype(float).values,
+            index=metrics["timestamp"],
         )
 
     # endregion

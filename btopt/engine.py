@@ -575,7 +575,8 @@ class Engine:
                     order, fill_price, current_bar
                 )
                 if executed:
-                    self._notify_order_update(order, trade)
+                    self._notify_order_update(order)
+                    self._notify_trade_update(trade)
 
     def _check_termination_condition(self) -> bool:
         """
