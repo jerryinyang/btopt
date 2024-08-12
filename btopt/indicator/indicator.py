@@ -1,9 +1,7 @@
 from abc import abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from ..data.bar import Bar
 from ..log_config import logger_main
-from ..outputs import Outputs
 from ..parameters import Parameters
 from ..strategy.helper import Data
 from ..util.metaclasses import PreInitABCMeta
@@ -30,7 +28,6 @@ class Indicator(metaclass=PreInitABCMeta):
         """
         self.name: str = name
         self.data: Data = data
-        self.outputs: Outputs = Outputs()
         self._parameters: Parameters = Parameters(parameters or {})
         self._warmup_period: int = 1
         self._current_index: int = 0
@@ -133,7 +130,7 @@ class Indicator(metaclass=PreInitABCMeta):
         logger_main.warning(f"Indicator {self._id} warm up is complete.")
         return True
 
-    def get_output(self, name: str) -> Optional[Any]:
+    def get(self, name: str) -> Optional[Any]:
         """
         Get the current value of a specific output.
 
@@ -159,28 +156,6 @@ class Indicator(metaclass=PreInitABCMeta):
                 f"Output '{name}' does not exist for {self.name} indicator"
             )
             raise
-
-    def _get_data(self, length: int) -> List[Bar]:
-        """
-        Get historical data for calculation.
-
-        Args:
-            length (int): The number of historical bars to retrieve.
-
-        Returns:
-            List[Bar]: A list of historical Bar objects.
-
-        Raises:
-            ValueError: If requested length exceeds available data.
-        """
-        available_data = len(self.data)
-        if length > available_data:
-            logger_main.log_and_raise(
-                ValueError(
-                    f"Requested data length {length} exceeds available data {available_data}"
-                )
-            )
-        return self.data.get(size=length, index=0)
 
     def __repr__(self) -> str:
         """

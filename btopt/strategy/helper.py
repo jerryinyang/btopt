@@ -119,8 +119,12 @@ class Data:
 
         # Update custom columns
         for column, values in self._custom_columns[timeframe].items():
+            if len(values) > 0:
+                previous_value = values[0]
+            else:
+                previous_value = np.nan
             self._custom_columns[timeframe][column] = np.concatenate(
-                ([np.nan], values[: self.max_length - 1])
+                ([previous_value], values[: self.max_length - 1])
             )
 
     def add_custom_column(self, timeframe: Timeframe, name: str) -> None:
@@ -374,16 +378,36 @@ class DataTimeframe:
     A class to provide convenient access to market data for a specific timeframe.
 
     This class acts as a view into the Data object, providing easy access to OHLCV data
-    and custom columns for a particular timeframe.
+    and custom columns for a particular timeframe. It ensures that OHLCV data and previous
+    values of custom columns remain immutable, while allowing updates to the current (most recent)
+    value of custom columns.
 
     Attributes:
         _data (Data): The parent Data object this view is associated with.
         _timeframe (Timeframe): The specific timeframe this view represents.
+
+    Methods:
+        __len__: Get the number of data points available for this timeframe.
+        __getitem__: Access OHLCV data, custom columns, or Bar objects.
+        __setitem__: Set values for a custom column.
+        __iter__: Iterate over the Bar objects in this timeframe.
+        __repr__: Return a string representation of the DataTimeframe object.
+        set_current: Set the current (most recent) value of a custom column.
+        get_custom_column: Get a read-only view of a custom column.
+        to_dataframe: Convert the OHLCV data for this timeframe to a pandas DataFrame.
+
+    Properties:
+        open: Get the open price data for this timeframe.
+        high: Get the high price data for this timeframe.
+        low: Get the low price data for this timeframe.
+        close: Get the close price data for this timeframe.
+        volume: Get the volume data for this timeframe.
+        timestamps: Get the timestamp data for this timeframe.
     """
 
-    VALID_KEYS = {"open", "high", "low", "close", "volume"}
+    VALID_KEYS: set = {"open", "high", "low", "close", "volume"}
 
-    def __init__(self, data: Data, timeframe: Timeframe):
+    def __init__(self, data: "Data", timeframe: Timeframe):
         """
         Initialize the DataTimeframe object.
 
@@ -391,8 +415,8 @@ class DataTimeframe:
             data (Data): The parent Data object.
             timeframe (Timeframe): The timeframe this object represents.
         """
-        self._data = data
-        self._timeframe = timeframe
+        self._data: "Data" = data
+        self._timeframe: Timeframe = timeframe
 
     def __len__(self) -> int:
         """
@@ -403,7 +427,9 @@ class DataTimeframe:
         """
         return len(self._data._data[self._timeframe]["close"])
 
-    def __getitem__(self, key: Union[str, int, slice]) -> Union[np.ndarray, Any]:
+    def __getitem__(
+        self, key: Union[str, int, slice]
+    ) -> Union[np.ndarray, Bar, List[Bar], None]:
         """
         Access OHLCV data, custom columns, or Bar objects using dictionary-style key access.
 
@@ -414,8 +440,8 @@ class DataTimeframe:
                 - If slice: A range of Bars to retrieve
 
         Returns:
-            Union[np.ndarray, Any]:
-                - If str: The requested data as a numpy array
+            Union[np.ndarray, Bar, List[Bar], None]:
+                - If str: The requested data as a numpy array (read-only for custom columns)
                 - If int: A Bar object or None
                 - If slice: A list of Bar objects (may contain None for missing data)
 
@@ -427,7 +453,8 @@ class DataTimeframe:
             if key in self.VALID_KEYS:
                 return self._data._data[self._timeframe][key]
             elif key in self._data._custom_columns[self._timeframe]:
-                return self._data._custom_columns[self._timeframe][key]
+                # Return a read-only view of the custom column
+                return self._data._custom_columns[self._timeframe][key].view()
             else:
                 raise KeyError(
                     f"Invalid key: {key}. Must be one of {', '.join(self.VALID_KEYS)} or a custom column name."
@@ -458,12 +485,48 @@ class DataTimeframe:
         if len(value) != len(self._data._data[self._timeframe]["close"]):
             raise ValueError("Value length must match the data length")
 
-        self._data._custom_columns[self._timeframe][key] = value
+        # Create a copy of the input array to ensure immutability
+        self._data._custom_columns[self._timeframe][key] = value.copy()
 
-    @property
-    def timestamps(self) -> np.ndarray:
-        """Get the timestamp data for this timeframe."""
-        return self._data._timestamps[self._timeframe]
+    def set_current(self, column_name: str, value: Any) -> None:
+        """
+        Set the current (most recent) value of a custom column.
+
+        Args:
+            column_name (str): The name of the custom column.
+            value (Any): The value to set for the current position of the custom column.
+
+        Raises:
+            KeyError: If the column_name is not a custom column or doesn't exist.
+        """
+        if column_name in self.VALID_KEYS:
+            raise KeyError(f"Cannot modify built-in column '{column_name}'")
+
+        if column_name not in self._data._custom_columns[self._timeframe]:
+            raise KeyError(f"Custom column '{column_name}' does not exist")
+
+        self._data._custom_columns[self._timeframe][column_name][0] = value
+
+    def get_custom_column(self, column_name: str) -> np.ndarray:
+        """
+        Get a read-only view of a custom column.
+
+        Args:
+            column_name (str): The name of the custom column.
+
+        Returns:
+            np.ndarray: A read-only view of the custom column.
+
+        Raises:
+            KeyError: If the column_name is not a custom column or doesn't exist.
+        """
+        if column_name in self.VALID_KEYS:
+            raise KeyError(f"'{column_name}' is not a custom column")
+
+        if column_name not in self._data._custom_columns[self._timeframe]:
+            raise KeyError(f"Custom column '{column_name}' does not exist")
+
+        return self._data._custom_columns[self._timeframe][column_name].view()
 
     def __iter__(self):
         """
@@ -508,6 +571,11 @@ class DataTimeframe:
     def volume(self) -> np.ndarray:
         """Get the volume data for this timeframe."""
         return self._data._data[self._timeframe]["volume"]
+
+    @property
+    def timestamps(self) -> np.ndarray:
+        """Get the timestamp data for this timeframe."""
+        return self._data._timestamps[self._timeframe]
 
     def to_dataframe(self) -> pd.DataFrame:
         """
