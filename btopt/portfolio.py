@@ -17,10 +17,10 @@ class Portfolio:
         self,
         engine: EngineType,
         initial_capital: ExtendedDecimal = ExtendedDecimal("100000"),
-        commission_rate: ExtendedDecimal = ExtendedDecimal("0.001"),
+        commission_rate: ExtendedDecimal = ExtendedDecimal("0.000"),
         slippage: ExtendedDecimal = ExtendedDecimal("0"),
         pyramiding: int = 1,
-        margin_ratio: ExtendedDecimal = ExtendedDecimal("0.5"),
+        margin_ratio: ExtendedDecimal = ExtendedDecimal("1"),
         margin_call_threshold: ExtendedDecimal = ExtendedDecimal("0.3"),
         risk_percentage: ExtendedDecimal = ExtendedDecimal("0.02"),
     ):
@@ -480,8 +480,8 @@ class Portfolio:
         """
         Execute an order and update the portfolio accordingly.
 
-        This method handles the execution of an order, updating cash, creating or updating trades,
-        and managing position changes.
+        This method handles the execution of an order, including trade reversals,
+        updating cash, creating or updating trades, and managing position changes.
 
         Args:
             order (Order): The order to execute.
@@ -506,10 +506,34 @@ class Portfolio:
         cost = execution_price * size
         commission = cost * self.commission_rate
 
-        # Check margin requirements
-        if not self._check_margin_requirements(order, cost):
-            logger_main.warning(f"Insufficient margin to execute order: {order}")
-            return False, None
+        # Check if this is a reversal trade
+        current_position = self.positions.get(symbol, ExtendedDecimal("0"))
+        is_reversal = (current_position > 0 and direction == Order.Direction.SHORT) or (
+            current_position < 0 and direction == Order.Direction.LONG
+        )
+
+        if is_reversal:
+            # For reversals, close existing position first
+            reversal_size = min(abs(current_position), size)
+            self._close_position(
+                symbol,
+                reversal_size * (-1 if current_position > 0 else 1),
+                execution_price,
+                bar,
+                order,
+            )
+
+            # Recalculate cost and commission for the remaining order size (if any)
+            remaining_size = size - reversal_size
+            cost = execution_price * remaining_size
+            commission = cost * self.commission_rate
+        else:
+            # For non-reversal trades, check margin requirements
+            if not self._check_margin_requirements(order, cost):
+                logger_main.warning(
+                    f"Insufficient margin to execute order: {order}. Available Buying Power: {self.buying_power}"
+                )
+                return False, None
 
         # Update cash
         cash_change = (

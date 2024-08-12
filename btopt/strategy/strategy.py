@@ -576,7 +576,7 @@ class Strategy(metaclass=PreInitABCMeta):
         self,
         symbol: str,
         entry_price: ExtendedDecimal,
-        exit_price: Optional[ExtendedDecimal],
+        exit_price: Optional[ExtendedDecimal] = None,
     ) -> ExtendedDecimal:
         """
         Calculate the position size using the current position sizer.
