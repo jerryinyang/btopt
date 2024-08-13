@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Union
 
-from .log_config import logger_main
 from .parameters import Parameters
 from .types import StrategyType
 from .util.ext_decimal import ExtendedDecimal
+from .util.log_config import logger_main
 
 
 class Sizer(ABC):

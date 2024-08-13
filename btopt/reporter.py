@@ -5,9 +5,9 @@ from typing import Any, Dict, Optional
 import pandas as pd
 import quantstats_lumi as qs
 
-from .log_config import logger_main
 from .types import EngineType, PortfolioType
 from .util.ext_decimal import ExtendedDecimal
+from .util.log_config import logger_main
 
 
 class Reporter:

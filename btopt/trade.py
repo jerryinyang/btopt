@@ -4,9 +4,9 @@ from enum import Enum
 from typing import List, Optional
 
 from .data.bar import Bar
-from .log_config import logger_main
 from .order import Order
 from .util.ext_decimal import ExtendedDecimal
+from .util.log_config import logger_main
 
 
 @dataclass

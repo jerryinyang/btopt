@@ -1,61 +1,97 @@
 from abc import abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from ..log_config import logger_main
+from ..data.timeframe import Timeframe
 from ..parameters import Parameters
 from ..strategy.helper import Data
+from ..types import StrategyType
+from ..util.log_config import logger_main
 from ..util.metaclasses import PreInitABCMeta
 
 
 class Indicator(metaclass=PreInitABCMeta):
     def __init__(
         self,
-        data: Data,
         name: str,
-        parameters: Optional[Dict[str, Any]] = None,
+        *args,
+        **kwargs,
     ):
         """
         Initialize the Indicator instance.
 
         Args:
-            data (Data): The Data object associated with the indicator.
+            strategy ('Strategy'): The Strategy object associated with the indicator.
             name (str): The name of the indicator.
-            warmup_period (int): The number of bars required before the indicator produces valid output.
-            **kwargs: Additional parameters for the indicator.
+            parameters (Optional[Dict[str, Any]]): Additional parameters for the indicator.
 
         Raises:
             ValueError: If the warmup_period is less than 1.
         """
         self.name: str = name
-        self.data: Data = data
-        self._parameters: Parameters = Parameters(parameters or {})
+        self.outputs: List[str] = []
+        self._parameters: Parameters = kwargs.get("parameters", Parameters({}))
         self._warmup_period: int = 1
         self._current_index: int = 0
+
+        self._symbols: List[str] = kwargs.get("symbols", [])
+        self._timeframes: List[Timeframe] = kwargs.get("timeframes", [])
+        self._strategy: StrategyType = kwargs.get("strategy", None)
         self._is_warmup_complete: bool = False
+
+        if isinstance(self._parameters, dict):
+            self._parameters = Parameters(self._parameters)
+
+        self._validate_initialization()
+
+        # Add a custom column to store SMA values
+        for symbol in self._symbols:
+            for timeframe in self._timeframes:
+                output_name = "sma"
+                self._strategy.datas[symbol].add_custom_column(timeframe, output_name)
+                self.outputs.append(f"{self.name}_{output_name}")
 
         logger_main.info(f"Initialized {self.name} indicator")
 
     @property
-    def parameters(self) -> Parameters:
+    def datas(self) -> Dict[str, Data]:
         """
-        Get the strategy parameters.
+        Get the current Data object from the associated Strategy.
 
         Returns:
-            Parameters: The strategy parameters object.
+            Data: The current Data object.
+        """
+
+        return self._strategy.datas
+
+    @property
+    def symbols(self):
+        return self._symbols
+
+    @property
+    def timeframes(self):
+        return self._timeframes
+
+    @property
+    def parameters(self) -> Parameters:
+        """
+        Get the indicator parameters.
+
+        Returns:
+            Parameters: The indicator parameters object.
         """
         return self._parameters
 
     @parameters.setter
-    def parameters(self, new_parameters: Dict[str, Any]) -> None:
+    def parameters(self, new_parameters: Union[Parameters, Dict[str, Any]]) -> None:
         """
-        Set new strategy parameters.
+        Set new indicator parameters.
 
         Args:
             new_parameters (Dict[str, Any]): A dictionary of new parameter values.
         """
-        self._parameters = Parameters(new_parameters)
+        self._parameters.update()
         logger_main.info(
-            f"Updated parameters for strategy {self.name}: {new_parameters}"
+            f"Updated parameters for indicator {self.name}: {new_parameters}"
         )
 
     @property
@@ -86,75 +122,166 @@ class Indicator(metaclass=PreInitABCMeta):
         self._warmup_period = value
         logger_main.info(f"Updated warmup_period to {value}")
 
+    def _validate_initialization(self) -> bool:
+        """
+        Validate the initialization parameters of the Indicator.
+
+        This method checks if:
+        1. The indicator has an associated strategy.
+        2. The indicator is subscribed to at least one symbol.
+        3. All subscribed symbols are valid (present in the strategy's data).
+        4. All specified timeframes are valid for each subscribed symbol.
+
+        Returns:
+            bool: True if all validations pass.
+
+        Raises:
+            ValueError: If any validation fails, with a descriptive error message.
+        """
+        if not self._strategy or not isinstance(self._strategy, StrategyType):
+            logger_main.error(f"Indicator {self.name} has no associated strategy.")
+            raise ValueError(f"Indicator {self.name} has no associated strategy.")
+
+        if not self._symbols:
+            logger_main.error(
+                f"Indicator {self.name} must subscribe to at least one symbol."
+            )
+            raise ValueError(
+                f"Indicator {self.name} must subscribe to at least one symbol."
+            )
+
+        invalid_symbols = set(self._symbols) - set(self._strategy.datas.keys())
+        if invalid_symbols:
+            logger_main.error(
+                f"Invalid symbols for indicator {self.name}: {invalid_symbols}"
+            )
+            raise ValueError(
+                f"Invalid symbols for indicator {self.name}: {invalid_symbols}"
+            )
+
+        for symbol in self._symbols:
+            invalid_timeframes = set(self._timeframes) - set(
+                self._strategy.datas[symbol].timeframes
+            )
+            if invalid_timeframes:
+                logger_main.error(
+                    f"Invalid timeframes for symbol {symbol} in indicator {self.name}: {invalid_timeframes}"
+                )
+                raise ValueError(
+                    f"Invalid timeframes for symbol {symbol} in indicator {self.name}: {invalid_timeframes}"
+                )
+
+        logger_main.info(f"Initialization validation passed for indicator {self.name}")
+        return True
+
     @abstractmethod
     def on_data(self) -> None:
-        """
-        Process new data.
-
-        This method is called for each new bar of data. It should update the indicator's state
-        and call the calculate method to update the outputs.
-        """
         pass
 
     def _on_data(self) -> None:
         """
-        Perform the indicator calculation.
+        Internal method called when new data is available.
 
-        This method should implement the specific logic for calculating the indicator's outputs
-        based on the current state and historical data.
+        This method performs the following steps:
+        1. Checks if the warmup period is complete.
+        2. If warmup is complete, calls the user-defined `on_data` method.
+        3. Increments the current index.
+
+        If an exception occurs during the execution of `on_data`, it logs the error
+        and re-raises the exception.
         """
-
-        if self._check_warmup_period():
-            self.on_data()
+        try:
+            if self._check_warmup_period():
+                self.on_data()
+                self._current_index += 1
+        except Exception as e:
+            logger_main.error(
+                f"Error in on_data method of Indicator {self.name}: {str(e)}"
+            )
+            raise
 
     def _check_warmup_period(self) -> bool:
         """
-        Check if all timeframes within self.dats have at least `warmup_period` data points.
+        Check if all subscribed symbols and timeframes have sufficient data for the warmup period.
+
+        This method verifies that each symbol and timeframe combination has at least
+        `warmup_period` number of data points.
 
         Returns:
-            bool: True if all timeframes have sufficient data, False otherwise.
+            bool: True if all symbol-timeframe combinations have sufficient data, False otherwise.
         """
         if self._is_warmup_complete:
             return True
 
-        timeframes = self.data.timeframes
-
-        for timeframe in timeframes:
-            if len(self.data[timeframe]) < self.warmup_period:
-                logger_main.warning(
-                    f"Insufficient data for Indicator `{self.name}` on `{timeframe}` timeframe."
-                )
-                return False
+        for symbol in self._symbols:
+            for timeframe in self._timeframes:
+                data_length = len(self._strategy.datas[symbol][timeframe])
+                if data_length < self._warmup_period:
+                    logger_main.debug(
+                        f"Insufficient data for Indicator {self.name} on symbol {symbol}, "
+                        f"timeframe {timeframe}. Current length: {data_length}, "
+                        f"Required: {self._warmup_period}"
+                    )
+                    return False
 
         self._is_warmup_complete = True
-        logger_main.warning(f"Indicator {self._id} warm up is complete.")
+        logger_main.info(f"Warmup period complete for Indicator {self.name}")
         return True
 
-    def get(self, name: str) -> Optional[Any]:
+    def get(
+        self,
+        output_name: str,
+        symbol: Optional[str] = None,
+        timeframe: Optional[Union[str, Timeframe]] = None,
+        index: int = 0,
+    ) -> Any:
         """
-        Get the current value of a specific output.
+        Fetch output/custom column values from the indicator data.
+
+        This method allows flexible retrieval of indicator output values. It can fetch
+        values for different symbols, timeframes, and historical indexes.
 
         Args:
-            name (str): The name of the output to retrieve.
+            output_name (str): The name of the output/custom column to fetch.
+            symbol (Optional[str]): The symbol to fetch data for. If None, uses the first symbol
+                                    in the indicator's symbol list.
+            timeframe (Optional[Union[str, Timeframe]]): The timeframe to fetch data for.
+                                                         If None, uses the primary timeframe.
+            index (int): The historical index to fetch (0 is the most recent). Defaults to 0.
 
         Returns:
-            Optional[Any]: The current value of the specified output, or None if the warmup period is not complete.
+            Any: The value of the specified output/custom column.
 
         Raises:
-            AttributeError: If the specified output does not exist.
+            ValueError: If the specified symbol, timeframe, or output_name is invalid.
+            IndexError: If the specified index is out of range.
         """
-        if not self._is_warmup_complete:
-            logger_main.info(
-                f"{self.name} indicator warmup period not complete, returning None"
-            )
-            return None
-
         try:
-            return self.outputs.get(name)
-        except AttributeError:
-            logger_main.error(
-                f"Output '{name}' does not exist for {self.name} indicator"
-            )
+            # Validate and set symbol
+            if symbol is None:
+                symbol = self._symbols[0]
+            elif symbol not in self._symbols:
+                raise ValueError(f"Invalid symbol: {symbol}")
+
+            # Validate and set timeframe
+            if timeframe is None:
+                timeframe = self._strategy.datas[symbol].primary_timeframe
+            elif isinstance(timeframe, str):
+                timeframe = Timeframe(timeframe)
+            if timeframe not in self._timeframes:
+                raise ValueError(f"Invalid timeframe: {timeframe}")
+
+            # Fetch and return the data
+            data = self._strategy.datas[symbol][timeframe][output_name]
+            if index >= len(data):
+                raise IndexError(
+                    f"Index {index} out of range. Available data points: {len(data)}"
+                )
+
+            return data[index]
+
+        except Exception as e:
+            logger_main.error(f"Error in get method of Indicator {self.name}: {str(e)}")
             raise
 
     def __repr__(self) -> str:

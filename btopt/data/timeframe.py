@@ -2,7 +2,7 @@ from datetime import timedelta
 from enum import Enum
 from typing import Tuple, Union
 
-from ..log_config import logger_main
+from ..util.log_config import logger_main
 
 
 class TimeframeUnit(Enum):

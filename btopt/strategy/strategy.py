@@ -5,13 +5,13 @@ from typing import Any, Dict, List, Optional, Tuple, Type
 from ..data.bar import Bar
 from ..data.timeframe import Timeframe
 from ..indicator.indicator import Indicator
-from ..log_config import logger_main
 from ..order import Order
 from ..parameters import Parameters
 from ..sizer import NaiveSizer, Sizer
 from ..trade import Trade
 from ..types import EngineType
 from ..util.ext_decimal import ExtendedDecimal
+from ..util.log_config import logger_main
 from ..util.metaclasses import PreInitABCMeta
 from .helper import Data, DataTimeframe
 
@@ -60,7 +60,6 @@ class Strategy(metaclass=PreInitABCMeta):
         """
         self._id: str = self._generate_unique_id()
         self._engine: EngineType = None
-        self._indicators: Dict[str, Indicator] = {}
         self._parameters: Parameters = Parameters(parameters or {})
         self._primary_symbol: Optional[str] = None
         self._primary_timeframe: Optional[Timeframe] = primary_timeframe
@@ -72,6 +71,9 @@ class Strategy(metaclass=PreInitABCMeta):
         self._initialized: bool = False
 
         self._configs: Dict[str, Any] = {}
+
+        self._indicator_configs: List[Dict[str, Any]] = []
+        self._indicators: Dict[str, Indicator] = {}
 
         # Reintegrated data management attributes
         self.name: str = name or self._id
@@ -116,8 +118,10 @@ class Strategy(metaclass=PreInitABCMeta):
         for symbol in symbols:
             self.datas[symbol] = Data(symbol)
 
-        self._initialized = True
+        # Create indicator instances
+        self._create_indicators()
 
+        self._initialized = True
         logger_main.info(f"Initialized strategy: {self.name}")
         logger_main.info(f"Symbols: {symbols}")
         logger_main.info(f"Timeframes: {timeframes}")
@@ -372,38 +376,132 @@ class Strategy(metaclass=PreInitABCMeta):
         return len(self.datas[symbol][timeframe].close)
 
     def add_indicator(
-        self, indicator: Type[Indicator], name: str, **kwargs: Any
+        self, indicator_class: Type[Indicator], name: str, **kwargs: Any
     ) -> None:
         """
-        Add an indicator to the strategy.
-
-        This method creates an instance of the specified indicator and associates it with the strategy.
+        Store indicator configuration for later initialization.
 
         Args:
-            indicator (Type[Indicator]): The indicator class to instantiate.
+            indicator_class (Type[Indicator]): The indicator class to instantiate.
             name (str): A unique name for the indicator instance.
             **kwargs: Additional keyword arguments to pass to the indicator constructor.
 
         Raises:
-            ValueError: If an indicator with the same name already exists or if no primary symbol is set.
+            ValueError: If an indicator with the same name already exists or if invalid parameters are provided.
+            TypeError: If the provided indicator_class is not a subclass of Indicator.
         """
-        if name in self._indicators:
-            raise ValueError(
-                f"An indicator named '{name}' already exists in this strategy"
+        # Check if indicator_class is a valid subclass of Indicator
+        if not issubclass(indicator_class, Indicator):
+            logger_main.log_and_raise(
+                TypeError(
+                    f"{indicator_class.__name__} is not a valid Indicator subclass"
+                )
             )
 
-        if self._primary_symbol is None:
-            raise ValueError("No primary symbol set for the strategy")
+        # Check for duplicate indicator name
+        if any(config["name"] == name for config in self._indicator_configs):
+            logger_main.log_and_raise(
+                ValueError(
+                    f"An indicator named '{name}' has already been added to this strategy"
+                )
+            )
 
-        indicator_instance = indicator(
-            self.get_data(self._primary_symbol), name=name, **kwargs
+        # Process and validate parameters
+        parameters: Dict[str, Any] = kwargs.get("parameters", Parameters({}))
+        if not isinstance(parameters, Parameters):
+            parameters = Parameters(parameters)
+        kwargs["parameters"] = parameters
+
+        # Process and validate symbols
+        symbols = kwargs.get("symbols", [self._primary_symbol])
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        elif not isinstance(symbols, list):
+            logger_main.log_and_raise(
+                TypeError(
+                    f"Expected str or list[str] for `symbols`; received {symbols} of type `{type(symbols)}`"
+                )
+            )
+
+        # Filter out unrecognized symbols
+        valid_symbols = [sym for sym in symbols if sym in self.datas.keys()]
+        if len(valid_symbols) != len(symbols):
+            unrecognized = set(symbols) - set(valid_symbols)
+            logger_main.warning(
+                f"Symbols {unrecognized} are not available within the strategy symbols. These symbols will be ignored."
+            )
+
+        if not valid_symbols:
+            logger_main.warning(
+                f"No valid symbols provided for Indicator {name}. Defaulting to primary symbol."
+            )
+            valid_symbols = [self._primary_symbol]
+
+        # Process and validate timeframes
+        timeframes = kwargs.get("timeframes", [self._primary_timeframe])
+        if isinstance(timeframes, (str, Timeframe)):
+            timeframes = [
+                Timeframe(timeframes) if isinstance(timeframes, str) else timeframes
+            ]
+        elif not isinstance(timeframes, list):
+            logger_main.log_and_raise(
+                TypeError(
+                    f"Expected str, Timeframe, or list[Timeframe] for `timeframes`; received {timeframes} of type `{type(timeframes)}`"
+                )
+            )
+
+        # Ensure all timeframes are Timeframe objects
+        timeframes = [Timeframe(tf) if isinstance(tf, str) else tf for tf in timeframes]
+
+        # Filter out symbols that don't support all specified timeframes
+        symbols_to_remove = []
+        for sym in valid_symbols:
+            for tf in timeframes:
+                if tf not in self.datas[sym].timeframes:
+                    logger_main.warning(
+                        f"Timeframe {tf} is not available for symbol {sym}. This symbol will be removed for this indicator."
+                    )
+                    symbols_to_remove.append(sym)
+                    break
+
+        valid_symbols = [sym for sym in valid_symbols if sym not in symbols_to_remove]
+
+        if not valid_symbols:
+            logger_main.warning(
+                f"No symbols support all specified timeframes for Indicator {name}. Defaulting to primary symbol and timeframe."
+            )
+            valid_symbols = [self._primary_symbol]
+            timeframes = [self._primary_timeframe]
+
+        kwargs["symbols"] = valid_symbols
+        kwargs["timeframes"] = timeframes
+
+        # Store the validated configuration
+        self._indicator_configs.append(
+            {"class": indicator_class, "name": name, "kwargs": kwargs}
+        )
+        logger_main.info(
+            f"Stored configuration for indicator '{name}' in strategy '{self.name}' with symbols {valid_symbols} and timeframes {timeframes}"
         )
 
-        # Align indicator timeframe with strategy timeframe
-        indicator_instance._align_timeframes(self._primary_timeframe)
+    def _create_indicators(self) -> None:
+        """
+        Create indicator instances based on stored configurations.
+        """
+        for config in self._indicator_configs:
+            indicator_class: Type[Indicator] = config["class"]
+            name: str = config["name"]
+            kwargs: dict = config["kwargs"]
 
-        self._indicators[name] = indicator_instance
-        logger_main.info(f"Added indicator '{name}' to strategy '{self.name}'")
+            indicator_instance = indicator_class(name=name, **kwargs)
+
+            # Set internal attributes
+            indicator_instance._strategy = self
+
+            self._indicators[name] = indicator_instance
+            logger_main.info(
+                f"Created indicator instance '{name}' in strategy '{self.name}'"
+            )
 
     def get_indicator_output(self, indicator_name: str, output_name: str) -> Any:
         """
@@ -425,7 +523,7 @@ class Strategy(metaclass=PreInitABCMeta):
                 f"Indicator '{indicator_name}' does not exist in this strategy"
             )
 
-        return self._indicators[indicator_name].get_output(output_name)
+        return self._indicators[indicator_name].get(output_name)
 
     # endregion
 
@@ -683,14 +781,19 @@ class Strategy(metaclass=PreInitABCMeta):
     # region Abstract Methods
 
     @abstractmethod
-    def on_data(self) -> None:
+    def _on_data(self) -> None:
         """
-        Handle the arrival of new price data.
+        Internal method called by the engine to process new data.
 
-        This method should be implemented by concrete strategy classes to define the strategy's logic.
-        It is called by the engine when new data is available.
+        This method updates indicators and checks if the warm-up period is complete
+        before calling the user-defined on_data method.
         """
-        pass
+        # Update indicators
+        for indicator in self._indicators.values():
+            indicator._on_data()
+
+        if self._check_warmup_period():
+            self.on_data()
 
     def on_order_update(self, order: Order) -> None:
         """
@@ -829,7 +932,7 @@ class Strategy(metaclass=PreInitABCMeta):
         """
         # Update indicators
         for indicator in self._indicators.values():
-            indicator.on_data()
+            indicator._on_data()
 
         if self._check_warmup_period():
             self.on_data()

@@ -5,8 +5,8 @@ from typing import List, Optional
 
 from .data.bar import Bar
 from .data.timeframe import Timeframe
-from .log_config import logger_main
 from .util.ext_decimal import ExtendedDecimal
+from .util.log_config import logger_main
 
 
 @dataclass(frozen=True)

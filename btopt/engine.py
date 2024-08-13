@@ -7,13 +7,13 @@ from .data.bar import Bar
 from .data.dataloader import BaseDataLoader
 from .data.dataview import DataView
 from .data.timeframe import Timeframe
-from .log_config import clear_log_files, logger_main
 from .order import Order
 from .portfolio import Portfolio
 from .reporter import Reporter
 from .strategy.strategy import Strategy
 from .trade import Trade
 from .util.ext_decimal import ExtendedDecimal
+from .util.log_config import clear_log_files, logger_main
 
 
 class Engine:

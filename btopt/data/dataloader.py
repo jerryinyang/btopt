@@ -14,7 +14,7 @@ from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
 from pandas.api.types import is_datetime64_any_dtype
 
-from ..log_config import logger_main
+from ..util.log_config import logger_main
 from .timeframe import Timeframe
 
 load_dotenv()

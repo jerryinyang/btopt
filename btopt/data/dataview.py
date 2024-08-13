@@ -2,7 +2,7 @@ from typing import Dict, Iterator, List, Tuple, Union
 
 import pandas as pd
 
-from ..log_config import logger_main
+from ..util.log_config import logger_main
 from .timeframe import Timeframe, TimeframeUnit
 
 

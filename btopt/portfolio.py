@@ -5,11 +5,11 @@ import pandas as pd
 
 from .data.bar import Bar
 from .data.timeframe import Timeframe
-from .log_config import logger_main
 from .order import Order, OrderDetails
 from .trade import Trade
 from .types import EngineType
 from .util.ext_decimal import ExtendedDecimal
+from .util.log_config import logger_main
 
 
 class Portfolio:

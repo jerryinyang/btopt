@@ -13,7 +13,7 @@ from ..trade import Trade
 from ..types import EngineType
 from ..util.ext_decimal import ExtendedDecimal
 from ..util.metaclasses import PreInitABCMeta
-from .helper import Data, DataTimeframe
+from ..btopt.helper import Data, DataTimeframe
 
 
 class StrategyError(Exception):

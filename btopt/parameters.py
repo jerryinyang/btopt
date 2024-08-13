@@ -1,15 +1,16 @@
 from typing import Any, Dict, Optional, Type, Union
 
-from .log_config import logger_main
+from .util.log_config import logger_main
 
 
 class Parameters:
     """
-    A class to manage strategy parameters with dot notation access and type validation.
+    A class to manage strategy parameters with dot notation access, dictionary-like behavior,
+    and type validation.
 
     This class allows for easy access to parameters using dot notation (e.g., params.moving_average_period)
-    while providing type checking and validation. It's designed to be used within trading strategies
-    to manage configuration parameters efficiently and safely.
+    as well as dictionary-style access (e.g., params['moving_average_period']). It provides type checking
+    and validation, and supports dictionary-like operations such as membership testing.
 
     Attributes:
         _params (Dict[str, Any]): Internal dictionary to store parameter names and values.
@@ -18,6 +19,9 @@ class Parameters:
     Methods:
         __getattr__: Allows dot notation access to parameters.
         __setattr__: Allows setting parameters with dot notation and performs type checking.
+        __getitem__: Allows dictionary-style access to parameters.
+        __setitem__: Allows dictionary-style setting of parameters.
+        __contains__: Supports membership testing (e.g., 'param_name' in params).
         __repr__: Returns a string representation of the parameters.
         set: Set a parameter value with optional type specification.
         get: Get a parameter value with an optional default.
@@ -78,6 +82,48 @@ class Parameters:
                     f"Cannot set new parameter '{name}' using dot notation. Use set() method instead."
                 )
             )
+
+    def __getitem__(self, key: str) -> Any:
+        """
+        Allow dictionary-style access to parameters.
+
+        Args:
+            key (str): The name of the parameter to access.
+
+        Returns:
+            Any: The value of the requested parameter.
+
+        Raises:
+            KeyError: If the parameter does not exist.
+        """
+        if key in self._params:
+            return self._params[key]
+        logger_main.log_and_raise(KeyError(f"Parameter '{key}' does not exist"))
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        """
+        Allow dictionary-style setting of parameters.
+
+        Args:
+            key (str): The name of the parameter to set.
+            value (Any): The value to set for the parameter.
+
+        Raises:
+            TypeError: If the value type does not match the expected type.
+        """
+        self.set(key, value)
+
+    def __contains__(self, item: str) -> bool:
+        """
+        Support membership testing (e.g., 'param_name' in params).
+
+        Args:
+            item (str): The name of the parameter to check.
+
+        Returns:
+            bool: True if the parameter exists, False otherwise.
+        """
+        return item in self._params
 
     def __repr__(self) -> str:
         """

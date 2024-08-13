@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from .util.logger import get_logger
+from .logger import get_logger
 
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # Define your default logging configuration
 DEFAULT_LOG_FILE = PROJECT_ROOT / "logs/main.log"

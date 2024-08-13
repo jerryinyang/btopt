@@ -1,5 +1,7 @@
 from typing import Any, Union
 
+import numpy as np
+
 from ..data.timeframe import Timeframe
 from ..strategy.helper import Data
 
@@ -54,6 +56,54 @@ class IndicatorData(Data):
         else:
             raise TypeError(
                 f"Invalid key type. Expected int or Timeframe, got {type(key).__name__}"
+            )
+
+    @classmethod
+    def from_data(cls, data: Data) -> "IndicatorData":
+        """
+        Create an IndicatorData instance from a Data object.
+
+        Args:
+            data (Data): The Data object to convert.
+
+        Returns:
+            IndicatorData: A new IndicatorData instance containing the same data.
+        """
+        indicator_data = cls(symbol=data.symbol, max_length=data.max_length)
+        indicator_data._data = data._data.copy()
+        indicator_data._timestamps = data._timestamps.copy()
+        indicator_data._custom_columns = data._custom_columns.copy()
+        return indicator_data
+
+    def add_indicator_column(self, timeframe: Timeframe, name: str) -> None:
+        """
+        Add a new indicator column to the data.
+
+        Args:
+            timeframe (Timeframe): The timeframe for which to add the column.
+            name (str): The name of the new indicator column.
+        """
+        if timeframe not in self._custom_columns:
+            self._custom_columns[timeframe] = {}
+        self._custom_columns[timeframe][name] = np.full(self.max_length, np.nan)
+
+    def update_indicator(self, timeframe: Timeframe, name: str, value: float) -> None:
+        """
+        Update the most recent value of an indicator column.
+
+        Args:
+            timeframe (Timeframe): The timeframe of the indicator.
+            name (str): The name of the indicator column.
+            value (float): The new value to set.
+        """
+        if (
+            timeframe in self._custom_columns
+            and name in self._custom_columns[timeframe]
+        ):
+            self._custom_columns[timeframe][name][0] = value
+        else:
+            raise ValueError(
+                f"Indicator column '{name}' for timeframe {timeframe} does not exist."
             )
 
 
@@ -227,4 +277,5 @@ if __name__ == "__main__":
     current_bar = indicator_data.get(Timeframe("1h"))
 
     # Get multiple Bar objects
+    bars = indicator_data.get(Timeframe("1h"), index=0, size=5)
     bars = indicator_data.get(Timeframe("1h"), index=0, size=5)

@@ -5,11 +5,11 @@ import pandas as pd
 
 from ..btopt.data.bar import Bar
 from ..btopt.data.timeframe import Timeframe
-from ..btopt.log_config import logger_main
 from ..btopt.order import Order, OrderDetails
 from ..btopt.trade import Trade
 from ..btopt.types import EngineType
 from ..btopt.util.ext_decimal import ExtendedDecimal
+from ..btopt.util.log_config import logger_main
 
 
 class Portfolio:

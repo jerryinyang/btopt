@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Optional, Union
 
-from ..log_config import logger_main
 from ..util.ext_decimal import ExtendedDecimal
+from ..util.log_config import logger_main
 from .timeframe import Timeframe
 
 

@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Type
 
-from .log_config import logger_main
+from .util.log_config import logger_main
 
 
 class Outputs:
