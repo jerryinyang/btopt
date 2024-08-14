@@ -1,7 +1,8 @@
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional, Union
 
-from .data.manager_output import OuputDataManager
+from .data.manager_output_single import SingleTimeframeOutputManager
+from .data.manager_price import PriceDataManager
 from .data.timeframe import Timeframe
 from .parameters import Parameters
 from .types import StrategyType
@@ -27,7 +28,7 @@ class Indicator(metaclass=PreInitABCMeta):
             ValueError: If the warmup_period is less than 1.
         """
         self.name: str = name
-        self.outputs: Dict[str, OuputDataManager] = {}
+        self.outputs: Dict[str, SingleTimeframeOutputManager] = {}
         self.output_names: List[str] = []
 
         # Initialize parameters
@@ -41,20 +42,21 @@ class Indicator(metaclass=PreInitABCMeta):
         # Initialize symbols
         self._symbols: List[str] = kwargs.get("symbols", [])
 
-        # Initialize timeframes
-        self._timeframes: List[Timeframe] = kwargs.get("timeframes", [])
-
         # Initialize strategy
         self._strategy: StrategyType = kwargs.get("strategy", None)
 
+        # Initialize timeframe
+        self._timeframe: Timeframe = kwargs.get(
+            "timeframe", self._strategy._primary_timeframe
+        )
+
         # Initialize strategy outputs.
         for symbol in self._symbols:
-            manager = OuputDataManager(symbol)
+            manager = SingleTimeframeOutputManager(symbol, self._timeframe)
 
             # Create output columns
             for output_name in self.output_names:
-                for timeframe in self._timeframes:
-                    manager.add_output_column(timeframe, output_name)
+                manager.add_output_column(output_name)
 
             # Store Output manager
             self.outputs[symbol] = manager
@@ -63,12 +65,12 @@ class Indicator(metaclass=PreInitABCMeta):
         self._initialized = True
 
     @property
-    def datas(self) -> Dict[str, OuputDataManager]:
+    def datas(self) -> Dict[str, PriceDataManager]:
         """
-        Get the current OuputDataManager object from the associated Strategy.
+        Get the current PriceDataManager object from the associated Strategy.
 
         Returns:
-            OuputDataManager: The current OuputDataManager object.
+            PriceDataManager: The current PriceDataManager object.
         """
 
         return self._strategy.datas
@@ -78,8 +80,8 @@ class Indicator(metaclass=PreInitABCMeta):
         return self._symbols
 
     @property
-    def timeframes(self):
-        return self._timeframes
+    def timeframe(self):
+        return self._timeframe
 
     @property
     def parameters(self) -> Parameters:
@@ -133,56 +135,34 @@ class Indicator(metaclass=PreInitABCMeta):
         logger_main.info(f"Updated warmup_period to {value}")
 
     def _validate_initialization(self) -> bool:
-        """
-        Validate the initialization parameters of the Indicator.
-
-        This method checks if:
-        1. The indicator has an associated strategy.
-        2. The indicator is subscribed to at least one symbol.
-        3. All subscribed symbols are valid (present in the strategy's data).
-        4. All specified timeframes are valid for each subscribed symbol.
-
-        Returns:
-            bool: True if all validations pass.
-
-        Raises:
-            ValueError: If any validation fails, with a descriptive error message.
-        """
         if (self._strategy is None) or (
             not isinstance(self._strategy, self._get_strategy_class())
         ):
-            logger_main.error(f"Indicator {self.name} has no associated strategy.")
-            raise ValueError(f"Indicator {self.name} has no associated strategy.")
+            logger_main.log_and_raise(
+                ValueError(f"Indicator {self.name} has no associated strategy.")
+            )
 
         if not self._symbols:
-            logger_main.error(
-                f"Indicator {self.name} must subscribe to at least one symbol."
-            )
-            raise ValueError(
-                f"Indicator {self.name} must subscribe to at least one symbol."
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Indicator {self.name} must subscribe to at least one symbol."
+                )
             )
 
         invalid_symbols = set(self._symbols) - set(self._strategy.datas.keys())
         if invalid_symbols:
-            logger_main.error(
-                f"Invalid symbols for indicator {self.name}: {invalid_symbols}"
-            )
-            raise ValueError(
-                f"Invalid symbols for indicator {self.name}: {invalid_symbols}"
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Invalid symbols for indicator {self.name}: {invalid_symbols}. The associated strategy does not contain these symbols' data."
+                )
             )
 
-        # Commented out, becausse at the point of initialization, no data is added yet
-        # for symbol in self._symbols:
-        #     invalid_timeframes = set(self._timeframes) - set(
-        #         self._strategy.datas[symbol].timeframes
-        #     )
-        #     if invalid_timeframes:
-        #         logger_main.error(
-        #             f"Invalid timeframes for symbol {symbol} in indicator {self.name}: {invalid_timeframes}"
-        #         )
-        #         raise ValueError(
-        #             f"Invalid timeframes for symbol {symbol} in indicator {self.name}: {invalid_timeframes}"
-        #         )
+        if self._timeframe is None or (not self._timeframe):
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Invalid timeframe for indicator {self.name}: {self._timeframe}. Indicator timeframe must be set."
+                )
+            )
 
         logger_main.info(f"Initialization validation passed for indicator {self.name}")
 
@@ -209,9 +189,16 @@ class Indicator(metaclass=PreInitABCMeta):
                         f"indicator {self.name} has not been initialized. Skipping current iteration."
                     )
                     return
+                self._current_index += 1
+
+                # Update the timestamp of the outputs
+                for symbol in self._symbols:
+                    timestamp = self.datas[symbol].get_current_timestamp(
+                        self._timeframe
+                    )
+                    self.outputs[symbol].update_timestamp(timestamp)
 
                 self.on_data()
-                self._current_index += 1
         except Exception as e:
             logger_main.log_and_raise(
                 f"Error in on_data method of Indicator {self.name}: {str(e)}"
@@ -231,15 +218,14 @@ class Indicator(metaclass=PreInitABCMeta):
             return True
 
         for symbol in self._symbols:
-            for timeframe in self._timeframes:
-                data_length = len(self._strategy.datas[symbol][timeframe])
-                if data_length < self._warmup_period:
-                    logger_main.debug(
-                        f"Insufficient data for Indicator {self.name} on symbol {symbol}, "
-                        f"timeframe {timeframe}. Current length: {data_length}, "
-                        f"Required: {self._warmup_period}"
-                    )
-                    return False
+            data_length = len(self._strategy.datas[symbol][self._timeframe])
+            if data_length < self._warmup_period:
+                logger_main.debug(
+                    f"Insufficient data for Indicator {self.name} on symbol {symbol}, "
+                    f"timeframe {self._timeframe}. Current length: {data_length}, "
+                    f"Required: {self._warmup_period}"
+                )
+                return False
 
         self._is_warmup_complete = True
         logger_main.info(f"Warmup period complete for Indicator {self.name}")

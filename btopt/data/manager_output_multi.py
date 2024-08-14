@@ -10,7 +10,7 @@ from .manager import DataManager, DataTimeframeManager
 from .timeframe import Timeframe
 
 
-class OuputDataManager(DataManager):
+class MultiTimframeOuputManager(DataManager):
     """
     A class to manage output data for a specific symbol across multiple timeframes.
 
@@ -24,7 +24,7 @@ class OuputDataManager(DataManager):
 
     def __init__(self, symbol: str, max_length: int = 500):
         """
-        Initialize the OuputDataManager object.
+        Initialize the MultiTimframeOuputManager object.
 
         Args:
             symbol (str): The market symbol this data represents.
@@ -141,7 +141,7 @@ class OuputDataManager(DataManager):
             f"Updated current value of column '{column}' for timeframe {timeframe}"
         )
 
-    def __getitem__(self, timeframe: Timeframe) -> "OuputDataManagerTimeframe":
+    def __getitem__(self, timeframe: Timeframe) -> "MTFOuputTimeframeManager":
         """
         Access data for a specific timeframe.
 
@@ -149,17 +149,17 @@ class OuputDataManager(DataManager):
             timeframe (Timeframe): The specific timeframe to access data for.
 
         Returns:
-            OuputDataManagerTimeframe: A OuputDataManagerTimeframe object providing access to the output data for the specified timeframe.
+            MTFOuputTimeframeManager: A MTFOuputTimeframeManager object providing access to the output data for the specified timeframe.
 
         Raises:
             KeyError: If the specified timeframe does not exist.
         """
         if timeframe not in self._data:
             raise KeyError(f"No data available for timeframe: {timeframe}")
-        return OuputDataManagerTimeframe(self, timeframe)
+        return MTFOuputTimeframeManager(self, timeframe)
 
 
-class OuputDataManagerTimeframe(DataTimeframeManager):
+class MTFOuputTimeframeManager(DataTimeframeManager):
     """
     A class to provide convenient access to output market data for a specific timeframe.
 
@@ -169,12 +169,12 @@ class OuputDataManagerTimeframe(DataTimeframeManager):
         Inherits all attributes from the DataTimeframe class.
     """
 
-    def __init__(self, data: OuputDataManager, timeframe: Timeframe):
+    def __init__(self, data: MultiTimframeOuputManager, timeframe: Timeframe):
         """
-        Initialize the OuputDataManagerTimeframe object.
+        Initialize the MTFOuputTimeframeManager object.
 
         Args:
-            data (OuputDataManager): The parent OuputDataManager object.
+            data (MultiTimframeOuputManager): The parent MultiTimframeOuputManager object.
             timeframe (Timeframe): The timeframe this object represents.
         """
         super().__init__(data, timeframe)
@@ -272,9 +272,9 @@ class OuputDataManagerTimeframe(DataTimeframeManager):
 
     def __repr__(self) -> str:
         """
-        Return a string representation of the OuputDataManagerTimeframe object.
+        Return a string representation of the MTFOuputTimeframeManager object.
 
         Returns:
             str: A string representation of the object.
         """
-        return f"OuputDataManagerTimeframe(symbol={self._data.symbol}, timeframe={self._timeframe}, columns={len(self._data._data[self._timeframe]) - 1})"
+        return f"MTFOuputTimeframeManager(symbol={self._data.symbol}, timeframe={self._timeframe}, columns={len(self._data._data[self._timeframe]) - 1})"

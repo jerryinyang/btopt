@@ -126,6 +126,37 @@ class DataManager:
                 result.append(point)
             return result[0] if size == 1 else result
 
+    def get_current_timestamp(
+        self, timeframe: Optional[Timeframe] = None
+    ) -> Optional[datetime]:
+        """
+        Get the current (latest) timestamp for the specified timeframe.
+
+        Args:
+            timeframe (Optional[Timeframe], optional): The timeframe to get the timestamp for.
+                If None, uses the primary timeframe. Defaults to None.
+
+        Returns:
+            Optional[datetime]: The current timestamp for the specified timeframe,
+                or None if no data is available for the timeframe.
+
+        Raises:
+            ValueError: If the specified timeframe does not exist.
+        """
+        if timeframe is None:
+            timeframe = self.primary_timeframe
+
+        if timeframe not in self._timestamps:
+            raise ValueError(f"No data available for timeframe: {timeframe}")
+
+        current_timestamp = self._timestamps[timeframe][0]
+
+        # Check if the timestamp is valid (not NaT)
+        if np.isnat(current_timestamp):
+            return None
+
+        return current_timestamp
+
     def __getitem__(self, timeframe: Timeframe) -> "DataTimeframeManager":
         """
         Access data for a specific timeframe.

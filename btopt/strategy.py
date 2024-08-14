@@ -407,55 +407,27 @@ class Strategy(metaclass=PreInitABCMeta):
             )
             valid_symbols = [self._primary_symbol]
 
-        # Process and validate timeframes
-        timeframes = kwargs.get("timeframes", [self._primary_timeframe])
-        if isinstance(timeframes, (str, Timeframe)):
-            timeframes = [
-                Timeframe(timeframes) if isinstance(timeframes, str) else timeframes
-            ]
-        elif not isinstance(timeframes, list):
+        # Process and validate timeframe
+        timeframe = kwargs.get("timeframe", self._primary_timeframe)
+        if isinstance(timeframe, (str, Timeframe)):
+            timeframe = (
+                Timeframe(timeframe) if isinstance(timeframe, str) else timeframe
+            )
+        else:
             logger_main.log_and_raise(
                 TypeError(
-                    f"Expected str, Timeframe, or list[Timeframe] for `timeframes`; received {timeframes} of type `{type(timeframes)}`"
+                    f"Expected str or Timeframe for `timeframe`; received {timeframe} of type `{type(timeframe)}`"
                 )
             )
 
-        # Ensure all timeframes are Timeframe objects
-        timeframes = [
-            Timeframe(tf) if isinstance(tf, str) else tf
-            for tf in timeframes
-            if tf in self._strategy_timeframes
-        ]
-
-        if not timeframes:
+        if timeframe not in self._strategy_timeframes:
             logger_main.warning(
-                f"No valid timeframe provided for Indicator {name}. Defaulting to primary timeframe."
+                f"Timeframe provided for Indicator {name} not found within the associated strategy. Defaulting to primary timeframe."
             )
-            timeframes = [self._primary_timeframe]
-
-        # Commented out, becausse at the point of initialization, no data is added yet
-        # Filter out symbols that don't support all specified timeframes
-        # symbols_to_remove = []
-        # for sym in valid_symbols:
-        #     for tf in timeframes:
-        #         if tf not in self.datas[sym].timeframes:
-        #             logger_main.warning(
-        #                 f"Timeframe {tf} is not available for symbol {sym}. This symbol will be removed for this indicator."
-        #             )
-        #             symbols_to_remove.append(sym)
-        #             break
-
-        # valid_symbols = [sym for sym in valid_symbols if sym not in symbols_to_remove]
-
-        # if not valid_symbols:
-        #     logger_main.warning(
-        #         f"No symbols support all specified timeframes for Indicator {name}. Defaulting to primary symbol and timeframe."
-        #     )
-        #     valid_symbols = [self._primary_symbol]
-        #     timeframes = [self._primary_timeframe]
+            timeframe = self._primary_timeframe
 
         kwargs["symbols"] = valid_symbols
-        kwargs["timeframes"] = timeframes
+        kwargs["timeframe"] = timeframe
         kwargs["strategy"] = self
 
         return indicator_instance, kwargs

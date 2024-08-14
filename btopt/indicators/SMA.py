@@ -48,15 +48,17 @@ class SimpleMovingAverage(Indicator):
         Calculate the Simple Moving Average for each timeframe when new data arrives.
         """
 
-        logger_main.warning(self.outputs)
-        return
         for symbol in self.symbols:
-            for timeframe in self.datas[self._symbol].timeframes:
-                price_data = self.datas[self._symbol][timeframe][self._price_type]
-                sma_values = self._calculate_sma(price_data)
+            self.outputs[symbol].sma = self._current_index
 
-                # Update the custom column with the calculated SMA values
-                self.datas[self._symbol][timeframe][f"{self.name}_sma"] = sma_values
+            # Fetch the data for the symbol and timeframe
+            price_data = self.datas[symbol].get(
+                self.timeframe,
+                column=self._source,
+                size=self._period,
+            )
+            sma_value = self._calculate_sma(price_data)
+            self.outputs[symbol]["sma"] = sma_value
 
     def _calculate_sma(self, data: np.ndarray) -> np.ndarray:
         """
@@ -66,10 +68,10 @@ class SimpleMovingAverage(Indicator):
             data (np.ndarray): The price data to calculate the SMA for.
 
         Returns:
-            np.ndarray: An array of SMA values.
+            float: The SMA value.
         """
-        sma = np.convolve(data, np.ones(self._period), "valid") / self._period
-        return np.concatenate((np.full(self._period - 1, np.nan), sma))
+        sma = np.sum(data) / self._period
+        return sma
 
     def __repr__(self) -> str:
         """
@@ -79,3 +81,6 @@ class SimpleMovingAverage(Indicator):
             str: A string representation of the indicator.
         """
         return f"SimpleMovingAverage(name={self.name}, period={self._period}, price_type={self._price_type}, symbol={self._symbol})"
+
+
+SMA = SimpleMovingAverage
