@@ -29,28 +29,35 @@ class Indicator(metaclass=PreInitABCMeta):
         """
         self.name: str = name
         self.outputs: List[str] = []
-        self._parameters: Parameters = kwargs.get("parameters", Parameters({}))
+
+        # Initialize parameters
+        self._parameters: Parameters = Parameters(kwargs)
         self._warmup_period: int = 1
         self._current_index: int = 0
-
-        self._symbols: List[str] = kwargs.get("symbols", [])
-        self._timeframes: List[Timeframe] = kwargs.get("timeframes", [])
-        self._strategy: StrategyType = kwargs.get("strategy", None)
         self._is_warmup_complete: bool = False
+        self._initialized = False
 
-        if isinstance(self._parameters, dict):
-            self._parameters = Parameters(self._parameters)
+    def _initialize_indicator(self, **kwargs):
+        # Initialize symbols
+        self._symbols: List[str] = kwargs.get("symbols", [])
+
+        # Initialize timeframes
+        self._timeframes: List[Timeframe] = kwargs.get("timeframes", [])
+
+        # Initialize strategy
+        self._strategy: StrategyType = kwargs.get("strategy", None)
+
+        # Initialize strategy outputs. Add a custom column to store SMA values
+        for output_name in self.outputs:
+            for symbol in self._symbols:
+                for timeframe in self._timeframes:
+                    self._strategy.datas[symbol].add_custom_column(
+                        timeframe, output_name
+                    )
+                    self.outputs.append(f"{self.name}_{output_name}")
 
         self._validate_initialization()
-
-        # Add a custom column to store SMA values
-        for symbol in self._symbols:
-            for timeframe in self._timeframes:
-                output_name = "sma"
-                self._strategy.datas[symbol].add_custom_column(timeframe, output_name)
-                self.outputs.append(f"{self.name}_{output_name}")
-
-        logger_main.info(f"Initialized {self.name} indicator")
+        self._initialized = True
 
     @property
     def datas(self) -> Dict[str, Data]:
@@ -172,7 +179,6 @@ class Indicator(metaclass=PreInitABCMeta):
                 )
 
         logger_main.info(f"Initialization validation passed for indicator {self.name}")
-        return True
 
     @abstractmethod
     def on_data(self) -> None:
@@ -192,13 +198,18 @@ class Indicator(metaclass=PreInitABCMeta):
         """
         try:
             if self._check_warmup_period():
+                if not self._initialized:
+                    logger_main.warning(
+                        f"indicator {self.name} has not been initialized. Skipping current iteration."
+                    )
+                    return
+
                 self.on_data()
                 self._current_index += 1
         except Exception as e:
-            logger_main.error(
+            logger_main.log_and_raise(
                 f"Error in on_data method of Indicator {self.name}: {str(e)}"
             )
-            raise
 
     def _check_warmup_period(self) -> bool:
         """

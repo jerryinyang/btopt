@@ -16,7 +16,7 @@ class Data:
 
     This class provides efficient storage and access to OHLCV (Open, High, Low, Close, Volume)
     data for different timeframes, while maintaining compatibility with Bar objects.
-    It also allows for custom columns to be added and modified.
+    It also allows for custom columns to be added and modified, with easy access using dot notation.
 
     Attributes:
         symbol (str): The market symbol (e.g., 'EURUSD', 'AAPL') this data represents.
@@ -27,37 +27,11 @@ class Data:
 
     Example:
         >>> data = Data(symbol='AAPL', max_length=1000)
-
-        ### Add a new bar
-        >>> new_bar = Bar(open=100, high=105, low=99, close=102, volume=1000000,
-                      timestamp=datetime.now(), timeframe=Timeframe('1h'),
-                      ticker='AAPL')
         >>> data.add_bar(new_bar)
-
-        ### Access OHLCV data
-        >>> latest_close = data[Timeframe('1h')]['close'][0]
-
-        ### Add and use a custom column
-        >>> data.add_custom_column(Timeframe('1h'), 'my_indicator')
-        >>> data[Timeframe('1h')]['my_indicator'] = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        >>> indicator_value = data[Timeframe('1h')]['my_indicator'][0]
-
-        ### Use the get method
-        >>> latest_bar = data.get(Timeframe('1h'), index=0)
-        >>> custom_values = data.get(Timeframe('1h'), index=0, size=5, value='my_indicator')
-
-        ### Convert to DataFrame
-        >>> df = data[Timeframe('1h')].to_dataframe()
-
-    Note:
-        - Supports multiple timeframes
-        - Maintains a fixed number of data points (max_length)
-        - Compatible with Bar objects
-        - Supports custom columns for indicators or other data
-        - Uses numpy arrays for efficient storage and operations
-        - Allows flexible data access (Bar objects, individual values, or ranges)
-        - Supports conversion to pandas DataFrame
-        - Implements a primary timeframe concept for easy access to the shortest timeframe
+        >>> latest_close = data[Timeframe('1h')].close[0]
+        >>> data.add_custom_column(Timeframe('1h'), 'sma_20')
+        >>> data[Timeframe('1h')].sma_20[0] = 150.5  # Set current value
+        >>> current_sma = data[Timeframe('1h')].sma_20[0]  # Get current value
     """
 
     def __init__(self, symbol: str, max_length: int = 500):
@@ -333,7 +307,6 @@ class Data:
     @property
     def primary_timeframe(self) -> Timeframe:
         """Get the least available timeframe."""
-        logger_main.warning(f"TIMEFRAMES: {self._data}")
         return min(self.timeframes)
 
     def _get_primary_data(self, attr: str) -> np.ndarray:
@@ -379,9 +352,8 @@ class DataTimeframe:
     A class to provide convenient access to market data for a specific timeframe.
 
     This class acts as a view into the Data object, providing easy access to OHLCV data
-    and custom columns for a particular timeframe. It ensures that OHLCV data and previous
-    values of custom columns remain immutable, while allowing updates to the current (most recent)
-    value of custom columns.
+    and custom columns for a particular timeframe. It allows access to custom columns
+    using dot notation and setting of current values for custom columns.
 
     Attributes:
         _data (Data): The parent Data object this view is associated with.
@@ -393,22 +365,16 @@ class DataTimeframe:
         __setitem__: Set values for a custom column.
         __iter__: Iterate over the Bar objects in this timeframe.
         __repr__: Return a string representation of the DataTimeframe object.
-        set_current: Set the current (most recent) value of a custom column.
+        __getattr__: Access custom columns using dot notation.
+        __setattr__: Set values for custom columns using dot notation.
+        set_current: Set the current (most recent) value of a column.
         get_custom_column: Get a read-only view of a custom column.
         to_dataframe: Convert the OHLCV data for this timeframe to a pandas DataFrame.
-
-    Properties:
-        open: Get the open price data for this timeframe.
-        high: Get the high price data for this timeframe.
-        low: Get the low price data for this timeframe.
-        close: Get the close price data for this timeframe.
-        volume: Get the volume data for this timeframe.
-        timestamps: Get the timestamp data for this timeframe.
     """
 
     VALID_KEYS: set = {"open", "high", "low", "close", "volume"}
 
-    def __init__(self, data: "Data", timeframe: Timeframe):
+    def __init__(self, data: Data, timeframe: Timeframe):
         """
         Initialize the DataTimeframe object.
 
@@ -416,7 +382,7 @@ class DataTimeframe:
             data (Data): The parent Data object.
             timeframe (Timeframe): The timeframe this object represents.
         """
-        self._data: "Data" = data
+        self._data: Data = data
         self._timeframe: Timeframe = timeframe
 
     def __len__(self) -> int:
@@ -489,16 +455,58 @@ class DataTimeframe:
         # Create a copy of the input array to ensure immutability
         self._data._custom_columns[self._timeframe][key] = value.copy()
 
-    def set_current(self, column_name: str, value: Any) -> None:
+    def __getattr__(self, name: str) -> Union[np.ndarray, "ColumnAccessor"]:
         """
-        Set the current (most recent) value of a custom column.
+        Access columns using dot notation.
 
         Args:
-            column_name (str): The name of the custom column.
-            value (Any): The value to set for the current position of the custom column.
+            name (str): The name of the column.
+
+        Returns:
+            Union[np.ndarray, ColumnAccessor]:
+                - If a built-in column: The column data as a numpy array.
+                - If a custom column: A ColumnAccessor object for the custom column.
 
         Raises:
-            KeyError: If the column_name is not a custom column or doesn't exist.
+            AttributeError: If the column does not exist.
+        """
+        if name in self.VALID_KEYS:
+            return self._data._data[self._timeframe][name]
+        elif name in self._data._custom_columns[self._timeframe]:
+            return ColumnAccessor(self._data, self._timeframe, name)
+        else:
+            raise AttributeError(f"Column '{name}' does not exist")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """
+        Set values for a custom column using dot notation.
+
+        Args:
+            name (str): The name of the custom column.
+            value (Any): The values to set for the custom column.
+
+        Raises:
+            AttributeError: If trying to set a value for a non-custom column.
+        """
+        if name.startswith("_"):
+            super().__setattr__(name, value)
+        elif name in self._data._custom_columns[self._timeframe]:
+            self._data._custom_columns[self._timeframe][name] = value
+        else:
+            raise AttributeError(
+                f"Cannot set attribute '{name}'. Use add_custom_column method first."
+            )
+
+    def set_current(self, column_name: str, value: Any) -> None:
+        """
+        Set the current (most recent) value of a column.
+
+        Args:
+            column_name (str): The name of the column.
+            value (Any): The value to set for the current position of the column.
+
+        Raises:
+            KeyError: If the column_name is not a valid column or doesn't exist.
         """
         if column_name in self.VALID_KEYS:
             raise KeyError(f"Cannot modify built-in column '{column_name}'")
@@ -585,7 +593,7 @@ class DataTimeframe:
         Returns:
             pd.DataFrame: A DataFrame containing the OHLCV data and timestamps.
         """
-        return pd.DataFrame(
+        df = pd.DataFrame(
             {
                 "open": self.open,
                 "high": self.high,
@@ -595,3 +603,120 @@ class DataTimeframe:
                 "timestamp": self._data._timestamps[self._timeframe],
             }
         )
+
+        # Add custom columns to the DataFrame
+        for column_name, column_data in self._data._custom_columns[
+            self._timeframe
+        ].items():
+            df[column_name] = column_data
+
+        return df
+
+
+class ColumnAccessor:
+    """
+    A class to provide convenient access to a specific column.
+
+    This class allows for easy getting and setting of column values using index notation.
+
+    Attributes:
+        _data (Data): The parent Data object.
+        _timeframe (Timeframe): The timeframe this column is associated with.
+        _name (str): The name of the column.
+    """
+
+    def __init__(self, data: Data, timeframe: Timeframe, name: str):
+        """
+        Initialize the ColumnAccessor object.
+
+        Args:
+            data (Data): The parent Data object.
+            timeframe (Timeframe): The timeframe this column is associated with.
+            name (str): The name of the column.
+        """
+        self._data = data
+        self._timeframe = timeframe
+        self._name = name
+
+    def __getitem__(self, index: int) -> Any:
+        """
+        Get the value of the column at the specified index.
+
+        Args:
+            index (int): The index of the value to retrieve (0 is the most recent).
+
+        Returns:
+            Any: The value of the column at the specified index.
+
+        Raises:
+            IndexError: If the index is out of range.
+        """
+        try:
+            return self._data._custom_columns[self._timeframe][self._name][index]
+        except IndexError:
+            raise IndexError(f"Index {index} is out of range for column '{self._name}'")
+
+    def __setitem__(self, index: int, value: Any) -> None:
+        """
+        Set the value of the column at the specified index.
+
+        Args:
+            index (int): The index of the value to set (0 is the most recent).
+            value (Any): The value to set.
+
+        Raises:
+            IndexError: If trying to set a value at an index other than 0.
+        """
+        if index == 0:
+            self._data[self._timeframe].set_current(self._name, value)
+        else:
+            raise IndexError("Can only set the current (index 0) value of a column")
+
+    def __len__(self) -> int:
+        """
+        Get the length of the column.
+
+        Returns:
+            int: The number of values in the column.
+        """
+        return len(self._data._custom_columns[self._timeframe][self._name])
+
+    def __iter__(self):
+        """
+        Iterate over the values in the column.
+
+        Yields:
+            Any: The next value in the column.
+        """
+        yield from self._data._custom_columns[self._timeframe][self._name]
+
+    def __repr__(self) -> str:
+        """
+        Return a string representation of the ColumnAccessor object.
+
+        Returns:
+            str: A string representation of the object.
+        """
+        return f"ColumnAccessor(name='{self._name}', timeframe={self._timeframe}, length={len(self)})"
+
+
+if __name__ == "__main__":
+    # Example usage
+    data = Data(symbol="AAPL", max_length=1000)
+
+    # Add a custom column
+    data.add_custom_column(Timeframe("1h"), "sma_20")
+
+    # Set and get values using dot notation
+    data[Timeframe("1h")].sma_20[0] = 150.5
+    current_sma = data[Timeframe("1h")].sma_20[0]
+
+    # Access built-in columns
+    latest_close = data[Timeframe("1h")].close[0]
+
+    # Convert to DataFrame
+    df = data[Timeframe("1h")].to_dataframe()
+
+    print(f"Current SMA: {current_sma}")
+    print(f"Latest close: {latest_close}")
+    print(df.head())

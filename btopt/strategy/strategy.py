@@ -1,8 +1,7 @@
 import uuid
 from abc import abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..data.bar import Bar
 from ..data.timeframe import Timeframe
 from ..indicator.indicator import Indicator
 from ..order import Order
@@ -70,8 +69,6 @@ class Strategy(metaclass=PreInitABCMeta):
         self._risk_percentage: ExtendedDecimal = ExtendedDecimal("0.05")
         self._initialized: bool = False
 
-        self._configs: Dict[str, Any] = {}
-
         self._indicator_configs: List[Dict[str, Any]] = []
         self._indicators: Dict[str, Indicator] = {}
 
@@ -119,7 +116,7 @@ class Strategy(metaclass=PreInitABCMeta):
             self.datas[symbol] = Data(symbol)
 
         # Create indicator instances
-        self._create_indicators()
+        self._initialize_indicators()
 
         self._initialized = True
         logger_main.info(f"Initialized strategy: {self.name}")
@@ -285,26 +282,6 @@ class Strategy(metaclass=PreInitABCMeta):
             raise ValueError("No primary symbol set for the strategy.")
         return self.datas[self._primary_symbol]
 
-    def add_data(self, symbol: str, timeframe: Timeframe, data: List[Bar]) -> None:
-        """
-        Add historical data for a symbol and timeframe.
-
-        This method adds historical price data to the strategy's data management system.
-
-        Args:
-            symbol (str): The symbol for which to add data.
-            timeframe (Timeframe): The timeframe of the data.
-            data (List[Bar]): A list of Bar objects representing the historical data.
-
-        Raises:
-            ValueError: If the symbol doesn't exist in the strategy's data.
-        """
-        if symbol not in self.datas:
-            raise ValueError(f"Symbol {symbol} not found in strategy data.")
-
-        self.datas[symbol].add_data(timeframe, data)
-        logger_main.info(f"Added {len(data)} bars of {timeframe} data for {symbol}")
-
     def get_data(self, symbol: Optional[str] = None) -> Data:
         """
         Get the Data object for a specific symbol.
@@ -375,42 +352,23 @@ class Strategy(metaclass=PreInitABCMeta):
 
         return len(self.datas[symbol][timeframe].close)
 
-    def add_indicator(
-        self, indicator_class: Type[Indicator], name: str, **kwargs: Any
-    ) -> None:
-        """
-        Store indicator configuration for later initialization.
-
-        Args:
-            indicator_class (Type[Indicator]): The indicator class to instantiate.
-            name (str): A unique name for the indicator instance.
-            **kwargs: Additional keyword arguments to pass to the indicator constructor.
-
-        Raises:
-            ValueError: If an indicator with the same name already exists or if invalid parameters are provided.
-            TypeError: If the provided indicator_class is not a subclass of Indicator.
-        """
-        # Check if indicator_class is a valid subclass of Indicator
-        if not issubclass(indicator_class, Indicator):
+    def register_indicator(self, indicator_instance: Indicator, **kwargs: Any) -> None:
+        # Check if indicator_instance is a valid subclass of Indicator
+        if not issubclass(indicator_instance, Indicator):
             logger_main.log_and_raise(
                 TypeError(
-                    f"{indicator_class.__name__} is not a valid Indicator subclass"
+                    f"{indicator_instance.__name__} is not a valid Indicator subclass"
                 )
             )
 
         # Check for duplicate indicator name
+        name = indicator_instance.name
         if any(config["name"] == name for config in self._indicator_configs):
             logger_main.log_and_raise(
                 ValueError(
                     f"An indicator named '{name}' has already been added to this strategy"
                 )
             )
-
-        # Process and validate parameters
-        parameters: Dict[str, Any] = kwargs.get("parameters", Parameters({}))
-        if not isinstance(parameters, Parameters):
-            parameters = Parameters(parameters)
-        kwargs["parameters"] = parameters
 
         # Process and validate symbols
         symbols = kwargs.get("symbols", [self._primary_symbol])
@@ -478,29 +436,27 @@ class Strategy(metaclass=PreInitABCMeta):
 
         # Store the validated configuration
         self._indicator_configs.append(
-            {"class": indicator_class, "name": name, "kwargs": kwargs}
+            {"instance": indicator_instance, "kwargs": kwargs}
         )
         logger_main.info(
-            f"Stored configuration for indicator '{name}' in strategy '{self.name}' with symbols {valid_symbols} and timeframes {timeframes}"
+            f"Registered  indicator '{name}' in strategy '{self.name}' with symbols {valid_symbols} and timeframes {timeframes}"
         )
 
-    def _create_indicators(self) -> None:
+    def _initialize_indicators(self) -> None:
         """
-        Create indicator instances based on stored configurations.
+        Initialize indicator instances based on stored configurations.
         """
+
         for config in self._indicator_configs:
-            indicator_class: Type[Indicator] = config["class"]
-            name: str = config["name"]
+            indicator_instance: Indicator = config["instance"]
             kwargs: dict = config["kwargs"]
+            kwargs["strategy"] = self
 
-            indicator_instance = indicator_class(name=name, **kwargs)
+            indicator_instance._initialize_indicator(**kwargs)
 
-            # Set internal attributes
-            indicator_instance._strategy = self
-
-            self._indicators[name] = indicator_instance
+            self._indicators[indicator_instance.name] = indicator_instance
             logger_main.info(
-                f"Created indicator instance '{name}' in strategy '{self.name}'"
+                f"Created indicator instance '{indicator_instance.name}' in strategy '{self.name}'"
             )
 
     def get_indicator_output(self, indicator_name: str, output_name: str) -> Any:
