@@ -364,7 +364,8 @@ class Strategy(metaclass=PreInitABCMeta):
 
         # Check for duplicate indicator name
         name = indicator_instance.name
-        if any(config["name"] == name for config in self._indicator_configs):
+        logger_main.warning(self._indicator_configs)
+        if any(config["instance"].name == name for config in self._indicator_configs):
             logger_main.log_and_raise(
                 ValueError(
                     f"An indicator named '{name}' has already been added to this strategy"

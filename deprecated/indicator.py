@@ -1,8 +1,6 @@
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional, Union
 
-import numpy as np
-
 from .data.manager_output_single import SingleTimeframeOutputManager
 from .data.manager_price import PriceDataManager
 from .data.timeframe import Timeframe
@@ -39,7 +37,6 @@ class Indicator(metaclass=PreInitABCMeta):
         self._warmup_period: int = 1
         self._initialized: bool = False
         self._is_warmup_complete: bool = False
-        self._child_indicators: List[Indicator] = []
 
     def _initialize_indicator(self, **kwargs):
         # Initialize symbols
@@ -64,21 +61,8 @@ class Indicator(metaclass=PreInitABCMeta):
             # Store Output manager
             self.outputs[symbol] = manager
 
-        for child_indicator in self._child_indicators:
-            child_indicator._initialize_indicator(**kwargs)
-
         self._validate_initialization()
         self._initialized = True
-
-    def add_indicator(self, indicator: "Indicator") -> None:
-        """
-        Add a child indicator to this indicator.
-
-        Args:
-            indicator (Indicator): The child indicator to add.
-        """
-        self._child_indicators.append(indicator)
-        logger_main.info(f"Added child indicator {indicator.name} to {self.name}")
 
     @property
     def datas(self) -> Dict[str, PriceDataManager]:
@@ -191,18 +175,14 @@ class Indicator(metaclass=PreInitABCMeta):
         Internal method called when new data is available.
 
         This method performs the following steps:
-        1. Processes child indicators.
-        2. Checks if the warmup period is complete.
-        3. If warmup is complete, calls the user-defined `on_data` method.
-        4. Increments the current index.
+        1. Checks if the warmup period is complete.
+        2. If warmup is complete, calls the user-defined `on_data` method.
+        3. Increments the current index.
 
         If an exception occurs during the execution of `on_data`, it logs the error
         and re-raises the exception.
         """
         try:
-            for child_indicator in self._child_indicators:
-                child_indicator._on_data()
-
             if self._check_warmup_period():
                 if not self._initialized:
                     logger_main.warning(
@@ -245,10 +225,6 @@ class Indicator(metaclass=PreInitABCMeta):
                     f"timeframe {self._timeframe}. Current length: {data_length}, "
                     f"Required: {self._warmup_period}"
                 )
-                return False
-
-        for child_indicator in self._child_indicators:
-            if not child_indicator._check_warmup_period():
                 return False
 
         self._is_warmup_complete = True
@@ -325,7 +301,3 @@ class Indicator(metaclass=PreInitABCMeta):
         from .strategy import Strategy
 
         return Strategy
-
-    @staticmethod
-    def float_reverse(data):
-        return np.array(data[::-1]).astype(float)
