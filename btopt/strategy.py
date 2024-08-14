@@ -2,18 +2,17 @@ import uuid
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..data.manager_price import PriceDataManager
-from ..data.timeframe import Timeframe
-from ..indicator.indicator import Indicator
-from ..order import Order
-from ..parameters import Parameters
-from ..sizer import NaiveSizer, Sizer
-from ..trade import Trade
-from ..types import EngineType
-from ..util.ext_decimal import ExtendedDecimal
-from ..util.log_config import logger_main
-from ..util.metaclasses import PreInitABCMeta
-from .helper import DataTimeframe
+from .data.manager_price import PriceDataManager
+from .data.timeframe import Timeframe
+from .indicator import Indicator
+from .order import Order
+from .parameters import Parameters
+from .sizer import NaiveSizer, Sizer
+from .trade import Trade
+from .types import EngineType
+from .util.ext_decimal import ExtendedDecimal
+from .util.log_config import logger_main
+from .util.metaclasses import PreInitABCMeta
 
 
 class StrategyError(Exception):
@@ -116,10 +115,11 @@ class Strategy(metaclass=PreInitABCMeta):
         for symbol in symbols:
             self.datas[symbol] = PriceDataManager(symbol)
 
+        self._initialized = True
+
         # Create indicator instances
         self._initialize_indicators()
 
-        self._initialized = True
         logger_main.info(f"Initialized strategy: {self.name}")
         logger_main.info(f"Symbols: {symbols}")
         logger_main.info(f"Timeframes: {timeframes}")
@@ -304,16 +304,16 @@ class Strategy(metaclass=PreInitABCMeta):
             raise ValueError(f"No data available for symbol: {symbol}")
         return self.datas[symbol]
 
-    def get_data_timeframe(self, symbol: str, timeframe: Timeframe) -> DataTimeframe:
+    def get_data_timeframe(self, symbol: str, timeframe: Timeframe) -> PriceDataManager:
         """
-        Get a DataTimeframe object for a specific symbol and timeframe.
+        Get a PriceDataManager object for a specific symbol and timeframe.
 
         Args:
             symbol (str): The symbol to retrieve data for.
             timeframe (Timeframe): The timeframe to retrieve data for.
 
         Returns:
-            DataTimeframe: The DataTimeframe object for the specified symbol and timeframe.
+            PriceDataManager: The PriceDataManager object for the specified symbol and timeframe.
 
         Raises:
             ValueError: If the requested symbol is not found.
@@ -353,9 +353,9 @@ class Strategy(metaclass=PreInitABCMeta):
 
         return len(self.datas[symbol][timeframe].close)
 
-    def register_indicator(self, indicator_instance: Indicator, **kwargs: Any) -> None:
+    def add_indicator(self, indicator_instance: Indicator, **kwargs: Any):
         # Check if indicator_instance is a valid subclass of Indicator
-        if not issubclass(indicator_instance, Indicator):
+        if not isinstance(indicator_instance, Indicator):
             logger_main.log_and_raise(
                 TypeError(
                     f"{indicator_instance.__name__} is not a valid Indicator subclass"
@@ -371,6 +371,17 @@ class Strategy(metaclass=PreInitABCMeta):
                 )
             )
 
+        # Store the validated configuration
+        self._indicator_configs.append(
+            {"instance": indicator_instance, "kwargs": kwargs}
+        )
+        logger_main.info(f"Added indicator '{name}' to strategy '{self.name}'.")
+
+    def _register_indicator(
+        self, indicator_instance: Indicator, kwargs: Any
+    ) -> Tuple[Indicator, Dict]:
+        name = indicator_instance.name
+
         # Process and validate symbols
         symbols = kwargs.get("symbols", [self._primary_symbol])
         if isinstance(symbols, str):
@@ -383,7 +394,7 @@ class Strategy(metaclass=PreInitABCMeta):
             )
 
         # Filter out unrecognized symbols
-        valid_symbols = [sym for sym in symbols if sym in self.datas.keys()]
+        valid_symbols = [symbol for symbol in symbols if symbol in self.datas.keys()]
         if len(valid_symbols) != len(symbols):
             unrecognized = set(symbols) - set(valid_symbols)
             logger_main.warning(
@@ -410,38 +421,44 @@ class Strategy(metaclass=PreInitABCMeta):
             )
 
         # Ensure all timeframes are Timeframe objects
-        timeframes = [Timeframe(tf) if isinstance(tf, str) else tf for tf in timeframes]
+        timeframes = [
+            Timeframe(tf) if isinstance(tf, str) else tf
+            for tf in timeframes
+            if tf in self._strategy_timeframes
+        ]
 
-        # Filter out symbols that don't support all specified timeframes
-        symbols_to_remove = []
-        for sym in valid_symbols:
-            for tf in timeframes:
-                if tf not in self.datas[sym].timeframes:
-                    logger_main.warning(
-                        f"Timeframe {tf} is not available for symbol {sym}. This symbol will be removed for this indicator."
-                    )
-                    symbols_to_remove.append(sym)
-                    break
-
-        valid_symbols = [sym for sym in valid_symbols if sym not in symbols_to_remove]
-
-        if not valid_symbols:
+        if not timeframes:
             logger_main.warning(
-                f"No symbols support all specified timeframes for Indicator {name}. Defaulting to primary symbol and timeframe."
+                f"No valid timeframe provided for Indicator {name}. Defaulting to primary timeframe."
             )
-            valid_symbols = [self._primary_symbol]
             timeframes = [self._primary_timeframe]
+
+        # Commented out, becausse at the point of initialization, no data is added yet
+        # Filter out symbols that don't support all specified timeframes
+        # symbols_to_remove = []
+        # for sym in valid_symbols:
+        #     for tf in timeframes:
+        #         if tf not in self.datas[sym].timeframes:
+        #             logger_main.warning(
+        #                 f"Timeframe {tf} is not available for symbol {sym}. This symbol will be removed for this indicator."
+        #             )
+        #             symbols_to_remove.append(sym)
+        #             break
+
+        # valid_symbols = [sym for sym in valid_symbols if sym not in symbols_to_remove]
+
+        # if not valid_symbols:
+        #     logger_main.warning(
+        #         f"No symbols support all specified timeframes for Indicator {name}. Defaulting to primary symbol and timeframe."
+        #     )
+        #     valid_symbols = [self._primary_symbol]
+        #     timeframes = [self._primary_timeframe]
 
         kwargs["symbols"] = valid_symbols
         kwargs["timeframes"] = timeframes
+        kwargs["strategy"] = self
 
-        # Store the validated configuration
-        self._indicator_configs.append(
-            {"instance": indicator_instance, "kwargs": kwargs}
-        )
-        logger_main.info(
-            f"Registered  indicator '{name}' in strategy '{self.name}' with symbols {valid_symbols} and timeframes {timeframes}"
-        )
+        return indicator_instance, kwargs
 
     def _initialize_indicators(self) -> None:
         """
@@ -451,13 +468,15 @@ class Strategy(metaclass=PreInitABCMeta):
         for config in self._indicator_configs:
             indicator_instance: Indicator = config["instance"]
             kwargs: dict = config["kwargs"]
-            kwargs["strategy"] = self
 
+            indicator_instance, kwargs = self._register_indicator(
+                indicator_instance, kwargs
+            )
             indicator_instance._initialize_indicator(**kwargs)
 
             self._indicators[indicator_instance.name] = indicator_instance
             logger_main.info(
-                f"Created indicator instance '{indicator_instance.name}' in strategy '{self.name}'"
+                f"Created and registered indicator instance '{indicator_instance.name}' to strategy '{self.name}'"
             )
 
     def get_indicator_output(self, indicator_name: str, output_name: str) -> Any:

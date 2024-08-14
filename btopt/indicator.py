@@ -1,19 +1,18 @@
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional, Union
 
-from ..data.timeframe import Timeframe
-from ..parameters import Parameters
-from ..strategy.helper import Data
-from ..types import StrategyType
-from ..util.log_config import logger_main
-from ..util.metaclasses import PreInitABCMeta
+from .data.manager_output import OuputDataManager
+from .data.timeframe import Timeframe
+from .parameters import Parameters
+from .types import StrategyType
+from .util.log_config import logger_main
+from .util.metaclasses import PreInitABCMeta
 
 
 class Indicator(metaclass=PreInitABCMeta):
     def __init__(
         self,
         name: str,
-        *args,
         **kwargs,
     ):
         """
@@ -28,14 +27,15 @@ class Indicator(metaclass=PreInitABCMeta):
             ValueError: If the warmup_period is less than 1.
         """
         self.name: str = name
-        self.outputs: List[str] = []
+        self.outputs: Dict[str, OuputDataManager] = {}
+        self.output_names: List[str] = []
 
         # Initialize parameters
         self._parameters: Parameters = Parameters(kwargs)
-        self._warmup_period: int = 1
         self._current_index: int = 0
+        self._warmup_period: int = 1
+        self._initialized: bool = False
         self._is_warmup_complete: bool = False
-        self._initialized = False
 
     def _initialize_indicator(self, **kwargs):
         # Initialize symbols
@@ -47,25 +47,28 @@ class Indicator(metaclass=PreInitABCMeta):
         # Initialize strategy
         self._strategy: StrategyType = kwargs.get("strategy", None)
 
-        # Initialize strategy outputs. Add a custom column to store SMA values
-        for output_name in self.outputs:
-            for symbol in self._symbols:
+        # Initialize strategy outputs.
+        for symbol in self._symbols:
+            manager = OuputDataManager(symbol)
+
+            # Create output columns
+            for output_name in self.output_names:
                 for timeframe in self._timeframes:
-                    self._strategy.datas[symbol].add_custom_column(
-                        timeframe, output_name
-                    )
-                    self.outputs.append(f"{self.name}_{output_name}")
+                    manager.add_output_column(timeframe, output_name)
+
+            # Store Output manager
+            self.outputs[symbol] = manager
 
         self._validate_initialization()
         self._initialized = True
 
     @property
-    def datas(self) -> Dict[str, Data]:
+    def datas(self) -> Dict[str, OuputDataManager]:
         """
-        Get the current Data object from the associated Strategy.
+        Get the current OuputDataManager object from the associated Strategy.
 
         Returns:
-            Data: The current Data object.
+            OuputDataManager: The current OuputDataManager object.
         """
 
         return self._strategy.datas
@@ -145,7 +148,9 @@ class Indicator(metaclass=PreInitABCMeta):
         Raises:
             ValueError: If any validation fails, with a descriptive error message.
         """
-        if not self._strategy or not isinstance(self._strategy, StrategyType):
+        if (self._strategy is None) or (
+            not isinstance(self._strategy, self._get_strategy_class())
+        ):
             logger_main.error(f"Indicator {self.name} has no associated strategy.")
             raise ValueError(f"Indicator {self.name} has no associated strategy.")
 
@@ -166,17 +171,18 @@ class Indicator(metaclass=PreInitABCMeta):
                 f"Invalid symbols for indicator {self.name}: {invalid_symbols}"
             )
 
-        for symbol in self._symbols:
-            invalid_timeframes = set(self._timeframes) - set(
-                self._strategy.datas[symbol].timeframes
-            )
-            if invalid_timeframes:
-                logger_main.error(
-                    f"Invalid timeframes for symbol {symbol} in indicator {self.name}: {invalid_timeframes}"
-                )
-                raise ValueError(
-                    f"Invalid timeframes for symbol {symbol} in indicator {self.name}: {invalid_timeframes}"
-                )
+        # Commented out, becausse at the point of initialization, no data is added yet
+        # for symbol in self._symbols:
+        #     invalid_timeframes = set(self._timeframes) - set(
+        #         self._strategy.datas[symbol].timeframes
+        #     )
+        #     if invalid_timeframes:
+        #         logger_main.error(
+        #             f"Invalid timeframes for symbol {symbol} in indicator {self.name}: {invalid_timeframes}"
+        #         )
+        #         raise ValueError(
+        #             f"Invalid timeframes for symbol {symbol} in indicator {self.name}: {invalid_timeframes}"
+        #         )
 
         logger_main.info(f"Initialization validation passed for indicator {self.name}")
 
@@ -303,3 +309,9 @@ class Indicator(metaclass=PreInitABCMeta):
             str: A string representation of the Indicator.
         """
         return f"{self.name}(warmup_period={self._warmup_period}, parameters={self._parameters})"
+
+    @staticmethod
+    def _get_strategy_class():
+        from .strategy import Strategy
+
+        return Strategy

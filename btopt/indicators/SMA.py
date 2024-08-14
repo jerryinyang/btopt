@@ -1,14 +1,13 @@
 import numpy as np
 
+from ..indicator import Indicator
 from ..util.log_config import logger_main
-from .indicator import Indicator
 
 
 class SimpleMovingAverage(Indicator):
     def __init__(
         self,
         name: str,
-        *args,
         **kwargs,
     ):
         """
@@ -17,20 +16,22 @@ class SimpleMovingAverage(Indicator):
         Args:
             name (str): The name of this indicator instance.
         """
-        super().__init__(name, *args, **kwargs)
+        super().__init__(name, **kwargs)
 
         if "period" not in self.parameters:
-            logger_main.log_and_raise("`period` parameter is required.")
+            logger_main.log_and_raise(
+                "`period` parameter is required for the SimpleMovingAverage indicator."
+            )
         if "source" not in self.parameters:
-            logger_main.log_and_raise("`source` parameter is required.")
+            logger_main.log_and_raise(
+                "`source` parameter is required for the SimpleMovingAverage indicator."
+            )
 
         self._period = self.parameters.get("period", 14)
         self._source = self.parameters.get("source", "close")
-        self.warmup_period = self._period
 
-        logger_main.info(
-            f"Initialized {self.name} indicator with period {self._period}"
-        )
+        self.output_names = ["sma"]
+        self.warmup_period = self._period
 
     @property
     def period(self) -> int:
@@ -46,6 +47,9 @@ class SimpleMovingAverage(Indicator):
         """
         Calculate the Simple Moving Average for each timeframe when new data arrives.
         """
+
+        logger_main.warning(self.outputs)
+        return
         for symbol in self.symbols:
             for timeframe in self.datas[self._symbol].timeframes:
                 price_data = self.datas[self._symbol][timeframe][self._price_type]

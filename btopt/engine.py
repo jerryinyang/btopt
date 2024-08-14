@@ -10,7 +10,7 @@ from .data.timeframe import Timeframe
 from .order import Order
 from .portfolio import Portfolio
 from .reporter import Reporter
-from .strategy.strategy import Strategy
+from .strategy import Strategy
 from .trade import Trade
 from .util.ext_decimal import ExtendedDecimal
 from .util.log_config import clear_log_files, logger_main
