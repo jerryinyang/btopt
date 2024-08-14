@@ -1,27 +1,27 @@
 from datetime import datetime
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 import pandas as pd
 
-from ..data.bar import Bar
-from ..data.timeframe import Timeframe
 from ..util.ext_decimal import ExtendedDecimal
-from .data import Data, DataTimeframe
+from .bar import Bar
+from .manager import DataManager, DataTimeframeManager
+from .timeframe import Timeframe
 
 
-class PriceData(Data):
+class PriceDataManager(DataManager):
     """
     A class to manage OHLCV (Open, High, Low, Close, Volume) market data for a specific symbol across multiple timeframes.
 
-    This class inherits from the base Data class and adds OHLCV-specific functionality.
+    This class inherits from the base DataManager class and adds OHLCV-specific functionality.
 
     Attributes:
-        Inherits all attributes from the Data class.
+        Inherits all attributes from the DataManager class.
     """
 
     def __init__(self, symbol: str, max_length: int = 500):
         """
-        Initialize the PriceData object.
+        Initialize the PriceDataManager object.
 
         Args:
             symbol (str): The market symbol this data represents.
@@ -38,31 +38,44 @@ class PriceData(Data):
             bar (Bar): The new bar of market data to add.
         """
         data = {
-            "open": float(bar.open),
-            "high": float(bar.high),
-            "low": float(bar.low),
-            "close": float(bar.close),
+            "open": ExtendedDecimal(bar.open),
+            "high": ExtendedDecimal(bar.high),
+            "low": ExtendedDecimal(bar.low),
+            "close": ExtendedDecimal(bar.close),
             "volume": int(bar.volume),
         }
         super().add_data(bar.timeframe, bar.timestamp, data)
 
-    def get_bar(
-        self, timeframe: Optional[Timeframe] = None, index: int = 0, size: int = 1
-    ) -> Union[Optional[Bar], List[Optional[Bar]]]:
+    def get(
+        self,
+        timeframe: Optional[Timeframe] = None,
+        column: Optional[str] = None,
+        index: int = 0,
+        size: int = 1,
+    ) -> Union[Any, List[Any], Optional[Bar], List[Optional[Bar]]]:
         """
-        Get Bar object(s) for a given timeframe and index.
+        Get Bar object(s) or specific column data for a given timeframe and index.
 
         Args:
             timeframe (Optional[Timeframe], optional): The timeframe to get data for. If None, uses the primary timeframe.
+            column (Optional[str], optional): The specific column to retrieve. If None, returns Bar object(s).
             index (int, optional): The starting index of the bar to retrieve (0 is the most recent). Defaults to 0.
             size (int, optional): The number of bars to retrieve. Defaults to 1.
 
         Returns:
-            Union[Optional[Bar], List[Optional[Bar]]]:
-                - If size is 1, returns a single Bar object or None if not available.
-                - If size > 1, returns a list of Bar objects (may contain None for missing data).
+            Union[Any, List[Any], Optional[Bar], List[Optional[Bar]]]:
+                - If column is specified: returns the result from the parent get() method.
+                - If column is None and size is 1: returns a single Bar object or None if not available.
+                - If column is None and size > 1: returns a list of Bar objects (may contain None for missing data).
         """
-        data = super().get(timeframe, None, index, size)
+        # Use the parent get() method to retrieve the data
+        data = super().get(timeframe, column, index, size)
+
+        # If a specific column was requested, return the data as-is
+        if column is not None:
+            return data
+
+        # If no specific column was requested, convert the data to Bar object(s)
         if not data:
             return None if size == 1 else []
 
@@ -106,7 +119,7 @@ class PriceData(Data):
         return PriceDataTimeframe(self, timeframe)
 
 
-class PriceDataTimeframe(DataTimeframe):
+class PriceDataTimeframe(DataTimeframeManager):
     """
     A class to provide convenient access to OHLCV market data for a specific timeframe.
 
@@ -116,12 +129,12 @@ class PriceDataTimeframe(DataTimeframe):
         Inherits all attributes from the DataTimeframe class.
     """
 
-    def __init__(self, data: PriceData, timeframe: Timeframe):
+    def __init__(self, data: PriceDataManager, timeframe: Timeframe):
         """
         Initialize the PriceDataTimeframe object.
 
         Args:
-            data (PriceData): The parent PriceData object.
+            data (PriceDataManager): The parent PriceDataManager object.
             timeframe (Timeframe): The timeframe this object represents.
         """
         super().__init__(data, timeframe)

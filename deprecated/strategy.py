@@ -2,7 +2,6 @@ import uuid
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..data.manager_price import PriceDataManager
 from ..data.timeframe import Timeframe
 from ..indicator.indicator import Indicator
 from ..order import Order
@@ -13,7 +12,7 @@ from ..types import EngineType
 from ..util.ext_decimal import ExtendedDecimal
 from ..util.log_config import logger_main
 from ..util.metaclasses import PreInitABCMeta
-from .helper import DataTimeframe
+from .helper import Data, DataTimeframe
 
 
 class StrategyError(Exception):
@@ -75,7 +74,7 @@ class Strategy(metaclass=PreInitABCMeta):
 
         # Reintegrated data management attributes
         self.name: str = name or self._id
-        self.datas: Dict[str, PriceDataManager] = {}
+        self.datas: Dict[str, Data] = {}
 
         # Initialize the position sizer with the default NaivePositionSizer
         self._sizer: Sizer = NaiveSizer()
@@ -87,7 +86,7 @@ class Strategy(metaclass=PreInitABCMeta):
         Initialize the strategy with symbols and timeframes.
 
         This method sets up the strategy with the provided symbols and timeframes,
-        creating PriceDataManager objects for each symbol and setting the primary symbol and timeframe.
+        creating Data objects for each symbol and setting the primary symbol and timeframe.
 
         Args:
             symbols (List[str]): List of trading symbols.
@@ -112,9 +111,9 @@ class Strategy(metaclass=PreInitABCMeta):
             )
             self._primary_timeframe = default_timeframe
 
-        # Create PriceDataManager objects for each symbol
+        # Create Data objects for each symbol
         for symbol in symbols:
-            self.datas[symbol] = PriceDataManager(symbol)
+            self.datas[symbol] = Data(symbol)
 
         # Create indicator instances
         self._initialize_indicators()
@@ -265,16 +264,16 @@ class Strategy(metaclass=PreInitABCMeta):
     # region Data Management
 
     @property
-    def data(self) -> PriceDataManager:
+    def data(self) -> Data:
         """
         Get the primary data stream for the strategy.
 
-        This property provides access to the PriceDataManager object for the primary symbol.
+        This property provides access to the Data object for the primary symbol.
         It ensures that the strategy has been properly initialized before
         attempting to access the data.
 
         Returns:
-            PriceDataManager: The PriceDataManager object for the primary symbol.
+            Data: The Data object for the primary symbol.
 
         Raises:
             ValueError: If the strategy hasn't been initialized or if there's no primary symbol set.
@@ -283,18 +282,18 @@ class Strategy(metaclass=PreInitABCMeta):
             raise ValueError("No primary symbol set for the strategy.")
         return self.datas[self._primary_symbol]
 
-    def get_data(self, symbol: Optional[str] = None) -> PriceDataManager:
+    def get_data(self, symbol: Optional[str] = None) -> Data:
         """
-        Get the PriceDataManager object for a specific symbol.
+        Get the Data object for a specific symbol.
 
-        This method allows access to PriceDataManager objects for symbols other than the primary symbol.
+        This method allows access to Data objects for symbols other than the primary symbol.
 
         Args:
-            symbol (Optional[str]): The symbol for which to retrieve the PriceDataManager object.
-                                    If None, returns the primary symbol's PriceDataManager object.
+            symbol (Optional[str]): The symbol for which to retrieve the Data object.
+                                    If None, returns the primary symbol's Data object.
 
         Returns:
-            PriceDataManager: The PriceDataManager object for the specified symbol.
+            Data: The Data object for the specified symbol.
 
         Raises:
             ValueError: If the strategy hasn't been initialized or if the symbol doesn't exist.

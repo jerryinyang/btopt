@@ -1,7 +1,7 @@
 from typing import Any, Union
 
 from ..data.timeframe import Timeframe
-from .data import Data
+from ..types import DataManagerType
 
 
 class ReadOnlyColumnAccessor:
@@ -16,7 +16,7 @@ class ReadOnlyColumnAccessor:
         _name (str): The name of the column.
     """
 
-    def __init__(self, data: "Data", timeframe: Timeframe, name: str):
+    def __init__(self, data: DataManagerType, timeframe: Timeframe, name: str):
         self._data = data
         self._timeframe = timeframe
         self._name = name

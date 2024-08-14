@@ -4,18 +4,18 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 
-from ..data.timeframe import Timeframe
 from ..util.log_config import logger_main
 from .accessor import WritableColumnAccessor
-from .data import Data, DataTimeframe
+from .manager import DataManager, DataTimeframeManager
+from .timeframe import Timeframe
 
 
-class CustomData(Data):
+class OuputDataManager(DataManager):
     """
-    A class to manage custom-created data for a specific symbol across multiple timeframes.
+    A class to manage output data for a specific symbol across multiple timeframes.
 
     This class inherits from the base Data class and adds functionality for managing
-    custom data columns, including a placeholder column.
+    output data columns, including a placeholder column.
 
     Attributes:
         Inherits all attributes from the Data class.
@@ -24,7 +24,7 @@ class CustomData(Data):
 
     def __init__(self, symbol: str, max_length: int = 500):
         """
-        Initialize the CustomData object.
+        Initialize the OuputDataManager object.
 
         Args:
             symbol (str): The market symbol this data represents.
@@ -38,12 +38,12 @@ class CustomData(Data):
         self, timeframe: Timeframe, timestamp: datetime, data: Dict[str, Any]
     ) -> None:
         """
-        Add new custom data to the appropriate timeframe.
+        Add new output data to the appropriate timeframe.
 
         Args:
             timeframe (Timeframe): The timeframe of the data.
             timestamp (datetime): The timestamp of the data.
-            data (Dict[str, Any]): A dictionary containing the custom data to add.
+            data (Dict[str, Any]): A dictionary containing the output data to add.
         """
         # Ensure the placeholder column exists and is updated
         if self._placeholder_column not in data:
@@ -52,14 +52,14 @@ class CustomData(Data):
         # Add any new columns
         for column in data.keys():
             if column not in self._columns:
-                self.add_custom_column(timeframe, column)
+                self.add_output_column(timeframe, column)
                 self._columns.append(column)
 
         super().add_data(timeframe, timestamp, data)
 
-    def add_custom_column(self, timeframe: Timeframe, column_name: str) -> None:
+    def add_output_column(self, timeframe: Timeframe, column_name: str) -> None:
         """
-        Add a new custom column to the specified timeframe.
+        Add a new output column to the specified timeframe.
 
         Args:
             timeframe (Timeframe): The timeframe to add the column to.
@@ -75,7 +75,7 @@ class CustomData(Data):
 
         self._data[timeframe][column_name] = np.full(self._max_length, np.nan)
         logger_main.info(
-            f"Added custom column '{column_name}' to timeframe {timeframe}"
+            f"Added output column '{column_name}' to timeframe {timeframe}"
         )
 
     def get(
@@ -86,7 +86,7 @@ class CustomData(Data):
         size: int = 1,
     ) -> Union[Any, List[Any], Dict[str, Any], List[Dict[str, Any]]]:
         """
-        Get custom data for a given timeframe and column.
+        Get output data for a given timeframe and column.
 
         This method overrides the base get method to exclude the placeholder column from the results.
 
@@ -121,7 +121,7 @@ class CustomData(Data):
 
     def set_current(self, timeframe: Timeframe, column: str, value: Any) -> None:
         """
-        Set the current (most recent) value of a custom column.
+        Set the current (most recent) value of a output column.
 
         Args:
             timeframe (Timeframe): The timeframe of the data.
@@ -141,7 +141,7 @@ class CustomData(Data):
             f"Updated current value of column '{column}' for timeframe {timeframe}"
         )
 
-    def __getitem__(self, timeframe: Timeframe) -> "CustomDataTimeframe":
+    def __getitem__(self, timeframe: Timeframe) -> "OuputDataManagerTimeframe":
         """
         Access data for a specific timeframe.
 
@@ -149,32 +149,32 @@ class CustomData(Data):
             timeframe (Timeframe): The specific timeframe to access data for.
 
         Returns:
-            CustomDataTimeframe: A CustomDataTimeframe object providing access to the custom data for the specified timeframe.
+            OuputDataManagerTimeframe: A OuputDataManagerTimeframe object providing access to the output data for the specified timeframe.
 
         Raises:
             KeyError: If the specified timeframe does not exist.
         """
         if timeframe not in self._data:
             raise KeyError(f"No data available for timeframe: {timeframe}")
-        return CustomDataTimeframe(self, timeframe)
+        return OuputDataManagerTimeframe(self, timeframe)
 
 
-class CustomDataTimeframe(DataTimeframe):
+class OuputDataManagerTimeframe(DataTimeframeManager):
     """
-    A class to provide convenient access to custom market data for a specific timeframe.
+    A class to provide convenient access to output market data for a specific timeframe.
 
-    This class extends the DataTimeframe class with functionality specific to custom data.
+    This class extends the DataTimeframe class with functionality specific to output data.
 
     Attributes:
         Inherits all attributes from the DataTimeframe class.
     """
 
-    def __init__(self, data: CustomData, timeframe: Timeframe):
+    def __init__(self, data: OuputDataManager, timeframe: Timeframe):
         """
-        Initialize the CustomDataTimeframe object.
+        Initialize the OuputDataManagerTimeframe object.
 
         Args:
-            data (CustomData): The parent CustomData object.
+            data (OuputDataManager): The parent OuputDataManager object.
             timeframe (Timeframe): The timeframe this object represents.
         """
         super().__init__(data, timeframe)
@@ -210,7 +210,7 @@ class CustomDataTimeframe(DataTimeframe):
 
     def __setitem__(self, key: Union[str, int], value: Any) -> None:
         """
-        Set the current (most recent) value of a custom column.
+        Set the current (most recent) value of a output column.
 
         Args:
             key (Union[str, int]):
@@ -256,10 +256,10 @@ class CustomDataTimeframe(DataTimeframe):
 
     def to_dataframe(self) -> pd.DataFrame:
         """
-        Convert the custom data for this timeframe to a pandas DataFrame.
+        Convert the output data for this timeframe to a pandas DataFrame.
 
         Returns:
-            pd.DataFrame: A DataFrame containing the custom data and timestamps, excluding the placeholder column.
+            pd.DataFrame: A DataFrame containing the output data and timestamps, excluding the placeholder column.
         """
         data = {
             col: self._data._data[self._timeframe][col]
@@ -272,9 +272,9 @@ class CustomDataTimeframe(DataTimeframe):
 
     def __repr__(self) -> str:
         """
-        Return a string representation of the CustomDataTimeframe object.
+        Return a string representation of the OuputDataManagerTimeframe object.
 
         Returns:
             str: A string representation of the object.
         """
-        return f"CustomDataTimeframe(symbol={self._data.symbol}, timeframe={self._timeframe}, columns={len(self._data._data[self._timeframe]) - 1})"
+        return f"OuputDataManagerTimeframe(symbol={self._data.symbol}, timeframe={self._timeframe}, columns={len(self._data._data[self._timeframe]) - 1})"

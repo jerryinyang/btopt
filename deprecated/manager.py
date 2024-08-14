@@ -4,12 +4,12 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
-from ..data.timeframe import Timeframe
 from ..util.log_config import logger_main
 from .accessor import ReadOnlyColumnAccessor
+from .timeframe import Timeframe
 
 
-class Data:
+class DataManager:
     """
     A base class to manage market data for a specific symbol across multiple timeframes.
 
@@ -25,7 +25,7 @@ class Data:
 
     def __init__(self, symbol: str, max_length: int = 500):
         """
-        Initialize the Data object.
+        Initialize the DataManager object.
 
         Args:
             symbol (str): The market symbol this data represents.
@@ -51,12 +51,25 @@ class Data:
         """
         for column, value in data.items():
             if column not in self._data[timeframe]:
-                self._data[timeframe][column] = np.full(self._max_length, np.nan)
+                self._data[timeframe][column] = np.empty(self._max_length)
+                self._data[timeframe][column].fill(np.nan)
 
+            # Shift the existing data to make room for the new value
             self._data[timeframe][column] = np.roll(self._data[timeframe][column], 1)
+            # Add the new value at the beginning
             self._data[timeframe][column][0] = value
 
-        self._timestamps[timeframe] = np.roll(self._timestamps[timeframe], 1)
+        if len(self._timestamps[timeframe]) == 0:
+            # Initialize the timestamps array if it's empty
+            self._timestamps[timeframe] = np.empty(
+                self._max_length, dtype="datetime64[ns]"
+            )
+            self._timestamps[timeframe].fill(np.datetime64("NaT"))
+        else:
+            # Shift existing timestamps
+            self._timestamps[timeframe] = np.roll(self._timestamps[timeframe], 1)
+
+        # Add the new timestamp at the beginning
         self._timestamps[timeframe][0] = np.datetime64(timestamp)
 
     def get(
@@ -111,7 +124,7 @@ class Data:
                 result.append(point)
             return result[0] if size == 1 else result
 
-    def __getitem__(self, timeframe: Timeframe) -> "DataTimeframe":
+    def __getitem__(self, timeframe: Timeframe) -> "DataTimeframeManager":
         """
         Access data for a specific timeframe.
 
@@ -119,14 +132,14 @@ class Data:
             timeframe (Timeframe): The specific timeframe to access data for.
 
         Returns:
-            DataTimeframe: A DataTimeframe object providing access to the data for the specified timeframe.
+            DataTimeframeManager: A DataTimeframeManager object providing access to the data for the specified timeframe.
 
         Raises:
             KeyError: If the specified timeframe does not exist.
         """
         if timeframe not in self._data:
             raise KeyError(f"No data available for timeframe: {timeframe}")
-        return DataTimeframe(self, timeframe)
+        return DataTimeframeManager(self, timeframe)
 
     @property
     def max_length(self) -> int:
@@ -191,27 +204,27 @@ class Data:
         return min(self.timeframes) if self.timeframes else None
 
 
-class DataTimeframe:
+class DataTimeframeManager:
     """
     A class to provide convenient access to market data for a specific timeframe.
 
-    This class acts as a view into the Data object, providing easy access to data
+    This class acts as a view into the DataManager object, providing easy access to data
     for a particular timeframe.
 
     Attributes:
-        _data (Data): The parent Data object this view is associated with.
+        _data (DataManager): The parent DataManager object this view is associated with.
         _timeframe (Timeframe): The specific timeframe this view represents.
     """
 
-    def __init__(self, data: "Data", timeframe: Timeframe):
+    def __init__(self, data: "DataManager", timeframe: Timeframe):
         """
-        Initialize the DataTimeframe object.
+        Initialize the DataTimeframeManager object.
 
         Args:
-            data (Data): The parent Data object.
+            data (DataManager): The parent DataManager object.
             timeframe (Timeframe): The timeframe this object represents.
         """
-        self._data: "Data" = data
+        self._data: "DataManager" = data
         self._timeframe: Timeframe = timeframe
 
     def __getitem__(
@@ -275,9 +288,9 @@ class DataTimeframe:
 
     def __repr__(self) -> str:
         """
-        Return a string representation of the DataTimeframe object.
+        Return a string representation of the DataTimeframeManager object.
 
         Returns:
             str: A string representation of the object.
         """
-        return f"DataTimeframe(symbol={self._data.symbol}, timeframe={self._timeframe}, length={len(self)})"
+        return f"DataTimeframeManager(symbol={self._data.symbol}, timeframe={self._timeframe}, length={len(self)})"
