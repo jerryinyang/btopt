@@ -32,7 +32,7 @@ class ExponentialMovingAverage(Indicator):
         self._source = self.parameters.get("source", "close")
 
         self.output_names = ["ema"]
-        self.warmup_period = self._period
+        self.warmup_period = self._period + 1
 
     @property
     def period(self) -> int:
@@ -53,7 +53,7 @@ class ExponentialMovingAverage(Indicator):
             price_data = self.datas[symbol].get(
                 self.timeframe,
                 column=self._source,
-                size=self._period,
+                size=self._period + 1,
             )
             ema_value = self._calculate_ema(price_data)
             self.outputs[symbol]["ema"] = ema_value

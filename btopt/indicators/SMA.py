@@ -80,7 +80,7 @@ class SimpleMovingAverage(Indicator):
         Returns:
             str: A string representation of the indicator.
         """
-        return f"SimpleMovingAverage(name={self.name}, period={self._period}, price_type={self._price_type}, symbol={self._symbol})"
+        return f"SimpleMovingAverage(name={self.name}, period={self._period}, price_type={self.source}, symbol={self.source})"
 
 
 SMA = SimpleMovingAverage
