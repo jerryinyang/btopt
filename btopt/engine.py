@@ -676,27 +676,35 @@ class Engine:
         child_orders = []
         if stop_loss:
             stop_loss_order = self.portfolio.create_order(
-                parent_order.details.ticker,
-                Order.Direction.SHORT
-                if parent_order.details.direction == Order.Direction.LONG
-                else Order.Direction.LONG,
-                parent_order.details.size,
-                Order.ExecType.STOP,
-                stop_loss,
+                symbol=parent_order.details.ticker,
+                direction=(
+                    Order.Direction.SHORT
+                    if parent_order.details.direction == Order.Direction.LONG
+                    else Order.Direction.LONG
+                ),
+                size=parent_order.details.size,
+                order_type=Order.ExecType.EXIT_STOP,
+                price=stop_loss,
                 parent_id=parent_order.id,
+                timeframe=parent_order.details.timeframe,
+                strategy_id=parent_order.details.strategy_id,
             )
             child_orders.append(stop_loss_order)
 
         if take_profit:
             take_profit_order = self.portfolio.create_order(
-                parent_order.details.ticker,
-                Order.Direction.SHORT
-                if parent_order.details.direction == Order.Direction.LONG
-                else Order.Direction.LONG,
-                parent_order.details.size,
-                Order.ExecType.LIMIT,
-                take_profit,
+                symbol=parent_order.details.ticker,
+                direction=(
+                    Order.Direction.SHORT
+                    if parent_order.details.direction == Order.Direction.LONG
+                    else Order.Direction.LONG
+                ),
+                size=parent_order.details.size,
+                order_type=Order.ExecType.EXIT_LIMIT,
+                price=take_profit,
                 parent_id=parent_order.id,
+                timeframe=parent_order.details.timeframe,
+                strategy_id=parent_order.details.strategy_id,
             )
             child_orders.append(take_profit_order)
 

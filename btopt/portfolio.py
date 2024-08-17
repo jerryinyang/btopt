@@ -513,6 +513,18 @@ class Portfolio:
         )
 
         if is_reversal:
+            if order.details.exectype in [
+                Order.ExecType.EXIT_LIMIT,
+                Order.ExecType.EXIT_STOP,
+            ]:
+                logger_main.warning(
+                    f"\n\n\n----- CLOSE ----- \nORDER: {order} | \nPOSITION: {current_position} | \nEXECUTION PRICE: {execution_price}\n\n\n"
+                )
+            else:
+                logger_main.warning(
+                    f"\n\n\n----- REVERSAL ----- \nORDER: {order} | \nPOSITION: {current_position}\n\n\n"
+                )
+
             # For reversals, close existing position first
             reversal_size = min(abs(current_position), size)
             self._close_position(
@@ -528,6 +540,9 @@ class Portfolio:
             cost = execution_price * remaining_size
             commission = cost * self.commission_rate
         else:
+            logger_main.warning(
+                f"\n\n\n----- NON-REVERSAL ----- \nORDER: {order} | \nPOSITION: {current_position}\n\n\n"
+            )
             # For non-reversal trades, check margin requirements
             if not self._check_margin_requirements(order, cost):
                 logger_main.warning(
@@ -762,6 +777,14 @@ class Portfolio:
                 continue
 
             is_filled, fill_price = order.is_filled(current_bar)
+            if is_filled and order.details.exectype in [
+                Order.ExecType.EXIT_LIMIT,
+                Order.ExecType.EXIT_STOP,
+            ]:
+                logger_main.warning(
+                    f"\n\n\n----- CLOSE ----- \nORDER: {order} \nEXECUTION PRICE: {fill_price}\n\n\n"
+                )
+                raise
             if is_filled:
                 executed, _ = self.execute_order(order, fill_price, current_bar)
                 if executed:

@@ -178,6 +178,13 @@ class Order:
     ) -> tuple[bool, Optional[ExtendedDecimal]]:
         """Check fill conditions for long orders."""
         if self.details.exectype in [self.ExecType.LIMIT, self.ExecType.EXIT_LIMIT]:
+            # if self.details.exectype in [
+            #     Order.ExecType.EXIT_LIMIT,
+            #     Order.ExecType.EXIT_STOP,
+            # ]:
+            #     logger_main.warning(
+            #         f"\n\n\----- WITHIN ----- \nORDER: {self} LIMIT\n\n\n"
+            #     )
             if bar.open <= self.details.price:
                 return True, self._apply_slippage(bar.open)
             elif bar.low <= self.details.price <= bar.high:
