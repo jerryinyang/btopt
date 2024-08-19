@@ -1,19 +1,12 @@
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from .data.bar import Bar
 from .data.timeframe import Timeframe
-from .orders_classes import (
-    BracketGroup,
-    OCAGroup,
-    OCOGroup,
-    Order,
-    OrderDetails,
-    OrderManager,
-)
+from .order import Order, OrderDetails
 from .trade import Trade
 from .types import EngineType
 from .util.ext_decimal import ExtendedDecimal
@@ -59,13 +52,14 @@ class Portfolio:
         self.short_position_value = ExtendedDecimal("0")
         self.buying_power = initial_capital
 
-        self.order_manager: OrderManager = OrderManager()
         self.positions: Dict[str, ExtendedDecimal] = {}
         self.avg_entry_prices: Dict[str, ExtendedDecimal] = {}
         self.open_trades: Dict[str, List[Trade]] = {}
         self.closed_trades: List[Trade] = []
+        self.pending_orders: List[Order] = []
         self.trade_count = 0
         self.margin_used = ExtendedDecimal("0")
+        self.limit_exit_orders: List[Order] = []
         self.transaction_log: List[Dict[str, Any]] = []
 
         self.current_market_data: Dict[str, Dict[Timeframe, Bar]] = {}
@@ -164,6 +158,13 @@ class Portfolio:
         Args:
             timestamp (datetime): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+
+        Side effects:
+            - Updates self.current_market_data
+            - Processes pending orders
+            - Updates open trades
+            - Updates portfolio metrics
+            - May trigger margin calls
         """
         if not self._configured:
             logger_main.log_and_raise("Portfolio has not been properly configured")
@@ -184,9 +185,7 @@ class Portfolio:
 
         self.current_market_data = market_data
 
-        # Update order manager
-        self.update_order_manager(timestamp, market_data)
-
+        self._process_pending_orders(timestamp, market_data)
         self._update_open_trades(market_data)
         self._update_metrics(timestamp)
         self._update_margin_and_buying_power()
@@ -449,7 +448,7 @@ class Portfolio:
         **kwargs: Any,
     ) -> Order:
         """
-        Create and add a new order using the order manager.
+        Create and add a new order to pending orders.
 
         Args:
             symbol (str): The symbol for the order.
@@ -472,8 +471,8 @@ class Portfolio:
             slippage=self.slippage,
             **kwargs,
         )
-        order = self.order_manager.create_order(order_details)
-        logger_main.info(f"Created order: {order}")
+        order = Order(order_id=self._generate_order_id(), details=order_details)
+        self.add_pending_order(order)
         return order
 
     def execute_order(
@@ -481,6 +480,10 @@ class Portfolio:
     ) -> Tuple[bool, Optional[Trade]]:
         """
         Execute an order and update the portfolio accordingly.
+
+        This method handles the execution of an order, including trade reversals,
+        updating cash, creating or updating trades, managing position changes,
+        and handling child orders.
 
         Args:
             order (Order): The order to execute.
@@ -491,6 +494,13 @@ class Portfolio:
             Tuple[bool, Optional[Trade]]: A tuple containing:
                 - bool: True if the order was executed successfully, False otherwise.
                 - Optional[Trade]: The resulting Trade object if applicable, None otherwise.
+
+        Side effects:
+            - Calls self._update_cash
+            - Calls self._manage_trade
+            - Calls self._update_margin_and_buying_power
+            - Calls self._manage_child_orders
+            - May update self.updated_orders
         """
         symbol = order.details.ticker
         size = order.details.size
@@ -539,13 +549,15 @@ class Portfolio:
         # Manage trade
         trade = self._manage_trade(order, execution_price, bar)
 
+        # Manage child orders
+        self._manage_child_orders(order)
+
         # Update margin and buying power
         self._update_margin_and_buying_power()
 
         # Update order status
-        self.order_manager.handle_fill_event(
-            order.id, size, execution_price, bar.timestamp
-        )
+        order.status = Order.Status.FILLED
+        self.updated_orders.append(order)
 
         logger_main.info(f"Executed order: {order}, resulting trade: {trade}")
         return True, trade
@@ -567,40 +579,89 @@ class Portfolio:
             self.pending_orders.append(order)
         logger_main.info(f"Added pending order: {order}")
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, order: Order) -> bool:
         """
-        Cancel an order using the order manager.
+        Cancel an order and update its status.
 
         Args:
-            order_id (str): The ID of the order to cancel.
+            order (Order): The order to cancel.
 
         Returns:
             bool: True if the order was successfully cancelled, False otherwise.
         """
-        cancelled = self.order_manager.cancel_order(order_id)
-        if cancelled:
-            logger_main.info(f"Cancelled order: {order_id}")
+        if order in self.pending_orders:
+            self.pending_orders.remove(order)
+        elif order in self.limit_exit_orders:
+            self.limit_exit_orders.remove(order)
         else:
-            logger_main.warning(f"Failed to cancel order: {order_id}")
-        return cancelled
+            logger_main.warning(
+                f"Failed to cancel order (not found in pending orders): {order}",
+            )
+            return False
 
-    def modify_order(self, order_id: str, new_details: Dict[str, Any]) -> bool:
+        order.status = Order.Status.CANCELED
+        self.updated_orders.append(order)
+        logger_main.info(f"Cancelled order: {order}")
+        return True
+
+    def modify_order(self, order_id: int, new_details: Dict[str, Any]) -> bool:
         """
-        Modify an existing order using the order manager.
+        Modify an existing pending order.
 
         Args:
-            order_id (str): The ID of the order to modify.
+            order_id (int): The ID of the order to modify.
             new_details (Dict[str, Any]): A dictionary containing the new details for the order.
 
         Returns:
             bool: True if the order was successfully modified, False otherwise.
         """
-        modified = self.order_manager.modify_order(order_id, new_details)
-        if modified:
-            logger_main.info(f"Modified order: {order_id}")
-        else:
-            logger_main.warning(f"Failed to modify order: {order_id}")
-        return modified
+        for order in self.pending_orders:
+            if order.id == order_id:
+                for key, value in new_details.items():
+                    if hasattr(order.details, key):
+                        setattr(order.details, key, value)
+                self.updated_orders.append(order)
+                logger_main.info(f"Modified order: {order}")
+                return True
+        logger_main.info(f"Order with ID {order_id} not found in pending orders.")
+        return False
+
+    def _manage_child_orders(self, filled_order: Order) -> None:
+        """
+        Manage child orders after a parent or sibling order is filled or partially filled.
+
+        Args:
+            filled_order (Order): The order that was just filled or partially filled.
+        """
+        if filled_order.family_role == Order.FamilyRole.PARENT:
+            # If the parent order is filled, reduce or cancel all child orders
+            for child_order in filled_order.children:
+                if child_order.is_active():
+                    if filled_order.get_remaining_size() > ExtendedDecimal("0"):
+                        # Reduce child order size
+                        new_size = min(
+                            child_order.details.size, filled_order.get_remaining_size()
+                        )
+                        self.modify_order(child_order.id, {"size": new_size})
+                    else:
+                        # Cancel child order
+                        self.cancel_order(child_order)
+
+        elif filled_order.family_role in [
+            Order.FamilyRole.CHILD_EXIT,
+            Order.FamilyRole.CHILD_REDUCE,
+        ]:
+            # If a child order is filled, cancel all sibling orders
+            parent_order = self.get_order_by_id(filled_order.details.parent_id)
+            if parent_order:
+                for sibling_order in parent_order.children:
+                    if (
+                        sibling_order.id != filled_order.id
+                        and sibling_order.is_active()
+                    ):
+                        self.cancel_order(sibling_order)
+
+        logger_main.info(f"Managed child orders for filled order {filled_order.id}")
 
     def close_positions(self, strategy_id: str, symbol: Optional[str] = None) -> bool:
         """
@@ -666,6 +727,13 @@ class Portfolio:
             trade (Trade): The trade to close.
             current_price (ExtendedDecimal): The current market price to close the trade at.
             order (Optional[Order]): The order that triggered the trade closure, if any.
+
+        Side effects:
+            - Calls self._update_cash
+            - Calls self._update_positions
+            - Moves trade from self.open_trades to self.closed_trades
+            - Calls self._update_margin_and_buying_power
+            - Updates self.updated_trades
         """
         symbol = trade.ticker
         close_size = trade.current_size
@@ -687,9 +755,8 @@ class Portfolio:
         self._update_positions(symbol, position_change, current_price)
 
         # Close the trade
-        closing_order = order or self._generate_close_order(trade, current_price)
         trade.close(
-            closing_order,
+            order or self._generate_close_order(trade, current_price),
             current_price,
             self._create_dummy_bar(current_price, trade),
         )
@@ -712,29 +779,56 @@ class Portfolio:
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
     ) -> None:
         """
-        Process all pending orders based on current market data using the order manager.
+        Process all pending orders based on current market data.
+
+        This method handles both regular pending orders and limit exit orders.
+        It checks if each order can be filled based on the current market data,
+        executes filled orders, and manages child orders as necessary.
 
         Args:
             timestamp (datetime): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+
+        Side effects:
+            - May execute orders
+            - May cancel expired orders
+            - Updates self.pending_orders and self.limit_exit_orders
+            - Calls self._manage_child_orders for filled limit exit orders
         """
-        processed_orders = self.order_manager.process_orders(timestamp, market_data)
+        orders_to_process = self.pending_orders[:] + self.limit_exit_orders[:]
 
-        for order in processed_orders:
-            if order.status == Order.Status.FILLED:
-                symbol = order.details.ticker
-                timeframe = order.details.timeframe or min(market_data[symbol].keys())
+        for order in orders_to_process:
+            symbol = order.details.ticker
+            timeframe = order.details.timeframe or min(market_data[symbol].keys())
+
+            try:
                 current_bar = market_data[symbol][timeframe]
-                self.execute_order(order, order.get_last_fill_price(), current_bar)
+            except KeyError:
+                logger_main.warning(
+                    f"No market data for {symbol} at timeframe {timeframe}. Skipping order."
+                )
+                continue
 
-        # Handle any order group events
-        self.handle_order_group_events()
+            is_filled, fill_price = order.is_filled(current_bar)
+            if is_filled:
+                executed, _ = self.execute_order(order, fill_price, current_bar)
+                if executed:
+                    self._remove_executed_order(order)
+
+                    # If it's a limit exit order, manage the parent and sibling orders
+                    if order.family_role == Order.FamilyRole.CHILD_EXIT:
+                        self._manage_child_orders(order)
+            elif order.is_expired(timestamp):
+                self._cancel_expired_order(order)
 
     def _manage_trade(
         self, order: Order, execution_price: ExtendedDecimal, bar: Bar
     ) -> Optional[Trade]:
         """
         Manage trade creation, updates, closures, and reversals.
+
+        This method handles all aspects of trade management, including creating new trades,
+        updating existing trades, closing trades, and handling trade reversals.
 
         Args:
             order (Order): The order being executed.
@@ -743,6 +837,14 @@ class Portfolio:
 
         Returns:
             Optional[Trade]: The newly created or updated trade, if applicable.
+
+        Side effects:
+            - May create new trades in self.open_trades
+            - May update existing trades in self.open_trades
+            - May close trades and move them to self.closed_trades
+            - Updates self.trade_count
+            - Calls self._update_positions
+            - Adds affected trades to self.updated_trades
         """
         symbol = order.details.ticker
         size = order.get_filled_size()
@@ -879,6 +981,12 @@ class Portfolio:
             execution_price (ExtendedDecimal): The price at which to close the position.
             bar (Bar): The current price bar.
             order (Order): The order that triggered the position closure.
+
+        Side effects:
+            - Updates or closes trades in self.open_trades
+            - May move trades to self.closed_trades
+            - Calls self._update_positions
+            - Updates self.updated_trades
         """
         remaining_size = abs(position_size)
         for trade in self.open_trades.get(symbol, [])[
@@ -1207,190 +1315,6 @@ class Portfolio:
         self.updated_trades.clear()
         logger_main.debug("Cleared updated orders and trades lists")
 
-    def create_complex_order(
-        self,
-        order_type: str,
-        symbol: str,
-        direction: Order.Direction,
-        size: float,
-        prices: List[float],
-        **kwargs: Any,
-    ) -> Tuple[List[Order], Union[OCOGroup, OCAGroup, BracketGroup]]:
-        """
-        Create a complex order (OCO, OCA, or Bracket) using the order manager.
-
-        Args:
-            order_type (str): The type of complex order ('OCO', 'OCA', or 'BRACKET').
-            symbol (str): The symbol for the order.
-            direction (Order.Direction): The direction of the order (LONG or SHORT).
-            size (float): The size of the order.
-            prices (List[float]): The prices for the orders (interpretation depends on order_type).
-            **kwargs: Additional order parameters.
-
-        Returns:
-            Tuple[List[Order], Union[OCOGroup, OCAGroup, BracketGroup]]:
-                A tuple containing the list of created orders and the order group.
-
-        Raises:
-            ValueError: If an invalid order_type is provided.
-        """
-        if order_type == "OCO":
-            if len(prices) != 2:
-                raise ValueError("OCO order requires exactly two prices")
-            limit_order = self.create_order(
-                symbol, direction, size, Order.ExecType.LIMIT, prices[0], **kwargs
-            )
-            stop_order = self.create_order(
-                symbol, direction, size, Order.ExecType.STOP, prices[1], **kwargs
-            )
-            oco_group = self.order_manager.create_oco_group(limit_order, stop_order)
-            return [limit_order, stop_order], oco_group
-
-        elif order_type == "OCA":
-            orders = [
-                self.create_order(
-                    symbol, direction, size, Order.ExecType.LIMIT, price, **kwargs
-                )
-                for price in prices
-            ]
-            oca_group = self.order_manager.create_oca_group(orders)
-            return orders, oca_group
-
-        elif order_type == "BRACKET":
-            if len(prices) != 3:
-                raise ValueError(
-                    "Bracket order requires exactly three prices (entry, take profit, stop loss)"
-                )
-            entry_order = self.create_order(
-                symbol, direction, size, Order.ExecType.LIMIT, prices[0], **kwargs
-            )
-            take_profit_order = self.create_order(
-                symbol,
-                Order.Direction.SHORT
-                if direction == Order.Direction.LONG
-                else Order.Direction.LONG,
-                size,
-                Order.ExecType.LIMIT,
-                prices[1],
-                **kwargs,
-            )
-            stop_loss_order = self.create_order(
-                symbol,
-                Order.Direction.SHORT
-                if direction == Order.Direction.LONG
-                else Order.Direction.LONG,
-                size,
-                Order.ExecType.STOP,
-                prices[2],
-                **kwargs,
-            )
-            bracket_group = self.order_manager.create_bracket_group(
-                entry_order, take_profit_order, stop_loss_order
-            )
-            return [entry_order, take_profit_order, stop_loss_order], bracket_group
-
-        else:
-            raise ValueError(f"Invalid complex order type: {order_type}")
-
-    def handle_order_group_events(self) -> None:
-        """
-        Handle events from order groups (e.g., when an OCO order is filled).
-
-        This method should be called after processing orders to manage the state
-        of complex order groups and their constituent orders.
-        """
-        for group in self.order_manager.get_active_groups():
-            if isinstance(group, OCOGroup):
-                self._handle_oco_group(group)
-            elif isinstance(group, OCAGroup):
-                self._handle_oca_group(group)
-            elif isinstance(group, BracketGroup):
-                self._handle_bracket_group(group)
-
-    def _handle_oco_group(self, group: OCOGroup) -> None:
-        """
-        Handle events for an OCO (One-Cancels-the-Other) group.
-
-        Args:
-            group (OCOGroup): The OCO group to handle.
-        """
-        filled_orders = [
-            order for order in group.orders if order.status == Order.Status.FILLED
-        ]
-        if filled_orders:
-            # If one order is filled, cancel the other
-            for order in group.orders:
-                if order not in filled_orders:
-                    self.cancel_order(order.id)
-            self.order_manager.cancel_group(group.id)
-
-    def _handle_oca_group(self, group: OCAGroup) -> None:
-        """
-        Handle events for an OCA (One-Cancels-All) group.
-
-        Args:
-            group (OCAGroup): The OCA group to handle.
-        """
-        if any(order.status == Order.Status.FILLED for order in group.orders):
-            # If any order is filled, cancel all others
-            for order in group.orders:
-                if order.status != Order.Status.FILLED:
-                    self.cancel_order(order.id)
-            self.order_manager.cancel_group(group.id)
-
-    def _handle_bracket_group(self, group: BracketGroup) -> None:
-        """
-        Handle events for a Bracket order group.
-
-        Args:
-            group (BracketGroup): The Bracket group to handle.
-        """
-        if group.entry_order.status == Order.Status.FILLED:
-            if group.take_profit_order.status == Order.Status.FILLED:
-                self.cancel_order(group.stop_loss_order.id)
-                self.order_manager.cancel_group(group.id)
-            elif group.stop_loss_order.status == Order.Status.FILLED:
-                self.cancel_order(group.take_profit_order.id)
-                self.order_manager.cancel_group(group.id)
-        elif group.entry_order.status in [Order.Status.CANCELED, Order.Status.REJECTED]:
-            self.cancel_order(group.take_profit_order.id)
-            self.cancel_order(group.stop_loss_order.id)
-            self.order_manager.cancel_group(group.id)
-
-    def update_order_manager(
-        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
-    ) -> None:
-        """
-        Update the order manager in each cycle to process order events and expirations.
-
-        This method should be called in each update cycle to ensure that the order manager
-        processes any pending events, handles order expirations, and maintains the overall
-        state of orders and order groups.
-
-        Args:
-            timestamp (datetime): The current timestamp.
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
-        """
-        # Process orders
-        processed_orders = self.order_manager.process_orders(timestamp, market_data)
-
-        # Handle processed orders (e.g., update positions, cash, etc.)
-        for order in processed_orders:
-            if order.status == Order.Status.FILLED:
-                symbol = order.details.ticker
-                timeframe = order.details.timeframe or min(market_data[symbol].keys())
-                current_bar = market_data[symbol][timeframe]
-                self.execute_order(order, order.get_last_fill_price(), current_bar)
-
-        # Update order manager
-        self.order_manager.update(timestamp)
-
-        # Handle order group events
-        self.handle_order_group_events()
-
-        # Clean up completed orders and groups
-        self.order_manager.cleanup_completed_orders_and_groups()
-
     # endregion
 
     # region Margin Related Methods
@@ -1586,17 +1510,21 @@ class Portfolio:
         """
         return self.buying_power
 
-    def get_order_by_id(self, order_id: str) -> Optional[Order]:
+    def get_order_by_id(self, order_id: int) -> Optional[Order]:
         """
-        Get an order by its ID using the order manager.
+        Get an order by its ID.
 
         Args:
-            order_id (str): The ID of the order to retrieve.
+            order_id (int): The ID of the order to retrieve.
 
         Returns:
             Optional[Order]: The order if found, None otherwise.
         """
-        return self.order_manager.get_order(order_id)
+        for order_list in [self.pending_orders, self.limit_exit_orders]:
+            for order in order_list:
+                if order.id == order_id:
+                    return order
+        return None
 
     def get_open_trades(self) -> List[Trade]:
         """

@@ -7,7 +7,7 @@ from .data.bar import Bar
 from .data.dataloader import BaseDataLoader
 from .data.dataview import DataView
 from .data.timeframe import Timeframe
-from .orders_classes import BracketGroup, OCAGroup, OCOGroup, Order, OrderDetails
+from .order import Order
 from .portfolio import Portfolio
 from .reporter import Reporter
 from .strategy import Strategy
@@ -537,7 +537,7 @@ class Engine:
             timestamp (pd.Timestamp): The current timestamp being processed.
             data_point (Dict[str, Dict[Timeframe, Bar]]): The market data for this timestamp.
         """
-        # Update portfolio and process orders
+        # Update portfolio; Process new pending order, update existing trades and positions; update Portfolio metrics
         self.portfolio.update(timestamp, data_point)
 
         # Update each strategy's data
@@ -611,10 +611,12 @@ class Engine:
         size: float,
         order_type: Order.ExecType,
         price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
         **kwargs: Any,
-    ) -> Order:
+    ) -> Tuple[Order, List[Order]]:
         """
-        Create an order using the portfolio's order manager.
+        Create an order and associated child orders.
 
         Args:
             strategy_id (str): The ID of the strategy creating the order.
@@ -623,112 +625,107 @@ class Engine:
             size (float): The size of the order.
             order_type (Order.ExecType): The type of order (e.g., MARKET, LIMIT).
             price (Optional[float], optional): The price for limit orders. Defaults to None.
+            stop_loss (Optional[float], optional): The stop-loss price. Defaults to None.
+            take_profit (Optional[float], optional): The take-profit price. Defaults to None.
             **kwargs: Additional keyword arguments for the order.
 
         Returns:
-            Order: The created order.
+            Tuple[Order, List[Order]]: The parent order and a list of child orders (stop-loss and take-profit).
         """
         # Use the default timeframe if not provided in kwargs
-        if "timeframe" not in kwargs or kwargs["timeframe"] is None:
+        if ("timeframe" not in kwargs) or kwargs["timeframe"] is None:
             kwargs["timeframe"] = self.default_timeframe
             logger_main.info(
-                f"Using default timeframe {self.default_timeframe} for order on {symbol}"
+                f"Using default timeframe {self.default_timeframe} for order on {symbol}",
             )
 
-        order_details = OrderDetails(
-            ticker=symbol,
-            direction=direction,
-            size=ExtendedDecimal(str(size)),
-            price=ExtendedDecimal(str(price)) if price is not None else None,
-            exectype=order_type,
-            timestamp=self._current_timestamp,
-            strategy_id=strategy_id,
-            **kwargs,
-        )
-
-        return self.portfolio.order_manager.create_order(order_details)
-
-    def create_complex_order(
-        self,
-        strategy_id: str,
-        order_type: str,
-        symbol: str,
-        direction: Order.Direction,
-        size: float,
-        prices: List[float],
-        **kwargs: Any,
-    ) -> Tuple[List[Order], Union[OCOGroup, OCAGroup, BracketGroup]]:
-        """
-        Create a complex order (OCO, OCA, or Bracket) using the portfolio's order manager.
-
-        Args:
-            strategy_id (str): The ID of the strategy creating the order.
-            order_type (str): The type of complex order ('OCO', 'OCA', or 'BRACKET').
-            symbol (str): The symbol to trade.
-            direction (Order.Direction): The direction of the trade (LONG or SHORT).
-            size (float): The size of the order.
-            prices (List[float]): The prices for the orders (interpretation depends on order_type).
-            **kwargs: Additional keyword arguments for the orders.
-
-        Returns:
-            Tuple[List[Order], Union[OCOGroup, OCAGroup, BracketGroup]]:
-                A tuple containing the list of created orders and the order group.
-
-        Raises:
-            ValueError: If an invalid order_type is provided.
-        """
-        return self.portfolio.create_complex_order(
-            order_type,
+        parent_order = self.portfolio.create_order(
             symbol,
             direction,
             size,
-            prices,
+            order_type,
+            price,
             strategy_id=strategy_id,
             **kwargs,
         )
+        child_orders = self.create_limit_exit_orders(
+            parent_order, stop_loss, take_profit
+        )
+        return parent_order, child_orders
 
-    def cancel_order(self, strategy_id: str, order_id: str) -> bool:
+    def create_limit_exit_orders(
+        self,
+        parent_order: Order,
+        stop_loss: Optional[float],
+        take_profit: Optional[float],
+    ) -> List[Order]:
+        """
+        Create child orders for stop-loss and take-profit.
+
+        Args:
+            parent_order (Order): The parent order.
+            stop_loss (Optional[float]): The stop-loss price.
+            take_profit (Optional[float]): The take-profit price.
+
+        Returns:
+            List[Order]: A list of child orders (stop-loss and take-profit).
+        """
+        child_orders = []
+        if stop_loss:
+            stop_loss_order = self.portfolio.create_order(
+                symbol=parent_order.details.ticker,
+                direction=(
+                    Order.Direction.SHORT
+                    if parent_order.details.direction == Order.Direction.LONG
+                    else Order.Direction.LONG
+                ),
+                size=parent_order.details.size,
+                order_type=Order.ExecType.EXIT_STOP,
+                price=stop_loss,
+                parent_id=parent_order.id,
+                timeframe=parent_order.details.timeframe,
+                strategy_id=parent_order.details.strategy_id,
+            )
+            child_orders.append(stop_loss_order)
+
+        if take_profit:
+            take_profit_order = self.portfolio.create_order(
+                symbol=parent_order.details.ticker,
+                direction=(
+                    Order.Direction.SHORT
+                    if parent_order.details.direction == Order.Direction.LONG
+                    else Order.Direction.LONG
+                ),
+                size=parent_order.details.size,
+                order_type=Order.ExecType.EXIT_LIMIT,
+                price=take_profit,
+                parent_id=parent_order.id,
+                timeframe=parent_order.details.timeframe,
+                strategy_id=parent_order.details.strategy_id,
+            )
+            child_orders.append(take_profit_order)
+
+        return child_orders
+
+    def cancel_order(self, strategy_id: str, order: Order) -> bool:
         """
         Cancel an existing order.
 
         Args:
             strategy_id (str): The ID of the strategy cancelling the order.
-            order_id (str): The ID of the order to cancel.
+            order (Order): The order to cancel.
 
         Returns:
             bool: True if the order was successfully cancelled, False otherwise.
         """
-        order = self.portfolio.order_manager.get_order(order_id)
-        if order and order.details.strategy_id != strategy_id:
+        if order.details.strategy_id != strategy_id:
             logger_main.warning(
-                f"Strategy {strategy_id} attempted to cancel an order it didn't create."
+                f"Strategy {strategy_id} attempted to cancel an order it didn't create.",
             )
             return False
 
-        return self.portfolio.order_manager.cancel_order(order_id)
-
-    def modify_order(
-        self, strategy_id: str, order_id: str, new_details: Dict[str, Any]
-    ) -> bool:
-        """
-        Modify an existing order.
-
-        Args:
-            strategy_id (str): The ID of the strategy modifying the order.
-            order_id (str): The ID of the order to modify.
-            new_details (Dict[str, Any]): A dictionary containing the new details for the order.
-
-        Returns:
-            bool: True if the order was successfully modified, False otherwise.
-        """
-        order = self.portfolio.order_manager.get_order(order_id)
-        if order and order.details.strategy_id != strategy_id:
-            logger_main.warning(
-                f"Strategy {strategy_id} attempted to modify an order it didn't create."
-            )
-            return False
-
-        return self.portfolio.order_manager.modify_order(order_id, new_details)
+        success = self.portfolio.cancel_order(order)
+        return success
 
     def close_positions(self, strategy_id: str, symbol: Optional[str] = None) -> bool:
         """
@@ -772,7 +769,8 @@ class Engine:
         This method informs all strategies about any changes to their orders or trades
         that occurred during the current timestamp processing.
         """
-        for order in self.portfolio.order_manager.get_updated_orders():
+        # logger_main.warning(f"NOTIFY TRADE: {self.portfolio.updated_orders}")
+        for order in self.portfolio.updated_orders:
             self._notify_order_update(order)
         for trade in self.portfolio.updated_trades:
             self._notify_trade_update(trade)
@@ -953,18 +951,6 @@ class Engine:
     # endregion
 
     # region Risk Managament
-    def get_order_by_id(self, order_id: str) -> Optional[Order]:
-        """
-        Get an order by its ID.
-
-        Args:
-            order_id (str): The ID of the order to retrieve.
-
-        Returns:
-            Optional[Order]: The order if found, None otherwise.
-        """
-        return self.portfolio.order_manager.get_order(order_id)
-
     def get_risk_amount(self, symbol: str, strategy_id: str) -> ExtendedDecimal:
         """
         Get the risk amount for a specific symbol and strategy.

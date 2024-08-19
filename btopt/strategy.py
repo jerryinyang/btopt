@@ -1,11 +1,11 @@
 import uuid
 from abc import abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .data.manager_price import PriceDataManager
 from .data.timeframe import Timeframe
 from .indicator import Indicator
-from .order import Order
+from .orders_classes import BracketGroup, OCOGroup, Order
 from .parameters import Parameters
 from .sizer import NaiveSizer, Sizer
 from .trade import Trade
@@ -486,9 +486,9 @@ class Strategy(metaclass=PreInitABCMeta):
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         **kwargs: Any,
-    ) -> Tuple[Optional[Order], List[Order]]:
+    ) -> Union[Order, Tuple[List[Order], BracketGroup]]:
         """
-        Create a buy order request.
+        Create a buy order request, automatically creating a bracket order if stop_loss or take_profit is specified.
 
         Args:
             symbol (str): The symbol to buy.
@@ -499,25 +499,42 @@ class Strategy(metaclass=PreInitABCMeta):
             **kwargs: Additional order parameters.
 
         Returns:
-            Tuple[Optional[Order], List[Order]]: The created parent Order object and a list of child orders,
-            or (None, []) if the order creation failed.
+            Union[Order, Tuple[List[Order], BracketGroup]]:
+                - A single Order object if no stop_loss or take_profit is specified.
+                - A tuple containing the list of orders and the BracketGroup if stop_loss or take_profit is specified.
 
         Raises:
             ValueError: If the strategy is not connected to an engine.
         """
         if not self._engine:
             raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.create_order(
-            self._id,
-            symbol,
-            Order.Direction.LONG,
-            size,
-            Order.ExecType.MARKET if price is None else Order.ExecType.LIMIT,
-            price,
-            stop_loss,
-            take_profit,
-            **kwargs,
-        )
+
+        if stop_loss is None and take_profit is None:
+            # Create a simple order
+            return self._engine.create_order(
+                self._id,
+                symbol,
+                Order.Direction.LONG,
+                size,
+                Order.ExecType.MARKET if price is None else Order.ExecType.LIMIT,
+                price,
+                **kwargs,
+            )
+        else:
+            # Create a bracket order
+            return self._engine.create_complex_order(
+                self._id,
+                "BRACKET",
+                symbol,
+                Order.Direction.LONG,
+                size,
+                [
+                    price or 0,
+                    take_profit or 0,
+                    stop_loss or 0,
+                ],  # 0 will be interpreted as "not set"
+                **kwargs,
+            )
 
     def sell(
         self,
@@ -527,9 +544,9 @@ class Strategy(metaclass=PreInitABCMeta):
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         **kwargs: Any,
-    ) -> Tuple[Optional[Order], List[Order]]:
+    ) -> Union[Order, Tuple[List[Order], BracketGroup]]:
         """
-        Create a sell order request.
+        Create a sell order request, automatically creating a bracket order if stop_loss or take_profit is specified.
 
         Args:
             symbol (str): The symbol to sell.
@@ -540,25 +557,42 @@ class Strategy(metaclass=PreInitABCMeta):
             **kwargs: Additional order parameters.
 
         Returns:
-            Tuple[Optional[Order], List[Order]]: The created parent Order object and a list of child orders,
-            or (None, []) if the order creation failed.
+            Union[Order, Tuple[List[Order], BracketGroup]]:
+                - A single Order object if no stop_loss or take_profit is specified.
+                - A tuple containing the list of orders and the BracketGroup if stop_loss or take_profit is specified.
 
         Raises:
             ValueError: If the strategy is not connected to an engine.
         """
         if not self._engine:
             raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.create_order(
-            self._id,
-            symbol,
-            Order.Direction.SHORT,
-            size,
-            Order.ExecType.MARKET if price is None else Order.ExecType.LIMIT,
-            price,
-            stop_loss,
-            take_profit,
-            **kwargs,
-        )
+
+        if stop_loss is None and take_profit is None:
+            # Create a simple order
+            return self._engine.create_order(
+                self._id,
+                symbol,
+                Order.Direction.SHORT,
+                size,
+                Order.ExecType.MARKET if price is None else Order.ExecType.LIMIT,
+                price,
+                **kwargs,
+            )
+        else:
+            # Create a bracket order
+            return self._engine.create_complex_order(
+                self._id,
+                "BRACKET",
+                symbol,
+                Order.Direction.SHORT,
+                size,
+                [
+                    price or 0,
+                    take_profit or 0,
+                    stop_loss or 0,
+                ],  # 0 will be interpreted as "not set"
+                **kwargs,
+            )
 
     def close(self, symbol: Optional[str] = None, size: Optional[float] = None) -> bool:
         """
@@ -578,12 +612,12 @@ class Strategy(metaclass=PreInitABCMeta):
             raise ValueError("Strategy is not connected to an engine.")
         return self._engine.close_positions(self._id, symbol, size)
 
-    def cancel(self, order: Order) -> bool:
+    def cancel(self, order_id: str) -> bool:
         """
         Request cancellation of an existing order.
 
         Args:
-            order (Order): The order to cancel.
+            order_id (str): The ID of the order to cancel.
 
         Returns:
             bool: True if the cancellation request was successful, False otherwise.
@@ -593,7 +627,45 @@ class Strategy(metaclass=PreInitABCMeta):
         """
         if not self._engine:
             raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.cancel_order(self._id, order)
+        return self._engine.cancel_order(self._id, order_id)
+
+    def create_oco_order(
+        self,
+        symbol: str,
+        direction: Order.Direction,
+        size: float,
+        limit_price: float,
+        stop_price: float,
+        **kwargs: Any,
+    ) -> Tuple[List[Order], OCOGroup]:
+        """
+        Create an OCO (One-Cancels-the-Other) order.
+
+        Args:
+            symbol (str): The symbol to trade.
+            direction (Order.Direction): The direction of the trade (LONG or SHORT).
+            size (float): The size of the order.
+            limit_price (float): The price for the limit order.
+            stop_price (float): The price for the stop order.
+            **kwargs: Additional order parameters.
+
+        Returns:
+            Tuple[List[Order], OCOGroup]: A tuple containing the list of created orders and the OCO group.
+
+        Raises:
+            ValueError: If the strategy is not connected to an engine.
+        """
+        if not self._engine:
+            raise ValueError("Strategy is not connected to an engine.")
+        return self._engine.create_complex_order(
+            self._id,
+            "OCO",
+            symbol,
+            direction,
+            size,
+            [limit_price, stop_price],
+            **kwargs,
+        )
 
     # endregion
 

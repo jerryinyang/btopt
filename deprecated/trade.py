@@ -59,13 +59,8 @@ class Trade:
         self.entry_order: Order = entry_order
         self.exit_orders: List[Order] = []
 
-        # Ensure compatibility with the new Order class
-        self.entry_price: ExtendedDecimal = (
-            entry_order.get_average_fill_price() or entry_order.get_last_fill_price()
-        )
-        self.entry_timestamp: datetime = (
-            entry_order.get_last_fill_timestamp() or entry_bar.timestamp
-        )
+        self.entry_price: ExtendedDecimal = entry_order.get_last_fill_price()
+        self.entry_timestamp: datetime = entry_bar.timestamp
         self.entry_bar: Bar = entry_bar
 
         self.exit_price: Optional[ExtendedDecimal] = None
@@ -165,7 +160,7 @@ class Trade:
         # Update trade status and exit information
         if self.current_size == ExtendedDecimal("0"):
             self.status = self.Status.CLOSED
-            self.exit_price = exit_order.get_average_fill_price() or exit_price
+            self.exit_price = exit_price
             self.exit_timestamp = (
                 exit_order.get_last_fill_timestamp() or exit_bar.timestamp
             )
