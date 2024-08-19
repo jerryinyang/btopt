@@ -376,16 +376,8 @@ class DataView:
         # Define the resampling rules
         resample_rule = self._get_resample_rule(to_timeframe)
 
-        # Create a new index with the desired frequency
-        new_index = pd.date_range(
-            start=df.index.min(), end=df.index.max(), freq=resample_rule
-        )
-
-        # Reindex the dataframe to the new frequency, forward filling missing values
-        resampled = df.reindex(new_index, method="ffill")
-
-        # Aggregate the data
-        resampled = resampled.groupby(level=0).agg(
+        # Resample the data
+        resampled = df.resample(resample_rule).agg(
             {
                 "open": "first",
                 "high": "max",
@@ -395,10 +387,10 @@ class DataView:
             }
         )
 
-        # Remove any rows that don't correspond to original data points
-        resampled = resampled.loc[resampled.index.isin(df.index)]
+        # Remove any rows with NaN values (which would occur if there's no data for a particular period)
+        resampled = resampled.dropna()
 
-        # Add the is_original column
+        # Add the is_original column (all resampled data points are considered original)
         resampled["is_original"] = True
 
         return resampled
