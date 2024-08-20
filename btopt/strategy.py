@@ -1,15 +1,23 @@
 import uuid
 from abc import abstractmethod
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .data.manager_price import PriceDataManager
 from .data.timeframe import Timeframe
 from .indicator import Indicator
-from .orders_classes import BracketGroup, OCOGroup, Order
+from .order import (
+    BracketGroup,
+    BracketOrderDetails,
+    OCOGroup,
+    OCOOrderDetails,
+    Order,
+    OrderDetails,
+)
 from .parameters import Parameters
 from .sizer import NaiveSizer, Sizer
 from .trade import Trade
-from .types import EngineType
+from .types import EngineType, PortfolioType
 from .util.ext_decimal import ExtendedDecimal
 from .util.log_config import logger_main
 from .util.metaclasses import PreInitABCMeta
@@ -59,6 +67,7 @@ class Strategy(metaclass=PreInitABCMeta):
         """
         self._id: str = self._generate_unique_id()
         self._engine: EngineType = None
+        self._portfolio: PortfolioType = None
         self._parameters: Parameters = Parameters(parameters or {})
         self._primary_symbol: Optional[str] = None
         self._primary_timeframe: Optional[Timeframe] = primary_timeframe
@@ -95,6 +104,7 @@ class Strategy(metaclass=PreInitABCMeta):
         Raises:
             ValueError: If the strategy is already initialized or if no symbols are provided.
         """
+
         if self._primary_symbol is not None:
             raise ValueError("Strategy is already initialized.")
         if not symbols:
@@ -110,6 +120,10 @@ class Strategy(metaclass=PreInitABCMeta):
                 f"Specified primary timeframe {self._primary_timeframe} not in available timeframes. Using default: {default_timeframe}"
             )
             self._primary_timeframe = default_timeframe
+
+        if self._engine.portfolio is None:
+            raise ValueError("Engine's portfolio is not initialized.")
+        self._portfolio = self._engine.portfolio
 
         # Create PriceDataManager objects for each symbol
         for symbol in symbols:
@@ -128,10 +142,13 @@ class Strategy(metaclass=PreInitABCMeta):
 
     def set_engine(self, engine: EngineType) -> None:
         """
-        Set the trading engine for the strategy.
+        Set the trading engine and portfolio for the strategy.
 
         Args:
             engine (EngineType): The trading engine instance.
+
+        Raises:
+            ValueError: If the engine's portfolio is not initialized.
         """
         self._engine = engine
 
@@ -504,36 +521,58 @@ class Strategy(metaclass=PreInitABCMeta):
                 - A tuple containing the list of orders and the BracketGroup if stop_loss or take_profit is specified.
 
         Raises:
-            ValueError: If the strategy is not connected to an engine.
+            ValueError: If the strategy is not connected to a portfolio.
         """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        order_details = OrderDetails(
+            ticker=symbol,
+            direction=Order.Direction.LONG,
+            size=ExtendedDecimal(str(size)),
+            price=ExtendedDecimal(str(price)) if price is not None else None,
+            exectype=Order.ExecType.LIMIT
+            if price is not None
+            else Order.ExecType.MARKET,
+            timestamp=datetime.now(),
+            timeframe=self._primary_timeframe,
+            strategy_id=self._id,
+            exit_loss=ExtendedDecimal(str(stop_loss))
+            if stop_loss is not None
+            else None,
+            exit_profit=ExtendedDecimal(str(take_profit))
+            if take_profit is not None
+            else None,
+            **kwargs,
+        )
 
         if stop_loss is None and take_profit is None:
-            # Create a simple order
-            return self._engine.create_order(
-                self._id,
-                symbol,
-                Order.Direction.LONG,
-                size,
-                Order.ExecType.MARKET if price is None else Order.ExecType.LIMIT,
-                price,
-                **kwargs,
-            )
+            return self._portfolio.create_order(order_details)
         else:
-            # Create a bracket order
-            return self._engine.create_complex_order(
-                self._id,
-                "BRACKET",
-                symbol,
-                Order.Direction.LONG,
-                size,
-                [
-                    price or 0,
-                    take_profit or 0,
-                    stop_loss or 0,
-                ],  # 0 will be interpreted as "not set"
-                **kwargs,
+            return self._portfolio.create_bracket_order(
+                BracketOrderDetails(
+                    entry_order=order_details,
+                    take_profit_order=OrderDetails(
+                        ticker=symbol,
+                        direction=Order.Direction.SHORT,
+                        size=ExtendedDecimal(str(size)),
+                        price=ExtendedDecimal(str(take_profit)),
+                        exectype=Order.ExecType.LIMIT,
+                        timestamp=datetime.now(),
+                        timeframe=self._primary_timeframe,
+                        strategy_id=self._id,
+                    ),
+                    stop_loss_order=OrderDetails(
+                        ticker=symbol,
+                        direction=Order.Direction.SHORT,
+                        size=ExtendedDecimal(str(size)),
+                        price=ExtendedDecimal(str(stop_loss)),
+                        exectype=Order.ExecType.STOP,
+                        timestamp=datetime.now(),
+                        timeframe=self._primary_timeframe,
+                        strategy_id=self._id,
+                    ),
+                )
             )
 
     def sell(
@@ -562,36 +601,58 @@ class Strategy(metaclass=PreInitABCMeta):
                 - A tuple containing the list of orders and the BracketGroup if stop_loss or take_profit is specified.
 
         Raises:
-            ValueError: If the strategy is not connected to an engine.
+            ValueError: If the strategy is not connected to a portfolio.
         """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        order_details = OrderDetails(
+            ticker=symbol,
+            direction=Order.Direction.SHORT,
+            size=ExtendedDecimal(str(size)),
+            price=ExtendedDecimal(str(price)) if price is not None else None,
+            exectype=Order.ExecType.LIMIT
+            if price is not None
+            else Order.ExecType.MARKET,
+            timestamp=datetime.now(),
+            timeframe=self._primary_timeframe,
+            strategy_id=self._id,
+            exit_loss=ExtendedDecimal(str(stop_loss))
+            if stop_loss is not None
+            else None,
+            exit_profit=ExtendedDecimal(str(take_profit))
+            if take_profit is not None
+            else None,
+            **kwargs,
+        )
 
         if stop_loss is None and take_profit is None:
-            # Create a simple order
-            return self._engine.create_order(
-                self._id,
-                symbol,
-                Order.Direction.SHORT,
-                size,
-                Order.ExecType.MARKET if price is None else Order.ExecType.LIMIT,
-                price,
-                **kwargs,
-            )
+            return self._portfolio.create_order(order_details)
         else:
-            # Create a bracket order
-            return self._engine.create_complex_order(
-                self._id,
-                "BRACKET",
-                symbol,
-                Order.Direction.SHORT,
-                size,
-                [
-                    price or 0,
-                    take_profit or 0,
-                    stop_loss or 0,
-                ],  # 0 will be interpreted as "not set"
-                **kwargs,
+            return self._portfolio.create_bracket_order(
+                BracketOrderDetails(
+                    entry_order=order_details,
+                    take_profit_order=OrderDetails(
+                        ticker=symbol,
+                        direction=Order.Direction.LONG,
+                        size=ExtendedDecimal(str(size)),
+                        price=ExtendedDecimal(str(take_profit)),
+                        exectype=Order.ExecType.LIMIT,
+                        timestamp=datetime.now(),
+                        timeframe=self._primary_timeframe,
+                        strategy_id=self._id,
+                    ),
+                    stop_loss_order=OrderDetails(
+                        ticker=symbol,
+                        direction=Order.Direction.LONG,
+                        size=ExtendedDecimal(str(size)),
+                        price=ExtendedDecimal(str(stop_loss)),
+                        exectype=Order.ExecType.STOP,
+                        timestamp=datetime.now(),
+                        timeframe=self._primary_timeframe,
+                        strategy_id=self._id,
+                    ),
+                )
             )
 
     def close(self, symbol: Optional[str] = None, size: Optional[float] = None) -> bool:
@@ -606,11 +667,14 @@ class Strategy(metaclass=PreInitABCMeta):
             bool: True if the closing operation was successful, False otherwise.
 
         Raises:
-            ValueError: If the strategy is not connected to an engine.
+            ValueError: If the strategy is not connected to a portfolio.
         """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.close_positions(self._id, symbol, size)
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        return self._portfolio.close_positions(
+            strategy_id=self._id, symbol=symbol, size=size
+        )
 
     def cancel(self, order_id: str) -> bool:
         """
@@ -623,11 +687,12 @@ class Strategy(metaclass=PreInitABCMeta):
             bool: True if the cancellation request was successful, False otherwise.
 
         Raises:
-            ValueError: If the strategy is not connected to an engine.
+            ValueError: If the strategy is not connected to a portfolio.
         """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.cancel_order(self._id, order_id)
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        return self._portfolio.cancel_order(order_id)
 
     def create_oco_order(
         self,
@@ -653,28 +718,88 @@ class Strategy(metaclass=PreInitABCMeta):
             Tuple[List[Order], OCOGroup]: A tuple containing the list of created orders and the OCO group.
 
         Raises:
-            ValueError: If the strategy is not connected to an engine.
+            ValueError: If the strategy is not connected to a portfolio.
         """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.create_complex_order(
-            self._id,
-            "OCO",
-            symbol,
-            direction,
-            size,
-            [limit_price, stop_price],
-            **kwargs,
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        oco_details = OCOOrderDetails(
+            limit_order=OrderDetails(
+                ticker=symbol,
+                direction=direction,
+                size=ExtendedDecimal(str(size)),
+                price=ExtendedDecimal(str(limit_price)),
+                exectype=Order.ExecType.LIMIT,
+                timestamp=datetime.now(),
+                timeframe=self._primary_timeframe,
+                strategy_id=self._id,
+                **kwargs,
+            ),
+            stop_order=OrderDetails(
+                ticker=symbol,
+                direction=direction,
+                size=ExtendedDecimal(str(size)),
+                price=ExtendedDecimal(str(stop_price)),
+                exectype=Order.ExecType.STOP,
+                timestamp=datetime.now(),
+                timeframe=self._primary_timeframe,
+                strategy_id=self._id,
+                **kwargs,
+            ),
         )
+
+        return self._portfolio.create_oco_order(oco_details)
 
     # endregion
 
     # region Position and Risk Management
 
-    def get_current_position(
-        self,
-        symbol: str,
-    ) -> float:
+    def get_trades_for_strategy(self) -> List[Trade]:
+        """
+        Get all trades for this strategy.
+
+        Returns:
+            List[Trade]: A list of Trade objects associated with the strategy.
+
+        Raises:
+            ValueError: If the strategy is not connected to a portfolio.
+        """
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        return self._portfolio.get_trades_for_strategy(self._id)
+
+    def get_pending_orders(self) -> List[Order]:
+        """
+        Get all pending orders for this strategy.
+
+        Returns:
+            List[Order]: A list of pending Order objects.
+
+        Raises:
+            ValueError: If the strategy is not connected to a portfolio.
+        """
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        return self._portfolio.get_pending_orders_for_strategy(self._id)
+
+    def get_positions(self) -> Dict[str, float]:
+        """
+        Get all current positions for this strategy.
+
+        Returns:
+            Dict[str, float]: A dictionary of current positions, keyed by symbol.
+
+        Raises:
+            ValueError: If the strategy is not connected to a portfolio.
+        """
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        return self._portfolio.get_positions_for_strategy(self._id)
+
+    def get_current_position(self, symbol: str) -> float:
         """
         Get the current position size for a given symbol.
 
@@ -685,11 +810,12 @@ class Strategy(metaclass=PreInitABCMeta):
             float: The current position size (positive for long, negative for short, 0 for no position).
 
         Raises:
-            ValueError: If the strategy is not connected to an engine.
+            ValueError: If the strategy is not connected to a portfolio.
         """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.get_position_size(symbol)
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        return self._portfolio.get_position_size(symbol)
 
     def calculate_position_size(
         self,
@@ -698,7 +824,7 @@ class Strategy(metaclass=PreInitABCMeta):
         exit_price: Optional[ExtendedDecimal] = None,
     ) -> ExtendedDecimal:
         """
-        Calculate the position size using the current position sizer.
+        Calculate the position size using the current position sizer and portfolio's risk manager.
 
         This method delegates the position size calculation to the current position sizer,
         providing a consistent interface regardless of the specific sizing method in use.
@@ -712,17 +838,13 @@ class Strategy(metaclass=PreInitABCMeta):
             ExtendedDecimal: The calculated position size.
 
         Raises:
-            ValueError: If the input parameters are invalid.
-            RuntimeError: If the trading engine is not set or the sizer is not set.
+            ValueError: If the input parameters are invalid or if the strategy is not connected to a portfolio.
+            RuntimeError: If the sizer is not set.
         """
-        if self._engine is None:
-            logger_main.error("Trading engine is not set")
-            raise RuntimeError(
-                "Trading engine must be set before calculating position size"
-            )
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
 
         if not hasattr(self, "_sizer") or self._sizer is None:
-            logger_main.error("Position sizer is not set")
             raise RuntimeError(
                 "Position sizer must be set before calculating position size"
             )
@@ -791,11 +913,12 @@ class Strategy(metaclass=PreInitABCMeta):
             Dict[str, Any]: A dictionary containing various performance metrics.
 
         Raises:
-            ValueError: If the strategy is not connected to an engine.
+            ValueError: If the strategy is not connected to a portfolio.
         """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.get_strategy_performance(self._id)
+        if not hasattr(self, "_portfolio") or self._portfolio is None:
+            raise ValueError("Strategy is not connected to a portfolio.")
+
+        return self._portfolio.get_strategy_performance(self._id)
 
     # endregion
 
@@ -851,12 +974,10 @@ class Strategy(metaclass=PreInitABCMeta):
         Args:
             message (str): The message to log.
 
-        Raises:
-            ValueError: If the strategy is not connected to an engine.
+        Note:
+            This method now uses the main logger directly instead of going through the engine.
         """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
-        self._engine.log_strategy_activity(self._id, message)
+        logger_main.info(f"Strategy {self._id}: {message}")
 
     def _generate_unique_id(self) -> str:
         """
@@ -893,52 +1014,6 @@ class Strategy(metaclass=PreInitABCMeta):
         if not self._primary_symbol or not self._primary_timeframe:
             raise ValueError("Strategy has not been properly initialized.")
         return self.get_data_length(self._primary_symbol, self._primary_timeframe)
-
-    # endregion
-
-    # region Backward Compatibility Methods
-
-    def get_trades_for_strategy(self) -> List[Trade]:
-        """
-        Get all trades for this strategy.
-
-        Returns:
-            List[Trade]: A list of Trade objects associated with the strategy.
-
-        Raises:
-            ValueError: If the strategy is not connected to an engine.
-        """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.get_trades_for_strategy(self._id)
-
-    def get_pending_orders(self) -> List[Order]:
-        """
-        Get all pending orders for this strategy.
-
-        Returns:
-            List[Order]: A list of pending Order objects.
-
-        Raises:
-            ValueError: If the strategy is not connected to an engine.
-        """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.get_pending_orders_for_strategy(self._id)
-
-    def get_positions(self) -> Dict[str, float]:
-        """
-        Get all current positions for this strategy.
-
-        Returns:
-            Dict[str, float]: A dictionary of current positions, keyed by symbol.
-
-        Raises:
-            ValueError: If the strategy is not connected to an engine.
-        """
-        if not self._engine:
-            raise ValueError("Strategy is not connected to an engine.")
-        return self._engine.get_positions_for_strategy(self._id)
 
     # endregion
 

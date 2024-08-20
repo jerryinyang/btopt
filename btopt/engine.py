@@ -7,7 +7,7 @@ from .data.bar import Bar
 from .data.dataloader import BaseDataLoader
 from .data.dataview import DataView
 from .data.timeframe import Timeframe
-from .orders_classes import BracketGroup, OCAGroup, OCOGroup, Order, OrderDetails
+from .order import Order
 from .portfolio import Portfolio
 from .reporter import Reporter
 from .strategy import Strategy
@@ -74,7 +74,7 @@ class Engine:
 
     def __init__(self):
         self._dataview: DataView = DataView()
-        self.portfolio: Portfolio = None
+        self.portfolio: Optional[Portfolio] = None
         self._strategies: Dict[str, Strategy] = {}
         self._current_timestamp: Optional[pd.Timestamp] = None
         self._current_market_data: Optional[Dict[str, Dict[Timeframe, Bar]]] = None
@@ -104,10 +104,16 @@ class Engine:
         """
         Set the configuration for the backtest.
 
+        This method stores the configuration to be used when initializing the Portfolio
+        during the backtest run.
+
         Args:
             config (Dict[str, Any]): A dictionary containing configuration parameters.
         """
         self._config = config
+        logger_main.info(
+            "Configuration set. Portfolio will be initialized during backtest run."
+        )
 
     def reset(self) -> None:
         """
@@ -313,6 +319,8 @@ class Engine:
         """
         Add a trading strategy to the engine.
 
+        This method instantiates a strategy class and initializes it with the provided parameters.
+
         Args:
             strategy (Type[Strategy]): The strategy class to be instantiated.
             *args: Positional arguments for strategy initialization.
@@ -322,6 +330,38 @@ class Engine:
             ValueError: If invalid arguments are provided or required parameters are missing.
         """
         # Process timeframes
+        valid_timeframes = self._process_strategy_timeframes(args)
+
+        # Prepare strategy initialization parameters
+        init_parameters = self._prepare_strategy_parameters(strategy, kwargs)
+
+        # Initialize the strategy
+        try:
+            strategy_instance = strategy(**init_parameters)
+        except Exception as e:
+            logger_main.error(f"Failed to initialize strategy: {str(e)}")
+            raise ValueError(f"Failed to initialize strategy: {str(e)}")
+
+        strategy_instance.set_engine(self)
+
+        # Store strategy and its timeframes
+        self._strategies[strategy_instance._id] = strategy_instance
+        self._strategy_timeframes[strategy_instance._id] = valid_timeframes
+
+        logger_main.info(
+            f"Added strategy: {strategy_instance.__class__.__name__} with ID: {strategy_instance._id}"
+        )
+
+    def _process_strategy_timeframes(self, args: Tuple[Any, ...]) -> List[Timeframe]:
+        """
+        Process and validate timeframes for a strategy.
+
+        Args:
+            args (Tuple[Any, ...]): Positional arguments that may contain timeframes.
+
+        Returns:
+            List[Timeframe]: A list of valid timeframes for the strategy.
+        """
         valid_timeframes = []
         for arg in args:
             if isinstance(arg, Timeframe):
@@ -335,17 +375,33 @@ class Engine:
                     )
                 except Exception as e:
                     logger_main.warning(
-                        f"Failed to convert argument `{arg}` to a Timeframe object. Error: {e}",
+                        f"Failed to convert argument `{arg}` to a Timeframe object. Error: {e}"
                     )
 
-        # Use default timeframe if none provided
         if not valid_timeframes:
             valid_timeframes.append(self.default_timeframe)
             logger_main.info(
-                f"No valid timeframes provided. Using default timeframe: {self.default_timeframe}",
+                f"No valid timeframes provided. Using default timeframe: {self.default_timeframe}"
             )
 
-        # Prepare strategy initialization parameters
+        return valid_timeframes
+
+    def _prepare_strategy_parameters(
+        self, strategy: Type[Strategy], kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Prepare initialization parameters for a strategy.
+
+        Args:
+            strategy (Type[Strategy]): The strategy class to prepare parameters for.
+            kwargs (Dict[str, Any]): Keyword arguments provided for strategy initialization.
+
+        Returns:
+            Dict[str, Any]: A dictionary of initialization parameters for the strategy.
+
+        Raises:
+            ValueError: If a required parameter is missing.
+        """
         init_parameters = {}
         strategy_signature = inspect.signature(strategy.__init__)
         for param_name, param in strategy_signature.parameters.items():
@@ -356,26 +412,8 @@ class Engine:
             elif param.default is not param.empty:
                 init_parameters[param_name] = param.default
             else:
-                logger_main.log_and_raise(
-                    ValueError(f"Missing required parameter: {param_name}")
-                )
-
-        # Initialize the strategy
-        try:
-            strategy_instance = strategy(**init_parameters)
-        except Exception as e:
-            logger_main.log_and_raise(
-                ValueError(f"Failed to initialize strategy: {str(e)}")
-            )
-        strategy_instance.set_engine(self)
-
-        # Store strategy and its timeframes
-        self._strategies[strategy_instance._id] = strategy_instance
-        self._strategy_timeframes[strategy_instance._id] = valid_timeframes
-
-        logger_main.info(
-            f"Added strategy: {strategy_instance.__class__.__name__} with ID: {strategy_instance._id}"
-        )
+                raise ValueError(f"Missing required parameter: {param_name}")
+        return init_parameters
 
     def remove_strategy(self, strategy_id: str) -> None:
         """
@@ -438,16 +476,13 @@ class Engine:
         Execute the backtest and return the Reporter object for analysis.
 
         This method runs the entire backtesting process, including data preparation,
-        strategy execution, and portfolio updates. After the backtest is complete,
-        it initializes the Reporter with the final portfolio state and returns it
-        for further analysis.
+        strategy execution, and portfolio updates.
 
         Returns:
-            ReporterType: The Reporter object containing all performance metrics and analysis tools.
+            Reporter: The Reporter object containing all performance metrics and analysis tools.
 
         Raises:
-            ValueError: If data validation fails.
-            Exception: If an error occurs during the backtest.
+            ValueError: If data validation fails or if the configuration is not set.
         """
         # Clear log file
         clear_log_files()
@@ -456,23 +491,23 @@ class Engine:
             logger_main.info("Backtest is already running.")
             return self.reporter if self.reporter else Reporter(self.portfolio, self)
 
+        if not self._config:
+            raise ValueError(
+                "Configuration not set. Call set_config before running the backtest."
+            )
+
         try:
             self._dataview.align_all_data()
 
             if not self.validate_data():
-                logger_main.log_and_raise(
-                    ValueError("Data validation failed. Cannot start backtest.")
-                )
+                raise ValueError("Data validation failed. Cannot start backtest.")
 
             self._is_running = True
             self._initialize_backtest()
             logger_main.info("Starting backtest...")
 
-            # Ensure all orders have a valid timeframe before starting the backtest
-            self._validate_order_timeframes()
-
             for timestamp, data_point in self._dataview:
-                # Data point contains missing data
+                # Skip if data point contains missing data
                 if not data_point:
                     continue
 
@@ -483,12 +518,15 @@ class Engine:
                 if self._check_termination_condition():
                     break
 
+            self._finalize_backtest()
+
             # Initialize the Reporter with the final portfolio state
             self.reporter = Reporter(self.portfolio, self)
             logger_main.info("Backtest completed. Reporter initialized.")
 
         except Exception as e:
-            logger_main.log_and_raise(Exception(f"Error during backtest: {str(e)}"))
+            logger_main.error(f"Error during backtest: {str(e)}")
+            raise
         finally:
             self._is_running = False
 
@@ -498,13 +536,46 @@ class Engine:
         """
         Initialize all components for the backtest.
 
-        This method sets up each strategy with the appropriate data and timeframes.
+        This method sets up the Portfolio and each strategy with the appropriate data and timeframes.
         It also ensures that the Reporter is reset to None at the start of each backtest.
         """
 
+        margin_ratio = ExtendedDecimal(str(self._config.get("margin_ratio", "0.01")))
+
+        # Create risk_manager_config dynamically
+        risk_manager_config = {
+            "initial_capital": ExtendedDecimal(
+                str(self._config.get("initial_capital", 100000))
+            ),
+            "max_position_size": ExtendedDecimal(
+                str(self._config.get("max_position_size", "1"))
+            ),
+            "max_risk_per_trade": ExtendedDecimal(
+                str(self._config.get("max_risk_per_trade", "1"))
+            ),
+            "max_risk_per_symbol": ExtendedDecimal(
+                str(self._config.get("max_risk_per_symbol", "1"))
+            ),
+            "max_drawdown": ExtendedDecimal(str(self._config.get("max_drawdown", "1"))),
+            "var_confidence_level": float(
+                self._config.get("var_confidence_level", 0.95)
+            ),
+            "margin_ratio": margin_ratio,
+            "margin_call_threshold": ExtendedDecimal(
+                str(self._config.get("margin_call_threshold", "0.01"))
+            ),
+        }
+
         # Initialize the Portfolio object
-        self.portfolio = Portfolio(self)
-        self.portfolio.set_config(self._config)
+        self.portfolio = Portfolio(
+            self,
+            initial_capital=risk_manager_config["initial_capital"],
+            commission_rate=ExtendedDecimal(
+                str(self._config.get("commission_rate", "0.001"))
+            ),
+            margin_ratio=margin_ratio,
+            risk_manager_config=risk_manager_config,
+        )
 
         # Reset the Reporter
         self.reporter = None
@@ -515,10 +586,7 @@ class Engine:
             strategy_timeframes = self._strategy_timeframes.get(
                 strategy_id, [default_timeframe]
             )
-            strategy.initialize(
-                self._dataview.symbols,
-                strategy_timeframes,
-            )
+            strategy.initialize(self._dataview.symbols, strategy_timeframes)
         logger_main.info("Backtest initialized.")
 
     def _process_timestamp(
@@ -530,36 +598,44 @@ class Engine:
         Process a single timestamp in the backtest.
 
         This method handles all operations for a given timestamp, including
-        processing order fills, updating strategies, updating the portfolio,
-        and notifying strategies of any changes.
+        updating the portfolio, processing strategy data, and notifying strategies.
 
         Args:
             timestamp (pd.Timestamp): The current timestamp being processed.
             data_point (Dict[str, Dict[Timeframe, Bar]]): The market data for this timestamp.
         """
-        # Update portfolio and process orders
+        # Update portfolio with current market data
         self.portfolio.update(timestamp, data_point)
 
-        # Update each strategy's data
+        # Update each strategy's data and run strategy logic
         for strategy in self._strategies.values():
-            # Load new data for all symbols
-            for symbol in strategy.datas:
-                # Update all timeframes
-                for timeframe in strategy._strategy_timeframes:
-                    if self._dataview.is_original_data_point(
-                        symbol, timeframe, timestamp
-                    ):
-                        bar = data_point[symbol][timeframe]
-                        strategy.datas[bar.ticker].add_bar(bar)
-
-            # Run strategy.on_data
+            self._update_strategy_data(strategy, data_point)
             strategy._on_data()
 
-        # Notify strategies of updates
-        self._notify_strategies()
+        # # Notify strategies of updates
+        # self._notify_strategies()
 
-        # Clear updated orders and trades in the portfolio
-        self.portfolio.clear_updated_orders_and_trades()
+        # # Clear updated orders and trades in the portfolio
+        # self.portfolio.order_manager.clear_updated_orders()
+        # self.portfolio.trade_manager.clear_updated_trades()
+
+    def _update_strategy_data(
+        self, strategy: Strategy, data_point: Dict[str, Dict[Timeframe, Bar]]
+    ) -> None:
+        """
+        Update a strategy's data with the current market data.
+
+        Args:
+            strategy (Strategy): The strategy to update.
+            data_point (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+        """
+        for symbol in strategy.datas:
+            for timeframe in strategy._strategy_timeframes:
+                if self._dataview.is_original_data_point(
+                    symbol, timeframe, self._current_timestamp
+                ):
+                    bar = data_point[symbol][timeframe]
+                    strategy.datas[symbol].add_bar(bar)
 
     def _check_termination_condition(self) -> bool:
         """
@@ -568,9 +644,9 @@ class Engine:
         Returns:
             bool: True if the backtest should be terminated, False otherwise.
         """
-        if self.portfolio.calculate_equity() < self._config.get("min_equity", 0):
+        if self.portfolio.get_account_value() < self._config.get("min_equity", 0):
             logger_main.warning(
-                "Portfolio value dropped below minimum equity. Terminating backtest.",
+                "Portfolio value dropped below minimum equity. Terminating backtest."
             )
             return True
         return False
@@ -579,181 +655,20 @@ class Engine:
         """
         Perform final operations after the backtest is complete.
 
-        This method closes all remaining trades and performs any necessary cleanup.
+        This method closes all remaining positions and performs any necessary cleanup.
+        It uses the current timestamp to ensure accurate position closing.
         """
-        self.close_all_positions()
-        logger_main.info("Finalized backtest. Closed all remaining trades.")
-
-    def _validate_order_timeframes(self) -> None:
-        """
-        Ensure all pending orders have a valid timeframe set.
-
-        This method checks all pending orders and sets the default timeframe
-        if the order's timeframe is None. It logs a warning for each order
-        that requires a timeframe update.
-        """
-        for order in self.portfolio.pending_orders + self.portfolio.limit_exit_orders:
-            if order.details.timeframe is None:
-                order.details.timeframe = self.default_timeframe
-                logger_main.warning(
-                    f"Updated order {order.id} for {order.details.ticker} to use default timeframe {self.default_timeframe}",
-                )
+        if self.portfolio is not None and self._current_timestamp is not None:
+            self.portfolio.close_all_positions(self._current_timestamp)
+            logger_main.info("Finalized backtest. Closed all remaining positions.")
+        else:
+            logger_main.warning(
+                "Unable to finalize backtest. Portfolio or current timestamp is not set."
+            )
 
     # endregion
 
     # region Order and Trade Management
-
-    def create_order(
-        self,
-        strategy_id: str,
-        symbol: str,
-        direction: Order.Direction,
-        size: float,
-        order_type: Order.ExecType,
-        price: Optional[float] = None,
-        **kwargs: Any,
-    ) -> Order:
-        """
-        Create an order using the portfolio's order manager.
-
-        Args:
-            strategy_id (str): The ID of the strategy creating the order.
-            symbol (str): The symbol to trade.
-            direction (Order.Direction): The direction of the trade (LONG or SHORT).
-            size (float): The size of the order.
-            order_type (Order.ExecType): The type of order (e.g., MARKET, LIMIT).
-            price (Optional[float], optional): The price for limit orders. Defaults to None.
-            **kwargs: Additional keyword arguments for the order.
-
-        Returns:
-            Order: The created order.
-        """
-        # Use the default timeframe if not provided in kwargs
-        if "timeframe" not in kwargs or kwargs["timeframe"] is None:
-            kwargs["timeframe"] = self.default_timeframe
-            logger_main.info(
-                f"Using default timeframe {self.default_timeframe} for order on {symbol}"
-            )
-
-        order_details = OrderDetails(
-            ticker=symbol,
-            direction=direction,
-            size=ExtendedDecimal(str(size)),
-            price=ExtendedDecimal(str(price)) if price is not None else None,
-            exectype=order_type,
-            timestamp=self._current_timestamp,
-            strategy_id=strategy_id,
-            **kwargs,
-        )
-
-        return self.portfolio.order_manager.create_order(order_details)
-
-    def create_complex_order(
-        self,
-        strategy_id: str,
-        order_type: str,
-        symbol: str,
-        direction: Order.Direction,
-        size: float,
-        prices: List[float],
-        **kwargs: Any,
-    ) -> Tuple[List[Order], Union[OCOGroup, OCAGroup, BracketGroup]]:
-        """
-        Create a complex order (OCO, OCA, or Bracket) using the portfolio's order manager.
-
-        Args:
-            strategy_id (str): The ID of the strategy creating the order.
-            order_type (str): The type of complex order ('OCO', 'OCA', or 'BRACKET').
-            symbol (str): The symbol to trade.
-            direction (Order.Direction): The direction of the trade (LONG or SHORT).
-            size (float): The size of the order.
-            prices (List[float]): The prices for the orders (interpretation depends on order_type).
-            **kwargs: Additional keyword arguments for the orders.
-
-        Returns:
-            Tuple[List[Order], Union[OCOGroup, OCAGroup, BracketGroup]]:
-                A tuple containing the list of created orders and the order group.
-
-        Raises:
-            ValueError: If an invalid order_type is provided.
-        """
-        return self.portfolio.create_complex_order(
-            order_type,
-            symbol,
-            direction,
-            size,
-            prices,
-            strategy_id=strategy_id,
-            **kwargs,
-        )
-
-    def cancel_order(self, strategy_id: str, order_id: str) -> bool:
-        """
-        Cancel an existing order.
-
-        Args:
-            strategy_id (str): The ID of the strategy cancelling the order.
-            order_id (str): The ID of the order to cancel.
-
-        Returns:
-            bool: True if the order was successfully cancelled, False otherwise.
-        """
-        order = self.portfolio.order_manager.get_order(order_id)
-        if order and order.details.strategy_id != strategy_id:
-            logger_main.warning(
-                f"Strategy {strategy_id} attempted to cancel an order it didn't create."
-            )
-            return False
-
-        return self.portfolio.order_manager.cancel_order(order_id)
-
-    def modify_order(
-        self, strategy_id: str, order_id: str, new_details: Dict[str, Any]
-    ) -> bool:
-        """
-        Modify an existing order.
-
-        Args:
-            strategy_id (str): The ID of the strategy modifying the order.
-            order_id (str): The ID of the order to modify.
-            new_details (Dict[str, Any]): A dictionary containing the new details for the order.
-
-        Returns:
-            bool: True if the order was successfully modified, False otherwise.
-        """
-        order = self.portfolio.order_manager.get_order(order_id)
-        if order and order.details.strategy_id != strategy_id:
-            logger_main.warning(
-                f"Strategy {strategy_id} attempted to modify an order it didn't create."
-            )
-            return False
-
-        return self.portfolio.order_manager.modify_order(order_id, new_details)
-
-    def close_positions(self, strategy_id: str, symbol: Optional[str] = None) -> bool:
-        """
-        Close all positions for a strategy, or for a specific symbol if provided.
-
-        Args:
-            strategy_id (str): The ID of the strategy closing the positions.
-            symbol (Optional[str], optional): The specific symbol to close positions for. Defaults to None.
-
-        Returns:
-            bool: True if positions were successfully closed, False otherwise.
-        """
-        success = self.portfolio.close_positions(strategy_id=strategy_id, symbol=symbol)
-        return success
-
-    def close_all_positions(self) -> None:
-        """
-        Close all open positions in the portfolio.
-        """
-        if self._current_timestamp is None:
-            logger_main.log_and_raise(ValueError("Backtest has not been run yet."))
-
-        self.portfolio.close_all_positions(self._current_timestamp)
-        logger_main.info("Closed all open positions.")
-
     def _notify_order_update(self, order: Order) -> None:
         """
         Notify the relevant strategy of an order updated.
@@ -773,9 +688,14 @@ class Engine:
         that occurred during the current timestamp processing.
         """
         for order in self.portfolio.order_manager.get_updated_orders():
-            self._notify_order_update(order)
-        for trade in self.portfolio.updated_trades:
-            self._notify_trade_update(trade)
+            strategy = self.get_strategy_by_id(order.details.strategy_id)
+            if strategy:
+                strategy.on_order_update(order)
+
+        for trade in self.portfolio.trade_manager.get_updated_trades():
+            strategy = self.get_strategy_by_id(trade.strategy_id)
+            if strategy:
+                strategy.on_trade_update(trade)
 
     def _notify_trade_update(self, trade: Trade) -> None:
         """
@@ -791,124 +711,6 @@ class Engine:
     # endregion
 
     # region Portfolio and Account Information
-
-    def get_trades_for_strategy(self, strategy_id: str) -> List[Trade]:
-        """
-        Get all trades for a specific strategy.
-
-        Args:
-            strategy_id (str): The ID of the strategy.
-
-        Returns:
-            List[Trade]: A list of trades associated with the strategy.
-        """
-        return self.portfolio.get_trades_for_strategy(strategy_id)
-
-    def get_account_value(self) -> ExtendedDecimal:
-        """
-        Get the current total account value (equity).
-
-        Returns:
-            ExtendedDecimal: The current account value.
-        """
-        return self.portfolio.get_account_value()
-
-    def get_position_size(self, symbol: str) -> ExtendedDecimal:
-        """
-        Get the current position size for a given symbol.
-
-        Args:
-            symbol (str): The symbol to check.
-
-        Returns:
-            ExtendedDecimal: The current position size (positive for long, negative for short).
-        """
-        return self.portfolio.get_position_size(symbol)
-
-    def calculate_position_size(
-        self,
-        strategy_id: str,
-        symbol: str,
-        entry_price: Union[float, ExtendedDecimal],
-        stop_loss: Union[float, ExtendedDecimal],
-    ) -> ExtendedDecimal:
-        """
-        Retrieve the calculated position size from the Portfolio based on the given parameters.
-
-        This method acts as an intermediary between the Strategy and the Portfolio,
-        ensuring that position sizing adheres to the overall risk management rules
-        set in the Portfolio.
-
-        Args:
-            strategy_id (str): The ID of the strategy requesting the position size.
-            symbol (str): The trading symbol for which to calculate the position size.
-            entry_price (Union[float, Decimal]): The proposed entry price for the trade.
-            stop_loss (Union[float, Decimal]): The proposed stop-loss price for the trade.
-
-        Returns:
-            ExtendedDecimal: The calculated position size.
-
-        Raises:
-            ValueError: If the entry_price or stop_loss are invalid, or if the calculation fails.
-        """
-        try:
-            # Convert entry_price and stop_loss to ExtendedDecimal if they're not already
-            entry_price_dec = ExtendedDecimal(str(entry_price))
-            stop_loss_dec = ExtendedDecimal(str(stop_loss))
-
-            # Validate input
-            if entry_price_dec <= 0 or stop_loss_dec <= 0:
-                raise ValueError("Entry price and stop loss must be positive values.")
-
-            # Call the Portfolio's calculate_position_size method
-            position_size = self.portfolio.calculate_position_size(
-                entry_price_dec, stop_loss_dec
-            )
-
-            logger_main.info(
-                f"Calculated position size for strategy {strategy_id}, symbol {symbol}: {position_size}"
-            )
-            return position_size
-
-        except Exception as e:
-            logger_main.error(
-                f"Error calculating position size for strategy {strategy_id}, symbol {symbol}: {str(e)}"
-            )
-            raise ValueError(f"Failed to calculate position size: {str(e)}")
-
-    def get_available_margin(self) -> ExtendedDecimal:
-        """
-        Get the available margin for new trades.
-
-        Returns:
-            ExtendedDecimal: The amount of available margin.
-        """
-        return self.portfolio.get_available_margin()
-
-    def get_open_trades(self, strategy_id: Optional[str] = None) -> List[Trade]:
-        """
-        Get open trades, optionally filtered by strategy ID.
-
-        Args:
-            strategy_id (Optional[str], optional): The ID of the strategy to filter trades for. Defaults to None.
-
-        Returns:
-            List[Trade]: A list of open trades.
-        """
-        return self.portfolio.get_open_trades(strategy_id)
-
-    def get_closed_trades(self, strategy_id: Optional[str] = None) -> List[Trade]:
-        """
-        Get closed trades, optionally filtered by strategy ID.
-
-        Args:
-            strategy_id (Optional[str], optional): The ID of the strategy to filter trades for. Defaults to None.
-
-        Returns:
-            List[Trade]: A list of closed trades.
-        """
-        return self.portfolio.get_closed_trades(strategy_id)
-
     def get_current_state(self) -> Dict[str, Any]:
         """
         Get the current state of the backtest.
@@ -952,108 +754,33 @@ class Engine:
 
     # endregion
 
-    # region Risk Managament
-    def get_order_by_id(self, order_id: str) -> Optional[Order]:
+    def get_current_data(self, symbol: str) -> Bar:
         """
-        Get an order by its ID.
+        Get the current data for a given symbol at the lowest available timeframe.
+
+        This method retrieves the most recent bar from the current market data
+        for the specified symbol at the lowest timeframe.
 
         Args:
-            order_id (str): The ID of the order to retrieve.
+            symbol (str): The symbol to get the current data for.
 
         Returns:
-            Optional[Order]: The order if found, None otherwise.
-        """
-        return self.portfolio.order_manager.get_order(order_id)
-
-    def get_risk_amount(self, symbol: str, strategy_id: str) -> ExtendedDecimal:
-        """
-        Get the risk amount for a specific symbol and strategy.
-
-        This method retrieves the risk amount allocated to a symbol from the Portfolio,
-        considering the current market conditions and strategy requirements.
-
-        Args:
-            symbol (str): The trading symbol to get the risk amount for.
-            strategy_id (str): The ID of the strategy requesting the risk amount.
-
-        Returns:
-            ExtendedDecimal: The calculated risk amount for the symbol.
+            Bar: The most recent bar for the symbol at the lowest timeframe.
 
         Raises:
-            ValueError: If the symbol is not found in the portfolio or the strategy doesn't exist.
+            ValueError: If the symbol is not found in the current market data or if there's no data for the symbol.
         """
-        if symbol not in self._dataview.symbols:
-            raise ValueError(f"Symbol {symbol} not found in the portfolio")
-        if strategy_id not in self._strategies:
-            raise ValueError(f"Strategy with ID {strategy_id} does not exist")
+        if self._current_market_data is None:
+            raise ValueError("No current market data available.")
 
-        return self.portfolio.get_risk_amount_for_symbol(symbol)
+        if symbol not in self._current_market_data:
+            raise ValueError(f"Symbol {symbol} not found in the current market data")
 
-    def set_symbol_weight(self, symbol: str, weight: float) -> None:
-        """
-        Set the weight for a specific symbol in the portfolio.
+        # Get the lowest timeframe data for the symbol
+        lowest_timeframe = min(self._current_market_data[symbol].keys())
+        current_bar = self._current_market_data[symbol][lowest_timeframe]
 
-        This method updates the weight of a given symbol in the portfolio and ensures
-        that all weights are normalized.
+        if current_bar is None:
+            raise ValueError(f"No data available for symbol {symbol}")
 
-        Args:
-            symbol (str): The symbol to set the weight for.
-            weight (float): The new weight for the symbol (between 0 and 1).
-
-        Raises:
-            ValueError: If the symbol is not found in the portfolio or the weight is invalid.
-        """
-        if symbol not in self._dataview.symbols:
-            raise ValueError(f"Symbol {symbol} not found in the portfolio")
-
-        self.portfolio.set_symbol_weight(symbol, weight)
-        logger_main.info(f"Updated weight for symbol {symbol} to {weight}")
-
-    def get_symbol_weight(self, symbol: str) -> ExtendedDecimal:
-        """
-        Get the weight of a specific symbol in the portfolio.
-
-        Args:
-            symbol (str): The symbol to get the weight for.
-
-        Returns:
-            ExtendedDecimal: The weight of the symbol.
-
-        Raises:
-            ValueError: If the symbol is not found in the portfolio.
-        """
-        if symbol not in self._dataview.symbols:
-            raise ValueError(f"Symbol {symbol} not found in the portfolio")
-
-        return self.portfolio.get_symbol_weight(symbol)
-
-    def set_all_symbol_weights(self, weights: Dict[str, float]) -> None:
-        """
-        Set weights for all symbols in the portfolio.
-
-        This method updates the weights for all provided symbols and recalculates
-        the weights to ensure they sum to 1 (100%).
-
-        Args:
-            weights (Dict[str, float]): A dictionary mapping symbols to their weights.
-
-        Raises:
-            ValueError: If any symbol is not found in the portfolio or any weight is invalid.
-        """
-        for symbol in weights.keys():
-            if symbol not in self._dataview.symbols:
-                raise ValueError(f"Symbol {symbol} not found in the portfolio")
-
-        self.portfolio.set_all_symbol_weights(weights)
-        logger_main.info("Updated weights for all symbols in the portfolio")
-
-    def get_all_symbol_weights(self) -> Dict[str, ExtendedDecimal]:
-        """
-        Get the weights of all symbols in the portfolio.
-
-        Returns:
-            Dict[str, ExtendedDecimal]: A dictionary mapping symbols to their weights.
-        """
-        return self.portfolio.get_all_symbol_weights()
-
-    # endregion
+        return current_bar

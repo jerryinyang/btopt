@@ -8,7 +8,7 @@ from .data.dataloader import BaseDataLoader
 from .data.dataview import DataView
 from .data.timeframe import Timeframe
 from .order import Order
-from .portfolio import Portfolio
+from .old_portfolio import Portfolio
 from .reporter import Reporter
 from .strategy import Strategy
 from .trade import Trade

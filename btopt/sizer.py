@@ -140,7 +140,7 @@ class NaiveSizer(Sizer):
             return self.min_position_size
 
         # Retrieve the risk amount for the symbol from the Engine
-        risk_amount = engine.get_risk_amount(symbol, strategy._id)
+        risk_amount = strategy._portfolio.calculate_risk_amount(symbol)
 
         # Apply the strategy's risk percentage to the risk amount
         strategy_risk_amount = risk_amount * risk_percentage

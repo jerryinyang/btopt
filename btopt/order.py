@@ -1,12 +1,212 @@
+import uuid
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .data.bar import Bar
 from .data.timeframe import Timeframe
 from .util.ext_decimal import ExtendedDecimal
 from .util.log_config import logger_main
+
+
+class OrderGroupType(Enum):
+    OCO = "One-Cancels-the-Other"
+    OCA = "One-Cancels-All"
+    BRACKET = "Bracket"
+
+
+class OrderGroup(ABC):
+    """
+    Abstract base class for order groups.
+    """
+
+    def __init__(self, group_type: OrderGroupType):
+        self.id: str = str(uuid.uuid4())
+        self.type: OrderGroupType = group_type
+        self.orders: List[Order] = []
+
+    @abstractmethod
+    def add_order(self, order: "Order") -> None:
+        """Add an order to the group."""
+        pass
+
+    @abstractmethod
+    def remove_order(self, order: "Order") -> None:
+        """Remove an order from the group."""
+        pass
+
+    @abstractmethod
+    def on_order_filled(self, filled_order: "Order") -> None:
+        """Handle the event when an order in the group is filled."""
+        pass
+
+    @abstractmethod
+    def on_order_cancelled(self, cancelled_order: "Order") -> None:
+        """Handle the event when an order in the group is cancelled."""
+        pass
+
+    @abstractmethod
+    def on_order_rejected(self, rejected_order: "Order") -> None:
+        """Handle the event when an order in the group is rejected."""
+        pass
+
+    def get_status(self) -> str:
+        """Get the overall status of the order group."""
+        if not self.orders:
+            return "Empty"
+        if all(order.status == Order.Status.FILLED for order in self.orders):
+            return "Filled"
+        if all(
+            order.status in [Order.Status.CANCELED, Order.Status.REJECTED]
+            for order in self.orders
+        ):
+            return "Cancelled/Rejected"
+        return "Active"
+
+
+class OCOGroup(OrderGroup):
+    """
+    Represents a One-Cancels-the-Other order group.
+    """
+
+    def __init__(self):
+        super().__init__(OrderGroupType.OCO)
+
+    def add_order(self, order: "Order") -> None:
+        if len(self.orders) < 2:
+            self.orders.append(order)
+            order.order_group = self
+        else:
+            logger_main.warning("OCO group can only contain two orders.")
+
+    def remove_order(self, order: "Order") -> None:
+        if order in self.orders:
+            self.orders.remove(order)
+            order.order_group = None
+
+    def on_order_filled(self, filled_order: "Order") -> None:
+        for order in self.orders:
+            if order != filled_order and order.status != Order.Status.FILLED:
+                order.cancel()
+
+    def on_order_cancelled(self, cancelled_order: "Order") -> None:
+        # In OCO, cancelling one order doesn't affect the other
+        pass
+
+    def on_order_rejected(self, rejected_order: "Order") -> None:
+        # In OCO, rejecting one order doesn't affect the other
+        pass
+
+
+class OCAGroup(OrderGroup):
+    """
+    Represents a One-Cancels-All order group.
+    """
+
+    def __init__(self):
+        super().__init__(OrderGroupType.OCA)
+
+    def add_order(self, order: "Order") -> None:
+        self.orders.append(order)
+        order.order_group = self
+
+    def remove_order(self, order: "Order") -> None:
+        if order in self.orders:
+            self.orders.remove(order)
+            order.order_group = None
+
+    def on_order_filled(self, filled_order: "Order") -> None:
+        for order in self.orders:
+            if order != filled_order and order.status != Order.Status.FILLED:
+                order.cancel()
+
+    def on_order_cancelled(self, cancelled_order: "Order") -> None:
+        # In OCA, cancelling one order cancels all others
+        for order in self.orders:
+            if order != cancelled_order and order.status != Order.Status.CANCELED:
+                order.cancel()
+
+    def on_order_rejected(self, rejected_order: "Order") -> None:
+        # In OCA, rejecting one order doesn't affect the others
+        pass
+
+
+class BracketGroup(OrderGroup):
+    """
+    Represents a Bracket order group.
+    """
+
+    def __init__(self):
+        super().__init__(OrderGroupType.BRACKET)
+        self.entry_order: Optional[Order] = None
+        self.take_profit_order: Optional[Order] = None
+        self.stop_loss_order: Optional[Order] = None
+
+    def add_order(self, order: "Order") -> None:
+        if not self.entry_order:
+            self.entry_order = order
+        elif not self.take_profit_order:
+            self.take_profit_order = order
+        elif not self.stop_loss_order:
+            self.stop_loss_order = order
+        else:
+            logger_main.warning("Bracket group already has all required orders.")
+
+        self.orders.append(order)
+        order.order_group = self
+
+    def remove_order(self, order: "Order") -> None:
+        if order in self.orders:
+            self.orders.remove(order)
+            order.order_group = None
+            if order == self.entry_order:
+                self.entry_order = None
+            elif order == self.take_profit_order:
+                self.take_profit_order = None
+            elif order == self.stop_loss_order:
+                self.stop_loss_order = None
+
+    def on_order_filled(self, filled_order: "Order") -> None:
+        if filled_order == self.entry_order:
+            # Activate take-profit and stop-loss orders
+            if self.take_profit_order:
+                self.take_profit_order.activate()
+            if self.stop_loss_order:
+                self.stop_loss_order.activate()
+        elif filled_order in [self.take_profit_order, self.stop_loss_order]:
+            # Cancel the other exit order
+            other_exit_order = (
+                self.take_profit_order
+                if filled_order == self.stop_loss_order
+                else self.stop_loss_order
+            )
+            if other_exit_order and other_exit_order.status != Order.Status.FILLED:
+                other_exit_order.cancel()
+
+    def on_order_cancelled(self, cancelled_order: "Order") -> None:
+        if cancelled_order == self.entry_order:
+            # Cancel both exit orders
+            for order in [self.take_profit_order, self.stop_loss_order]:
+                if order and order.status != Order.Status.CANCELED:
+                    order.cancel()
+
+    def on_order_rejected(self, rejected_order: "Order") -> None:
+        if rejected_order == self.entry_order:
+            # Cancel both exit orders
+            for order in [self.take_profit_order, self.stop_loss_order]:
+                if order and order.status != Order.Status.CANCELED:
+                    order.cancel()
+
+
+@dataclass
+class Fill:
+    """Represents a single fill for an order."""
+
+    price: ExtendedDecimal
+    size: ExtendedDecimal
+    timestamp: datetime
 
 
 @dataclass(frozen=True)
@@ -22,8 +222,8 @@ class OrderDetails:
     timeframe: Timeframe
     strategy_id: Optional[str]
     expiry: Optional[datetime] = None
-    stoplimit_price: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
     parent_id: Optional[int] = None
+    stoplimit_price: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
     exit_profit: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
     exit_loss: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
     exit_profit_percent: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
@@ -33,12 +233,21 @@ class OrderDetails:
 
 
 @dataclass
-class Fill:
-    """Represents a single fill for an order."""
+class OCOOrderDetails:
+    limit_order: OrderDetails
+    stop_order: OrderDetails
 
-    price: ExtendedDecimal
-    size: ExtendedDecimal
-    timestamp: datetime
+
+@dataclass
+class OCAOrderDetails:
+    orders: List[OrderDetails]
+
+
+@dataclass
+class BracketOrderDetails:
+    entry_order: OrderDetails
+    take_profit_order: OrderDetails
+    stop_loss_order: OrderDetails
 
 
 class Order:
@@ -71,98 +280,33 @@ class Order:
         CANCELED = "Canceled"
         REJECTED = "Rejected"
 
-    class FamilyRole(Enum):
-        """Enum representing the role of an order in a family of related orders."""
+    def __init__(self, order_id: str, details: OrderDetails):
+        """
+        Initialize a new Order instance.
 
-        PARENT = "Parent"
-        CHILD_EXIT = "ChildExit"
-        CHILD_REDUCE = "ChildReduce"
-
-    def __init__(self, order_id: int, details: OrderDetails):
-        """Initialize a new Order instance."""
-
-        self.id = order_id
-        self.details = details
-        self.status = self.Status.CREATED
+        Args:
+            order_id (str): A unique identifier for the order.
+            details (OrderDetails): The details of the order.
+        """
+        self.id: str = order_id
+        self.details: OrderDetails = details
+        self.status: Order.Status = self.Status.CREATED
         self.fills: List[Fill] = []
-        self.children: List["Order"] = []
-        self.family_role = (
-            self.FamilyRole.PARENT
-            if self.details.parent_id is None
-            else self.FamilyRole.CHILD_EXIT
-        )
-        self.trailing_activation_price: Optional[ExtendedDecimal] = None
+        self.order_group: Optional[OrderGroup] = None
+        self.is_active: bool = True
 
-        self._create_child_orders()
-
-    def _create_child_orders(self):
-        """Create child orders for exit strategies (profit target and stop loss)."""
-        if self.details.exit_profit or self.details.exit_profit_percent:
-            self._add_child_order(
-                self.ExecType.EXIT_LIMIT,
-                self.details.exit_profit,
-                self.details.exit_profit_percent,
-            )
-
-        if self.details.exit_loss or self.details.exit_loss_percent:
-            self._add_child_order(
-                self.ExecType.EXIT_STOP,
-                self.details.exit_loss,
-                self.details.exit_loss_percent,
-            )
-
-    def _add_child_order(
-        self,
-        exectype: ExecType,
-        price: Optional[ExtendedDecimal],
-        percent: Optional[ExtendedDecimal],
-    ):
-        """Add a child order with the specified execution type and price or percentage."""
-        child_details = OrderDetails(
-            ticker=self.details.ticker,
-            direction=self.Direction.SHORT
-            if self.details.direction == self.Direction.LONG
-            else self.Direction.LONG,
-            size=self.details.size,
-            price=price
-            if price is not None
-            else self._calculate_price_from_percent(percent),
-            exectype=exectype,
-            timestamp=self.details.timestamp,
-            timeframe=self.details.timeframe,
-            parent_id=self.id,
-            slippage=self.details.slippage,
-            strategy_id=self.details.strategy_id,
-        )
-        child_order = Order(order_id=hash(child_details), details=child_details)
-        child_order.family_role = self.FamilyRole.CHILD_EXIT
-        self.children.append(child_order)
-
-    def _calculate_price_from_percent(
-        self, percent: ExtendedDecimal
-    ) -> ExtendedDecimal:
-        """Calculate the price based on a percentage difference from the parent order's price."""
-        if percent is None:
-            logger_main.log_and_raise(
-                ValueError("Percent value is required for calculation")
-            )
-
-        return self.details.price * (
-            ExtendedDecimal("1") + percent * self.details.direction.value
-        )
-
-    def is_filled(self, bar: "Bar") -> tuple[bool, Optional[ExtendedDecimal]]:
+    def is_filled(self, bar: Bar) -> tuple[bool, Optional[ExtendedDecimal]]:
         """Check if the order is filled based on the current price bar."""
         if self.status == self.Status.FILLED:
             return True, self.get_last_fill_price()
 
         filled, price = self._check_fill_conditions(bar)
         if filled:
-            self.fill(price, bar.timestamp)
+            self.on_fill(self.get_remaining_size(), price, bar.timestamp)
         return filled, price
 
     def _check_fill_conditions(
-        self, bar: "Bar"
+        self, bar: Bar
     ) -> tuple[bool, Optional[ExtendedDecimal]]:
         """Check if the order's fill conditions are met based on the current price bar."""
         if self.details.exectype == self.ExecType.MARKET:
@@ -293,97 +437,93 @@ class Order:
 
         return False, None
 
-    def _apply_slippage(self, price: ExtendedDecimal) -> ExtendedDecimal:
-        """Apply slippage to the given price if slippage is specified in the order details."""
-        if self.details.slippage is not None:
-            slippage_factor = ExtendedDecimal("1") + (
-                self.details.slippage * self.details.direction.value
-            )
-            return price * slippage_factor
-        return price
-
-    def fill(
+    def on_fill(
         self,
-        price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        fill_price: ExtendedDecimal,
         timestamp: datetime,
-        size: Optional[ExtendedDecimal] = None,
-    ):
-        """Record a fill for the order at the specified price, timestamp, and size."""
-        fill_size = size or self.get_remaining_size()
+    ) -> None:
+        """
+        Handle the event when the order is filled (partially or fully).
 
-        if fill_size > self.get_remaining_size():
-            logger_main.log_and_raise(
-                ValueError("Order fill size exceeds remaining unfilled size.")
-            )
+        Args:
+            fill_size (ExtendedDecimal): The size of the fill.
+            fill_price (ExtendedDecimal): The price of the fill.
+            timestamp (datetime): The timestamp of the fill.
+        """
+        self.fills.append(Fill(fill_price, fill_size, timestamp))
+        filled_size = sum(fill.size for fill in self.fills)
 
-        self.fills.append(
-            Fill(
-                price=price,
-                size=fill_size,
-                timestamp=timestamp,
-            )
-        )
-
-        if self.get_remaining_size() == ExtendedDecimal("0"):
-            self.status = self.Status.FILLED
-        else:
+        if filled_size < self.details.size:
             self.status = self.Status.PARTIALLY_FILLED
+        else:
+            self.status = self.Status.FILLED
+            self.is_active = False
+
+        if self.order_group:
+            self.order_group.on_order_filled(self)
 
         logger_main.info(
-            f"Order {self.id} filled: price {price}, size {fill_size}, "
-            f"Total filled {self.get_filled_size()}/{self.details.size}"
+            f"Order {self.id} filled: size {fill_size}, price {fill_price}"
         )
 
-    def cancel(self):
-        """Cancel the order and all its child orders."""
-        if self.status not in [self.Status.FILLED, self.Status.CANCELED]:
-            self.status = self.Status.CANCELED
-            for child in self.children:
-                child.cancel()
+    def on_cancel(self) -> None:
+        """Handle the event when the order is cancelled."""
+        self.status = self.Status.CANCELED
+        self.is_active = False
+        if self.order_group:
+            self.order_group.on_order_cancelled(self)
+        logger_main.info(f"Order {self.id} cancelled")
 
-    def is_active(self) -> bool:
-        """Check if the order is currently active."""
-        return self.status in [
-            self.Status.CREATED,
-            self.Status.ACCEPTED,
-            self.Status.PARTIALLY_FILLED,
-        ]
+    def on_reject(self, reason: str) -> None:
+        """
+        Handle the event when the order is rejected.
+
+        Args:
+            reason (str): The reason for the rejection.
+        """
+        self.status = self.Status.REJECTED
+        self.is_active = False
+        if self.order_group:
+            self.order_group.on_order_rejected(self)
+        logger_main.info(f"Order {self.id} rejected: {reason}")
+
+    def cancel(self) -> None:
+        """Request cancellation of the order."""
+        if self.is_active:
+            self.on_cancel()
+
+    def activate(self) -> None:
+        """Activate the order (used for stop and limit orders in bracket groups)."""
+        if self.status == self.Status.CREATED:
+            self.status = self.Status.ACCEPTED
+            logger_main.info(f"Order {self.id} activated")
+
+    def __repr__(self) -> str:
+        """Return a string representation of the Order."""
+        return (
+            f"Order(id={self.id}, ticker={self.details.ticker}, "
+            f"direction={self.details.direction.name}, "
+            f"price={self.details.price}, status={self.status.name}, "
+            f"exectype={self.details.exectype.name}, "
+            f"filled={self.get_filled_size()}/{self.details.size})"
+        )
+
+    def get_filled_size(self) -> ExtendedDecimal:
+        """Get the total filled size of the order."""
+        return sum(fill.size for fill in self.fills)
 
     def is_expired(self, current_time: datetime) -> bool:
         """Check if the order has expired."""
         return self.details.expiry is not None and current_time >= self.details.expiry
 
-    def update_trailing_stop(self, current_price: ExtendedDecimal):
-        """Update the trailing stop price based on the current market price."""
-        if self.details.exectype != self.ExecType.TRAILING:
+    def update_size(self, new_size: ExtendedDecimal):
+        """Update the order size, ensuring it doesn't decrease below the filled size."""
+        if new_size < self.get_filled_size():
             logger_main.log_and_raise(
-                ValueError("This method is only applicable for trailing stop orders")
+                ValueError("New size cannot be less than the filled size")
             )
-
-        is_long = self.details.direction == self.Direction.LONG
-        if self.trailing_activation_price is None:
-            self.trailing_activation_price = current_price
-            self.details.price = self._calculate_trailing_stop_price(
-                current_price, is_long
-            )
-        elif (is_long and current_price > self.trailing_activation_price) or (
-            not is_long and current_price < self.trailing_activation_price
-        ):
-            self.trailing_activation_price = current_price
-            self.details.price = self._calculate_trailing_stop_price(
-                current_price, is_long
-            )
-
-    def is_reduce_only(self) -> bool:
-        """Check if this order is meant to reduce an existing position."""
-        return self.family_role in [
-            self.FamilyRole.CHILD_EXIT,
-            self.FamilyRole.CHILD_REDUCE,
-        ]
-
-    def get_filled_size(self) -> ExtendedDecimal:
-        """Get the total filled size of the order."""
-        return sum(fill.size for fill in self.fills)
+        self.details.size = new_size
 
     def get_remaining_size(self) -> ExtendedDecimal:
         """Get the remaining unfilled size of the order."""
@@ -409,30 +549,385 @@ class Order:
             return self.fills[-1].timestamp
         return None
 
-    def update_size(self, new_size: ExtendedDecimal):
-        """Update the order size, ensuring it doesn't decrease below the filled size."""
-        if new_size < self.get_filled_size():
-            logger_main.log_and_raise(
-                ValueError("New size cannot be less than the filled size")
+    def _apply_slippage(self, price: ExtendedDecimal) -> ExtendedDecimal:
+        """Apply slippage to the given price if slippage is specified in the order details."""
+        if self.details.slippage is not None:
+            slippage_factor = ExtendedDecimal("1") + (
+                self.details.slippage * self.details.direction.value
             )
-        self.details.size = new_size
+            return price * slippage_factor
+        return price
 
-    def __eq__(self, other):
-        """Check if two orders are equal based on their IDs."""
-        if not isinstance(other, Order):
-            return NotImplemented
-        return self.id == other.id
+    def update_trailing_stop(self, current_price: ExtendedDecimal):
+        """Update the trailing stop price based on the current market price."""
+        if self.details.exectype != self.ExecType.TRAILING:
+            logger_main.log_and_raise(
+                ValueError("This method is only applicable for trailing stop orders")
+            )
 
-    def __hash__(self):
-        """Generate a hash value for the order based on its ID."""
-        return hash(self.id)
+        is_long = self.details.direction == self.Direction.LONG
+        if self.trailing_activation_price is None:
+            self.trailing_activation_price = current_price
+            self.details.price = self._calculate_trailing_stop_price(
+                current_price, is_long
+            )
+        elif (is_long and current_price > self.trailing_activation_price) or (
+            not is_long and current_price < self.trailing_activation_price
+        ):
+            self.trailing_activation_price = current_price
+            self.details.price = self._calculate_trailing_stop_price(
+                current_price, is_long
+            )
 
-    def __repr__(self):
-        """Return a string representation of the order."""
-        return (
-            f"Order(id={self.id}, ticker={self.details.ticker}, "
-            f"direction={self.details.direction.name}, "
-            f"price={self.details.price}, status={self.status.name}, "
-            f"exectype={self.details.exectype.name}, "
-            f"filled={self.get_filled_size()}/{self.details.size})"
-        )
+
+class OrderManager:
+    """
+    Manages the creation, modification, and cancellation of orders and order groups.
+    """
+
+    def __init__(self):
+        self.orders: Dict[str, Order] = {}
+        self.order_groups: Dict[str, OrderGroup] = {}
+        self.updated_orders: List[Order] = []
+
+    def create_order(self, details: OrderDetails) -> Order:
+        """
+        Create a new order.
+
+        Args:
+            details (OrderDetails): The details of the order to be created.
+
+        Returns:
+            Order: The newly created order.
+        """
+        order_id = str(uuid.uuid4())
+        order = Order(order_id, details)
+        self.orders[order_id] = order
+        self.updated_orders.append(order)
+        logger_main.info(f"Created order: {order}")
+        return order
+
+    def create_oco_group(self, order1: Order, order2: Order) -> OCOGroup:
+        """
+        Create a new OCO (One-Cancels-the-Other) group.
+
+        Args:
+            order1 (Order): The first order in the OCO group.
+            order2 (Order): The second order in the OCO group.
+
+        Returns:
+            OCOGroup: The newly created OCO group.
+        """
+        oco_group = OCOGroup()
+        oco_group.add_order(order1)
+        oco_group.add_order(order2)
+        self.order_groups[oco_group.id] = oco_group
+        logger_main.info(f"Created OCO group: {oco_group.id}")
+        return oco_group
+
+    def create_oca_group(self, orders: List[Order]) -> OCAGroup:
+        """
+        Create a new OCA (One-Cancels-All) group.
+
+        Args:
+            orders (List[Order]): The list of orders to be included in the OCA group.
+
+        Returns:
+            OCAGroup: The newly created OCA group.
+        """
+        oca_group = OCAGroup()
+        for order in orders:
+            oca_group.add_order(order)
+        self.order_groups[oca_group.id] = oca_group
+        logger_main.info(f"Created OCA group: {oca_group.id}")
+        return oca_group
+
+    def create_bracket_group(
+        self, entry_order: Order, take_profit_order: Order, stop_loss_order: Order
+    ) -> BracketGroup:
+        """
+        Create a new Bracket order group.
+
+        Args:
+            entry_order (Order): The entry order for the bracket.
+            take_profit_order (Order): The take-profit order for the bracket.
+            stop_loss_order (Order): The stop-loss order for the bracket.
+
+        Returns:
+            BracketGroup: The newly created Bracket group.
+        """
+        bracket_group = BracketGroup()
+        bracket_group.add_order(entry_order)
+        bracket_group.add_order(take_profit_order)
+        bracket_group.add_order(stop_loss_order)
+        self.order_groups[bracket_group.id] = bracket_group
+        logger_main.info(f"Created Bracket group: {bracket_group.id}")
+        return bracket_group
+
+    def cancel_order(self, order_id: str) -> None:
+        """
+        Cancel an order.
+
+        Args:
+            order_id (str): The ID of the order to be cancelled.
+        """
+        if order_id in self.orders:
+            order = self.orders[order_id]
+            order.cancel()
+            self.updated_orders.append(order)
+            logger_main.info(f"Cancelled order: {order_id}")
+        else:
+            logger_main.warning(f"Order not found: {order_id}")
+
+    def modify_order(self, order_id: str, new_details: Dict[str, Any]) -> None:
+        """
+        Modify an existing order.
+
+        Args:
+            order_id (str): The ID of the order to be modified.
+            new_details (Dict[str, Any]): A dictionary containing the new details for the order.
+        """
+        if order_id in self.orders:
+            order = self.orders[order_id]
+            for key, value in new_details.items():
+                if hasattr(order.details, key):
+                    setattr(order.details, key, value)
+            self.updated_orders.append(order)
+            logger_main.info(f"Modified order: {order_id}")
+        else:
+            logger_main.warning(f"Order not found: {order_id}")
+
+    def process_orders(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> List[Order]:
+        """
+        Process all pending orders based on current market data.
+
+        This method iterates through all pending orders, checks if they can be filled
+        based on the current market data, and executes them if conditions are met.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
+
+        Returns:
+            List[Order]: A list of orders that were processed (filled or cancelled).
+
+        Side effects:
+            - Updates order statuses
+            - Removes filled or cancelled orders from pending orders
+            - Triggers order group events for filled orders
+        """
+        processed_orders = []
+
+        for order in list(self.orders.values()):
+            if not order.is_active:
+                continue
+
+            symbol = order.details.ticker
+            timeframe = order.details.timeframe or min(market_data[symbol].keys())
+
+            try:
+                current_bar = market_data[symbol][timeframe]
+            except KeyError:
+                logger_main.warning(
+                    f"No market data for {symbol} at timeframe {timeframe}. Skipping order {order.id}."
+                )
+                continue
+
+            is_filled, fill_price = order.is_filled(current_bar)
+
+            if is_filled:
+                order.on_fill(order.get_remaining_size(), fill_price, timestamp)
+                processed_orders.append(order)
+                self.updated_orders.append(order)
+
+                if order.order_group:
+                    order.order_group.on_order_filled(order)
+
+            elif order.is_expired(timestamp):
+                order.on_cancel()
+                processed_orders.append(order)
+                self.updated_orders.append(order)
+
+        self.cleanup_completed_orders_and_groups()
+
+        return processed_orders
+
+    def update(self, timestamp: datetime) -> None:
+        """
+        Update the OrderManager state in each cycle.
+
+        This method performs housekeeping tasks for the OrderManager, such as:
+        - Checking for and handling expired orders
+        - Updating trailing stop orders
+        - Cleaning up completed orders and groups
+
+        Args:
+            timestamp (datetime): The current timestamp.
+
+        Side effects:
+            - May cancel expired orders
+            - Updates trailing stop orders
+            - Removes completed orders and groups
+        """
+        for order in list(self.orders.values()):
+            if not order.is_active:
+                continue
+
+            if order.is_expired(timestamp):
+                self.cancel_order(order.id)
+
+            elif order.details.exectype == Order.ExecType.TRAILING:
+                # Update trailing stop price
+                current_price = self._get_current_price(order.details.ticker)
+                order.update_trailing_stop(current_price)
+
+        self.cleanup_completed_orders_and_groups()
+
+    def _get_current_price(self, symbol: str) -> ExtendedDecimal:
+        """
+        Get the current price for a symbol. This method should be implemented
+        to fetch the most recent price from the market data or a price feed.
+        """
+        # Implementation depends on how you're storing/accessing current market data
+        pass
+
+    def cancel_group(self, group_id: str) -> None:
+        """
+        Cancel all orders in a group.
+
+        Args:
+            group_id (str): The ID of the order group to be cancelled.
+        """
+        if group_id in self.order_groups:
+            group = self.order_groups[group_id]
+            for order in group.orders:
+                order.cancel()
+            logger_main.info(f"Cancelled order group: {group_id}")
+        else:
+            logger_main.warning(f"Order group not found: {group_id}")
+
+    def get_order(self, order_id: str) -> Optional[Order]:
+        """
+        Retrieve an order by its ID.
+
+        Args:
+            order_id (str): The ID of the order to retrieve.
+
+        Returns:
+            Optional[Order]: The Order object if found, None otherwise.
+        """
+        return self.orders.get(order_id)
+
+    def get_group(self, group_id: str) -> Optional[OrderGroup]:
+        """
+        Retrieve an order group by its ID.
+
+        Args:
+            group_id (str): The ID of the order group to retrieve.
+
+        Returns:
+            Optional[OrderGroup]: The OrderGroup object if found, None otherwise.
+        """
+        return self.order_groups.get(group_id)
+
+    def get_active_orders(self) -> List[Order]:
+        """
+        Retrieve all active orders.
+
+        Returns:
+            List[Order]: A list of all active orders.
+        """
+        return [order for order in self.orders.values() if order.is_active]
+
+    def get_active_groups(self) -> List[OrderGroup]:
+        """
+        Retrieve all active order groups.
+
+        Returns:
+            List[OrderGroup]: A list of all active order groups.
+        """
+        return [
+            group
+            for group in self.order_groups.values()
+            if group.get_status() == "Active"
+        ]
+
+    def handle_fill_event(
+        self,
+        order_id: str,
+        fill_size: ExtendedDecimal,
+        fill_price: ExtendedDecimal,
+        timestamp: datetime,
+    ) -> None:
+        """
+        Handle a fill event for an order.
+
+        Args:
+            order_id (str): The ID of the order that was filled.
+            fill_size (ExtendedDecimal): The size of the fill.
+            fill_price (ExtendedDecimal): The price of the fill.
+            timestamp (datetime): The timestamp of the fill.
+        """
+        if order_id in self.orders:
+            order = self.orders[order_id]
+            order.on_fill(fill_size, fill_price, timestamp)
+            self.updated_orders.append(order)
+        else:
+            logger_main.warning(
+                f"Fill event received for unknown order: {order_id}. \n\n ORDERS: {self.orders}\n ORDER GROUPS: {self.order_groups}\n\n"
+            )
+
+    def handle_reject_event(self, order_id: str, reason: str) -> None:
+        """
+        Handle a reject event for an order.
+
+        Args:
+            order_id (str): The ID of the order that was rejected.
+            reason (str): The reason for the rejection.
+        """
+        if order_id in self.orders:
+            order = self.orders[order_id]
+            order.on_reject(reason)
+            self.updated_orders.append(order)
+        else:
+            logger_main.warning(f"Reject event received for unknown order: {order_id}")
+
+    def cleanup_completed_orders_and_groups(self) -> None:
+        """
+        Remove completed orders and groups from the manager.
+        """
+        self.orders = {
+            order_id: order
+            for order_id, order in self.orders.items()
+            if order.is_active
+        }
+        self.order_groups = {
+            group_id: group
+            for group_id, group in self.order_groups.items()
+            if group.get_status() == "Active"
+        }
+        logger_main.info("Cleaned up completed orders and groups")
+
+    def check_order_expiry(self, current_time: datetime) -> None:
+        """
+        Check and cancel expired orders.
+
+        Args:
+            current_time (datetime): The current timestamp to check against.
+        """
+        for order_id, order in list(self.orders.items()):
+            if order.is_expired(current_time):
+                self.cancel_order(order_id)
+                logger_main.info(f"Order {order_id} expired and cancelled.")
+
+    def get_updated_orders(self) -> List[Order]:
+        return self.updated_orders
+
+    def clear_updated_orders(self) -> None:
+        self.updated_orders.clear()
+
+    def __repr__(self) -> str:
+        """Return a string representation of the OrderManager."""
+        return f"OrderManager(active_orders={len(self.get_active_orders())}, active_groups={len(self.get_active_groups())})"
