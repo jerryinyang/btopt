@@ -14,10 +14,10 @@ from .order import (
     OCOOrderDetails,
     Order,
     OrderDetails,
-    OrderManager,
 )
 from .portfolio_managers import (
     AccountManager,
+    OrderManager,
     PositionManager,
     RiskManager,
     TradeManager,
