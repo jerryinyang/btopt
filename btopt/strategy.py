@@ -1,6 +1,5 @@
 import uuid
 from abc import abstractmethod
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .data.manager_price import PriceDataManager
@@ -534,7 +533,7 @@ class Strategy(metaclass=PreInitABCMeta):
             exectype=Order.ExecType.LIMIT
             if price is not None
             else Order.ExecType.MARKET,
-            timestamp=datetime.now(),
+            timestamp=self._engine._current_timestamp,
             timeframe=self._primary_timeframe,
             strategy_id=self._id,
             exit_loss=ExtendedDecimal(str(stop_loss))
@@ -558,7 +557,7 @@ class Strategy(metaclass=PreInitABCMeta):
                         size=ExtendedDecimal(str(size)),
                         price=ExtendedDecimal(str(take_profit)),
                         exectype=Order.ExecType.LIMIT,
-                        timestamp=datetime.now(),
+                        timestamp=self._engine._current_timestamp,
                         timeframe=self._primary_timeframe,
                         strategy_id=self._id,
                     ),
@@ -568,7 +567,7 @@ class Strategy(metaclass=PreInitABCMeta):
                         size=ExtendedDecimal(str(size)),
                         price=ExtendedDecimal(str(stop_loss)),
                         exectype=Order.ExecType.STOP,
-                        timestamp=datetime.now(),
+                        timestamp=self._engine._current_timestamp,
                         timeframe=self._primary_timeframe,
                         strategy_id=self._id,
                     ),
@@ -614,7 +613,7 @@ class Strategy(metaclass=PreInitABCMeta):
             exectype=Order.ExecType.LIMIT
             if price is not None
             else Order.ExecType.MARKET,
-            timestamp=datetime.now(),
+            timestamp=self._engine._current_timestamp,
             timeframe=self._primary_timeframe,
             strategy_id=self._id,
             exit_loss=ExtendedDecimal(str(stop_loss))
@@ -638,7 +637,7 @@ class Strategy(metaclass=PreInitABCMeta):
                         size=ExtendedDecimal(str(size)),
                         price=ExtendedDecimal(str(take_profit)),
                         exectype=Order.ExecType.LIMIT,
-                        timestamp=datetime.now(),
+                        timestamp=self._engine._current_timestamp,
                         timeframe=self._primary_timeframe,
                         strategy_id=self._id,
                     ),
@@ -648,7 +647,7 @@ class Strategy(metaclass=PreInitABCMeta):
                         size=ExtendedDecimal(str(size)),
                         price=ExtendedDecimal(str(stop_loss)),
                         exectype=Order.ExecType.STOP,
-                        timestamp=datetime.now(),
+                        timestamp=self._engine._current_timestamp,
                         timeframe=self._primary_timeframe,
                         strategy_id=self._id,
                     ),
@@ -730,7 +729,7 @@ class Strategy(metaclass=PreInitABCMeta):
                 size=ExtendedDecimal(str(size)),
                 price=ExtendedDecimal(str(limit_price)),
                 exectype=Order.ExecType.LIMIT,
-                timestamp=datetime.now(),
+                timestamp=self._engine._current_timestamp,
                 timeframe=self._primary_timeframe,
                 strategy_id=self._id,
                 **kwargs,
@@ -741,7 +740,7 @@ class Strategy(metaclass=PreInitABCMeta):
                 size=ExtendedDecimal(str(size)),
                 price=ExtendedDecimal(str(stop_price)),
                 exectype=Order.ExecType.STOP,
-                timestamp=datetime.now(),
+                timestamp=self._engine._current_timestamp,
                 timeframe=self._primary_timeframe,
                 strategy_id=self._id,
                 **kwargs,
@@ -850,11 +849,11 @@ class Strategy(metaclass=PreInitABCMeta):
             )
 
         try:
+            risk_amount = self._portfolio.calculate_risk_amount(symbol)
             position_size = self._sizer.calculate_position_size(
-                strategy=self,
-                symbol=symbol,
                 entry_price=entry_price,
                 exit_price=exit_price,
+                risk_amount=risk_amount * self._risk_percentage,
             )
             logger_main.info(f"Calculated position size: {position_size}")
             return position_size

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from decimal import ROUND_DOWN
 from typing import Any, Dict, Optional, Union
 
 from .parameters import Parameters
@@ -19,19 +20,17 @@ class Sizer(ABC):
     @abstractmethod
     def calculate_position_size(
         self,
-        strategy: StrategyType,
-        symbol: str,
         entry_price: ExtendedDecimal,
         exit_price: Optional[ExtendedDecimal],
+        risk_amount: ExtendedDecimal,
     ) -> ExtendedDecimal:
         """
         Calculate the position size based on the given parameters.
 
         Args:
-            strategy (StrategyType): The strategy object, providing context and risk parameters.
-            symbol (str): The trading symbol for which to calculate the position size.
             entry_price (ExtendedDecimal): The entry price for the trade.
-            exit_price (Optional[ExtendedDecimal]): The exit price for the trade (e.g., stop loss). If None, implementation should handle accordingly.
+            exit_price (Optional[ExtendedDecimal]): The exit price for the trade (e.g., stop loss).
+            risk_amount (ExtendedDecimal): The amount in cash to risk on the trade
 
         Returns:
             ExtendedDecimal: The calculated position size.
@@ -88,7 +87,7 @@ class NaiveSizer(Sizer):
     def __init__(self, params: Optional[Parameters] = None):
         super().__init__(params)
         self.min_position_size = self.params.get(
-            "min_position_size", ExtendedDecimal("1")
+            "min_position_size", ExtendedDecimal("0.00001")
         )
         self.max_position_size = self.params.get(
             "max_position_size", ExtendedDecimal("100000")
@@ -96,10 +95,9 @@ class NaiveSizer(Sizer):
 
     def calculate_position_size(
         self,
-        strategy: StrategyType,
-        symbol: str,
         entry_price: ExtendedDecimal,
         exit_price: Optional[ExtendedDecimal],
+        risk_amount: ExtendedDecimal,
     ) -> ExtendedDecimal:
         """
         Calculate the position size based on the strategy's risk parameters and entry price.
@@ -107,10 +105,9 @@ class NaiveSizer(Sizer):
         If exit_price is not provided, it uses entry_price as the risk per unit.
 
         Args:
-            strategy (StrategyType): The strategy object, providing context and risk parameters.
-            symbol (str): The trading symbol for which to calculate the position size.
             entry_price (ExtendedDecimal): The entry price for the trade.
             exit_price (Optional[ExtendedDecimal]): The exit price for the trade (e.g., stop loss).
+            risk_amount (ExtendedDecimal): The amount in cash to risk on the trade
 
         Returns:
             ExtendedDecimal: The calculated position size.
@@ -118,17 +115,9 @@ class NaiveSizer(Sizer):
         Raises:
             ValueError: If the input parameters are invalid or the strategy is not properly initialized.
         """
-        if not strategy._initialized:
-            raise ValueError("Strategy object has not been initialized.")
-
-        engine = strategy._engine
-        if not engine:
-            raise ValueError("Strategy engine is not initialized.")
-
-        risk_percentage = strategy.risk_percentage
 
         # Validate the calculation parameters
-        self.validate_inputs(risk_percentage, entry_price, exit_price)
+        self.validate_inputs(risk_amount, entry_price, exit_price)
 
         if exit_price is not None:
             risk_per_unit = abs(entry_price - exit_price)
@@ -136,28 +125,27 @@ class NaiveSizer(Sizer):
             risk_per_unit = entry_price
 
         if risk_per_unit == ExtendedDecimal("0"):
-            logger_main.warning("Risk per unit is zero. Using minimum position size.")
-            return self.min_position_size
-
-        # Retrieve the risk amount for the symbol from the Engine
-        risk_amount = strategy._portfolio.calculate_risk_amount(symbol)
-
-        # Apply the strategy's risk percentage to the risk amount
-        strategy_risk_amount = risk_amount * risk_percentage
+            logger_main.log_and_raise(ValueError("Risk per unit cannot be zero."))
 
         # Calculate the position size
-        position_size = strategy_risk_amount / risk_per_unit
+        position_size = risk_amount / risk_per_unit
+
+        logger_main.warning(
+            f"<<< CALCULATING POSITION SIZE >>>\nRISK AMOUNT: {risk_amount}\nRISK PER UNIT: {risk_per_unit}\nPOSITION SIZE: {position_size}"
+        )
 
         # Apply min and max position size constraints
         position_size = max(
             min(position_size, self.max_position_size), self.min_position_size
         )
 
-        return position_size.quantize(ExtendedDecimal("1"))  # Round to whole units
+        return position_size.quantize(
+            ExtendedDecimal("0.01"), rounding=ROUND_DOWN
+        )  # Round to fractional units
 
     def validate_inputs(
         self,
-        risk_percentage: ExtendedDecimal,
+        risk_amount: ExtendedDecimal,
         entry_price: ExtendedDecimal,
         exit_price: Optional[ExtendedDecimal],
     ) -> None:
@@ -165,18 +153,16 @@ class NaiveSizer(Sizer):
         Validate the inputs for the position size calculation.
 
         Args:
-            risk_percentage (ExtendedDecimal): The amount of risk to take on the trade.
+            risk_amount (ExtendedDecimal): The amount of risk to take on the trade.
             entry_price (ExtendedDecimal): The entry price for the trade.
             exit_price (Optional[ExtendedDecimal]): The exit price for the trade.
 
         Raises:
             ValueError: If any of the inputs are invalid.
         """
-        if risk_percentage <= ExtendedDecimal("0") or risk_percentage > ExtendedDecimal(
-            "1"
-        ):
-            logger_main.error(f"Invalid risk amount: {risk_percentage}")
-            raise ValueError("Risk amount must be a positive decimal between 0 and 1")
+        if risk_amount <= ExtendedDecimal("0"):
+            logger_main.error(f"Invalid risk amount: {risk_amount}")
+            raise ValueError("Risk amount must be a positive decimal, greater than 0")
 
         if entry_price <= ExtendedDecimal("0"):
             logger_main.error(f"Invalid entry price: {entry_price}")

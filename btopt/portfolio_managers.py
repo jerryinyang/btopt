@@ -37,6 +37,10 @@ class OrderManager:
         self.orders[order_id] = order
         self.updated_orders.append(order)
         logger_main.info(f"Created order: {order}")
+
+        logger_main.warning(
+            f"\n\n----- NEW ORDER -----\nORDER: {order}\nSIZE: {order.details.size}\nTIMESTAMP: {order.details.timestamp}"
+        )
         return order
 
     def create_oco_group(self, order1: Order, order2: Order) -> OCOGroup:
@@ -170,6 +174,9 @@ class OrderManager:
             is_filled, fill_price = order.is_filled(current_bar)
 
             if is_filled:
+                logger_main.warning(
+                    f"\n\n---- ORDER FILLED -----\nORDER: {order}\nTIMESTAMP: {order.get_last_fill_timestamp()}"
+                )
                 order.on_fill(order.get_remaining_size(), fill_price, timestamp)
                 processed_orders.append(order)
                 self.updated_orders.append(order)
@@ -699,16 +706,17 @@ class RiskManager:
     def __init__(
         self,
         initial_capital: ExtendedDecimal,
-        max_position_size: ExtendedDecimal = ExtendedDecimal("1"),
+        max_risk: ExtendedDecimal = ExtendedDecimal("1"),
         max_risk_per_trade: ExtendedDecimal = ExtendedDecimal("1"),
         max_risk_per_symbol: ExtendedDecimal = ExtendedDecimal("1"),
-        max_drawdown: ExtendedDecimal = ExtendedDecimal("1"),
+        max_drawdown: ExtendedDecimal = ExtendedDecimal("0.9"),
         var_confidence_level: float = 0.95,
         margin_ratio: ExtendedDecimal = ExtendedDecimal("0.01"),
         margin_call_threshold: ExtendedDecimal = ExtendedDecimal("0.01"),
+        symbols: List[str] = [],
     ):
         self.initial_capital = initial_capital
-        self.max_position_size = max_position_size
+        self.max_risk = max_risk
         self.max_risk_per_trade = max_risk_per_trade
         self.max_risk_per_symbol = max_risk_per_symbol
         self.max_drawdown = max_drawdown
@@ -716,21 +724,50 @@ class RiskManager:
         self.margin_ratio = margin_ratio
         self.margin_call_threshold = margin_call_threshold
         self.equity_history: List[ExtendedDecimal] = [initial_capital]
+        self.symbol_weights: Dict[str, ExtendedDecimal] = {}
+        self._initialize_symbol_weights(symbols)
 
-    def calculate_position_size(
-        self,
-        account_value: ExtendedDecimal,
-        entry_price: ExtendedDecimal,
-        stop_loss: ExtendedDecimal,
+    def _initialize_symbol_weights(self, symbols: List[str]) -> None:
+        """Initialize symbol weights equally among all symbols."""
+        if symbols:
+            weight = ExtendedDecimal("1") / ExtendedDecimal(str(len(symbols)))
+            self.symbol_weights = {symbol: weight for symbol in symbols}
+
+    def set_symbol_weights(self, weights: Dict[str, ExtendedDecimal]) -> None:
+        """Set and normalize symbol weights."""
+        total_weight = sum(weights.values())
+        if total_weight > ExtendedDecimal("1"):
+            normalized_weights = {
+                symbol: weight / total_weight for symbol, weight in weights.items()
+            }
+        else:
+            normalized_weights = weights
+
+        for symbol, weight in normalized_weights.items():
+            if weight > self.max_risk_per_symbol:
+                normalized_weights[symbol] = self.max_risk_per_symbol
+
+        self.symbol_weights = normalized_weights
+
+    def get_symbol_weight(self, symbol: str) -> ExtendedDecimal:
+        """Get the weight for a specific symbol."""
+        return self.symbol_weights.get(symbol, ExtendedDecimal("0"))
+
+    def get_all_symbol_weights(self) -> Dict[str, ExtendedDecimal]:
+        """Get all symbol weights."""
+        return self.symbol_weights.copy()
+
+    def set_all_symbol_weights(self, weights: Dict[str, ExtendedDecimal]) -> None:
+        """Set weights for all symbols."""
+        self.set_symbol_weights(weights)
+
+    def calculate_risk_amount(
+        self, symbol: str, account_value: ExtendedDecimal
     ) -> ExtendedDecimal:
-        risk_amount = account_value * self.max_risk_per_trade
-        price_difference = abs(entry_price - stop_loss)
-        position_size = (
-            risk_amount / price_difference
-            if price_difference != ExtendedDecimal("0")
-            else ExtendedDecimal("0")
-        )
-        return min(position_size, self.max_position_size)
+        """Calculate the risk amount for a specific symbol."""
+        symbol_weight = self.get_symbol_weight(symbol)
+        risk_amount = account_value * self.max_risk * symbol_weight
+        return min(risk_amount, account_value * self.max_risk_per_trade)
 
     def check_risk_limits(
         self,

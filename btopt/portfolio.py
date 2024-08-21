@@ -33,7 +33,7 @@ class Portfolio:
     """
     A comprehensive portfolio management class that coordinates between various specialized managers.
 
-    to specialized manager classes and maintaining overall portfolio state.
+    This class is responsible for delegating tasks to specialized manager classes and maintaining overall portfolio state.
     """
 
     def __init__(
@@ -59,10 +59,12 @@ class Portfolio:
         self.trade_manager = TradeManager(commission_rate)
         self.account_manager = AccountManager(initial_capital, margin_ratio)
         self.position_manager = PositionManager()
-        self.risk_manager = RiskManager(**risk_manager_config)
+        self.risk_manager = RiskManager(
+            symbols=engine._dataview.symbols,
+            **risk_manager_config,
+        )
 
         self.reporter: Optional[Reporter] = None
-        self._symbol_weights: Dict[str, ExtendedDecimal] = {}
         self.metrics = pd.DataFrame(
             columns=[
                 "timestamp",
@@ -76,7 +78,7 @@ class Portfolio:
             ]
         )
 
-        self._initialize_symbol_weights()
+    # region Update Methods
 
     def update(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
@@ -233,32 +235,9 @@ class Portfolio:
             return float((current_equity - previous_equity) / previous_equity)
         return 0.0
 
-    def _handle_margin_call(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
-        """
-        Handle a margin call by closing positions as necessary.
+    # endregion
 
-        Args:
-            market_data: The current market data for all symbols and timeframes.
-        """
-        current_prices = self._get_current_prices()
-        positions_to_close = self.risk_manager.handle_margin_call(
-            self.position_manager.get_all_positions(), current_prices
-        )
-
-        for order in positions_to_close:
-            self._handle_filled_order(order, market_data)
-
-    def _get_current_prices(self) -> Dict[str, ExtendedDecimal]:
-        """
-        Get the current prices for all symbols in the portfolio.
-
-        Returns:
-            A dictionary mapping symbols to their current prices.
-        """
-        return {
-            symbol: self.engine.get_current_data(symbol).close
-            for symbol in self._symbol_weights
-        }
+    # region Order Management
 
     def create_order(self, order_details: OrderDetails) -> Order:
         """
@@ -366,6 +345,10 @@ class Portfolio:
         """
         return self.order_manager.cancel_order(order_id)
 
+    # endregion
+
+    # region Position Management
+
     def close_all_positions(self, timestamp: datetime) -> None:
         """
         Close all open positions in the portfolio.
@@ -425,6 +408,19 @@ class Portfolio:
         position = self.position_manager.get_position(symbol)
         return position.quantity if position else ExtendedDecimal("0")
 
+    def get_all_positions(self) -> Dict[str, ExtendedDecimal]:
+        """
+        Get all current positions.
+
+        Returns:
+            A dictionary mapping symbols to their current position sizes.
+        """
+        return self.position_manager.get_all_positions()
+
+    # endregion
+
+    # region Account Management
+
     def get_account_value(self) -> ExtendedDecimal:
         """
         Get the current total account value (equity).
@@ -443,18 +439,9 @@ class Portfolio:
         """
         return self.account_manager.buying_power
 
-    def get_open_trades(self, strategy_id: Optional[str] = None) -> List[Trade]:
-        """
-        Get all open trades, optionally filtered by strategy ID.
+    # endregion
 
-        Args:
-            strategy_id: The ID of the strategy to filter trades for.
-
-        Returns:
-            A list of open trades.
-        """
-        return self.trade_manager.get_open_trades(strategy_id)
-
+    # region Trade Management
     def get_closed_trades(self, strategy_id: Optional[str] = None) -> List[Trade]:
         """
         Get all closed trades, optionally filtered by strategy ID.
@@ -467,14 +454,9 @@ class Portfolio:
         """
         return self.trade_manager.get_closed_trades(strategy_id)
 
-    def get_all_positions(self) -> Dict[str, ExtendedDecimal]:
-        """
-        Get all current positions.
+    # endregion
 
-        Returns:
-            A dictionary mapping symbols to their current position sizes.
-        """
-        return self.position_manager.get_all_positions()
+    # region Portfolio State and Reporting
 
     def get_portfolio_state(self) -> Dict[str, Any]:
         """
@@ -520,101 +502,6 @@ class Portfolio:
         else:
             logger_main.warning("No Reporter set. Unable to generate report.")
 
-    def calculate_risk_amount(self, symbol: str) -> ExtendedDecimal:
-        """
-        Calculate the risk amount for a specific symbol.
-
-        Args:
-            symbol: The symbol to calculate the risk amount for.
-
-        Returns:
-            The calculated risk amount.
-        """
-        return self.risk_manager.calculate_position_size(
-            self.account_manager.equity,
-            self._get_current_prices()[symbol],
-            self.risk_manager.max_risk_per_trade,
-        )
-
-    def _initialize_symbol_weights(self) -> None:
-        symbols = self.engine._dataview.symbols
-        weight = ExtendedDecimal("1") / ExtendedDecimal(str(len(symbols)))
-        for symbol in symbols:
-            self._symbol_weights[symbol] = weight
-
-    def set_symbol_weight(self, symbol: str, weight: float) -> None:
-        """
-        Set the weight for a specific symbol in the portfolio.
-
-        Args:
-            symbol: The symbol to set the weight for.
-            weight: The new weight for the symbol (between 0 and 1).
-
-        Raises:
-            ValueError: If the weight is not between 0 and 1 or if the symbol is not in the portfolio.
-        """
-        if symbol not in self._symbol_weights:
-            raise ValueError(f"Symbol {symbol} not found in portfolio")
-        if not 0 <= weight <= 1:
-            raise ValueError("Weight must be between 0 and 1")
-
-        self._symbol_weights[symbol] = ExtendedDecimal(str(weight))
-        self._normalize_weights()
-
-    def get_symbol_weight(self, symbol: str) -> ExtendedDecimal:
-        """
-        Get the weight of a specific symbol in the portfolio.
-
-        Args:
-            symbol: The symbol to get the weight for.
-
-        Returns:
-            The weight of the symbol.
-
-        Raises:
-            KeyError: If the symbol is not found in the portfolio.
-        """
-        if symbol not in self._symbol_weights:
-            raise KeyError(f"Symbol {symbol} not found in portfolio")
-        return self._symbol_weights[symbol]
-
-    def set_all_symbol_weights(self, weights: Dict[str, float]) -> None:
-        """
-        Set weights for all symbols in the portfolio.
-
-        Args:
-            weights: A dictionary mapping symbols to their weights.
-
-        Raises:
-            ValueError: If any weight is not between 0 and 1 or if any symbol is not in the portfolio.
-        """
-        for symbol, weight in weights.items():
-            if symbol not in self._symbol_weights:
-                raise ValueError(f"Symbol {symbol} not found in portfolio")
-            if not 0 <= weight <= 1:
-                raise ValueError(f"Weight for {symbol} must be between 0 and 1")
-            self._symbol_weights[symbol] = ExtendedDecimal(str(weight))
-
-        self._normalize_weights()
-
-    def get_all_symbol_weights(self) -> Dict[str, ExtendedDecimal]:
-        """
-        Get the weights of all symbols in the portfolio.
-
-        Returns:
-            A dictionary mapping symbols to their weights.
-        """
-        return self._symbol_weights.copy()
-
-    def _normalize_weights(self) -> None:
-        """
-        Normalize the symbol weights to ensure they sum to 1 (100%).
-        """
-        total_weight = sum(self._symbol_weights.values())
-        if total_weight > 0:
-            for symbol in self._symbol_weights:
-                self._symbol_weights[symbol] /= total_weight
-
     def get_metrics_data(self) -> pd.DataFrame:
         """
         Retrieve the complete metrics DataFrame.
@@ -646,21 +533,6 @@ class Portfolio:
                 "No Reporter set. Unable to calculate performance metrics."
             )
             return {}
-
-    def handle_order_group_events(self) -> None:
-        """
-        Handle events from order groups (e.g., when an OCO order is filled).
-        """
-        self.order_manager.handle_order_group_events()
-
-    def update_risk_parameters(self, **kwargs: Any) -> None:
-        """
-        Update risk management parameters.
-
-        Args:
-            **kwargs: Risk management parameters to update.
-        """
-        self.risk_manager.update_parameters(**kwargs)
 
     def get_trade_history(self) -> List[Dict[str, Any]]:
         """
@@ -695,22 +567,27 @@ class Portfolio:
             )
             return 0.0
 
-    def reset(self) -> None:
+    def get_drawdown_details(self) -> pd.DataFrame:
         """
-        Reset the portfolio to its initial state.
+        Get detailed information about drawdowns.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing drawdown details.
         """
-        self.__init__(
-            self.engine,
-            self.account_manager.initial_capital,
-            self.trade_manager.commission_rate,
-            self.account_manager.margin_ratio,
-            {
-                attr: getattr(self.risk_manager, attr)
-                for attr in self.risk_manager.__dict__
-                if not attr.startswith("_")
-            },
+        if self.reporter:
+            return self.reporter.get_drawdown_details()
+        else:
+            logger_main.warning("No Reporter set. Unable to get drawdown details.")
+            return pd.DataFrame()
+
+    # endregion
+
+    # region Risk Management
+    def calculate_risk_amount(self, symbol: str) -> ExtendedDecimal:
+        """Calculate the risk amount for a specific symbol."""
+        return self.risk_manager.calculate_risk_amount(
+            symbol, self.account_manager.equity
         )
-        logger_main.info("Portfolio reset to initial state.")
 
     def _handle_margin_call(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
         """
@@ -769,7 +646,7 @@ class Portfolio:
             size=abs(size),
             price=None,  # Market order
             exectype=Order.ExecType.MARKET,
-            timestamp=datetime.now(),
+            timestamp=self.engine._current_timestamp,
             timeframe=self.engine.default_timeframe,
             strategy_id="MARGIN_CALL",
         )
@@ -780,15 +657,77 @@ class Portfolio:
         # Implementation depends on your notification system
         pass
 
-    def get_drawdown_details(self) -> pd.DataFrame:
+    def update_risk_parameters(self, **kwargs: Any) -> None:
         """
-        Get detailed information about drawdowns.
+        Update risk management parameters.
+
+        Args:
+            **kwargs: Risk management parameters to update.
+        """
+        self.risk_manager.update_parameters(**kwargs)
+
+    # endregion
+
+    # region Symbol Weight Management
+    def set_symbol_weight(self, symbol: str, weight: float) -> None:
+        """Set the weight for a specific symbol."""
+        self.risk_manager.set_symbol_weights({symbol: ExtendedDecimal(str(weight))})
+
+    def get_symbol_weight(self, symbol: str) -> float:
+        """Get the weight of a specific symbol."""
+        return float(self.risk_manager.get_symbol_weight(symbol))
+
+    def set_all_symbol_weights(self, weights: Dict[str, float]) -> None:
+        """Set weights for all symbols."""
+        extended_weights = {
+            symbol: ExtendedDecimal(str(weight)) for symbol, weight in weights.items()
+        }
+        self.risk_manager.set_all_symbol_weights(extended_weights)
+
+    def get_all_symbol_weights(self) -> Dict[str, float]:
+        """Get weights for all symbols."""
+        return {
+            symbol: float(weight)
+            for symbol, weight in self.risk_manager.get_all_symbol_weights().items()
+        }
+
+    # endregion
+
+    # region Utility Methods
+
+    def _get_current_prices(self) -> Dict[str, ExtendedDecimal]:
+        """
+        Get the current prices for all symbols in the portfolio.
 
         Returns:
-            pd.DataFrame: A DataFrame containing drawdown details.
+            A dictionary mapping symbols to their current prices.
         """
-        if self.reporter:
-            return self.reporter.get_drawdown_details()
-        else:
-            logger_main.warning("No Reporter set. Unable to get drawdown details.")
-            return pd.DataFrame()
+        return {
+            symbol: self.engine.get_current_data(symbol).close
+            for symbol in self.engine._dataview.symbols
+        }
+
+    def handle_order_group_events(self) -> None:
+        """
+        Handle events from order groups (e.g., when an OCO order is filled).
+        """
+        self.order_manager.handle_order_group_events()
+
+    def reset(self) -> None:
+        """
+        Reset the portfolio to its initial state.
+        """
+        self.__init__(
+            self.engine,
+            self.account_manager.initial_capital,
+            self.trade_manager.commission_rate,
+            self.account_manager.margin_ratio,
+            {
+                attr: getattr(self.risk_manager, attr)
+                for attr in self.risk_manager.__dict__
+                if not attr.startswith("_")
+            },
+        )
+        logger_main.info("Portfolio reset to initial state.")
+
+    # endregion

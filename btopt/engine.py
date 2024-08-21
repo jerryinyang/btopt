@@ -547,7 +547,7 @@ class Engine:
             "initial_capital": ExtendedDecimal(
                 str(self._config.get("initial_capital", 100000))
             ),
-            "max_position_size": ExtendedDecimal(
+            "max_risk": ExtendedDecimal(
                 str(self._config.get("max_position_size", "1"))
             ),
             "max_risk_per_trade": ExtendedDecimal(
@@ -556,7 +556,9 @@ class Engine:
             "max_risk_per_symbol": ExtendedDecimal(
                 str(self._config.get("max_risk_per_symbol", "1"))
             ),
-            "max_drawdown": ExtendedDecimal(str(self._config.get("max_drawdown", "1"))),
+            "max_drawdown": ExtendedDecimal(
+                str(self._config.get("max_drawdown", "0.9"))
+            ),
             "var_confidence_level": float(
                 self._config.get("var_confidence_level", 0.95)
             ),
@@ -612,12 +614,12 @@ class Engine:
             self._update_strategy_data(strategy, data_point)
             strategy._on_data()
 
-        # # Notify strategies of updates
-        # self._notify_strategies()
+        # Notify strategies of updates
+        self._notify_strategies()
 
-        # # Clear updated orders and trades in the portfolio
-        # self.portfolio.order_manager.clear_updated_orders()
-        # self.portfolio.trade_manager.clear_updated_trades()
+        # Clear updated orders and trades in the portfolio
+        self.portfolio.order_manager.clear_updated_orders()
+        self.portfolio.trade_manager.clear_updated_trades()
 
     def _update_strategy_data(
         self, strategy: Strategy, data_point: Dict[str, Dict[Timeframe, Bar]]

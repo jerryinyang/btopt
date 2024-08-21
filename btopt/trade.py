@@ -213,7 +213,7 @@ class Trade:
 
     def duration(self) -> timedelta:
         """Calculates the duration of the trade."""
-        end_time = self.exit_timestamp or datetime.now()
+        end_time = self.exit_timestamp  # or datetime.now()
         return end_time - self.entry_timestamp
 
     def get_average_entry_price(self) -> ExtendedDecimal:
