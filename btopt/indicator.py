@@ -288,7 +288,7 @@ class Indicator(metaclass=PreInitABCMeta):
             if symbol is None:
                 symbol = self._symbols[0]
             elif symbol not in self._symbols:
-                raise ValueError(f"Invalid symbol: {symbol}")
+                logger_main.log_and_raise(ValueError(f"Invalid symbol: {symbol}"))
 
             # Validate and set timeframe
             if timeframe is None:
@@ -296,19 +296,23 @@ class Indicator(metaclass=PreInitABCMeta):
             elif isinstance(timeframe, str):
                 timeframe = Timeframe(timeframe)
             if timeframe not in self._timeframes:
-                raise ValueError(f"Invalid timeframe: {timeframe}")
+                logger_main.log_and_raise(ValueError(f"Invalid timeframe: {timeframe}"))
 
             # Fetch and return the data
             data = self._strategy.datas[symbol][timeframe][output_name]
             if index >= len(data):
-                raise IndexError(
-                    f"Index {index} out of range. Available data points: {len(data)}"
+                logger_main.log_and_raise(
+                    IndexError(
+                        f"Index {index} out of range. Available data points: {len(data)}"
+                    )
                 )
 
             return data[index]
 
         except Exception as e:
-            logger_main.error(f"Error in get method of Indicator {self.name}: {str(e)}")
+            logger_main.log_and_raise(
+                f"Error in get method of Indicator {self.name}: {str(e)}"
+            )
             raise
 
     def __repr__(self) -> str:

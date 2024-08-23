@@ -331,7 +331,9 @@ class Portfolio:
         elif isinstance(order_details, BracketOrderDetails):
             return self.create_bracket_order(order_details)
         else:
-            raise ValueError(f"Invalid order details type: {type(order_details)}")
+            logger_main.log_and_raise(
+                ValueError(f"Invalid order details type: {type(order_details)}")
+            )
 
     def cancel_order(self, order_id: str) -> bool:
         """
@@ -606,7 +608,7 @@ class Portfolio:
             )
 
             if position_to_reduce is None:
-                logger_main.error(
+                logger_main.log_and_raise(
                     "Unable to resolve margin call. No suitable positions to reduce."
                 )
                 break

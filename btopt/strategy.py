@@ -105,9 +105,11 @@ class Strategy(metaclass=PreInitABCMeta):
         """
 
         if self._primary_symbol is not None:
-            raise ValueError("Strategy is already initialized.")
+            logger_main.log_and_raise(ValueError("Strategy is already initialized."))
         if not symbols:
-            raise ValueError("At least one symbol must be provided.")
+            logger_main.log_and_raise(
+                ValueError("At least one symbol must be provided.")
+            )
 
         default_timeframe = min(timeframes)
         self._primary_timeframe = self._primary_timeframe or default_timeframe
@@ -121,7 +123,9 @@ class Strategy(metaclass=PreInitABCMeta):
             self._primary_timeframe = default_timeframe
 
         if self._engine.portfolio is None:
-            raise ValueError("Engine's portfolio is not initialized.")
+            logger_main.log_and_raise(
+                ValueError("Engine's portfolio is not initialized.")
+            )
         self._portfolio = self._engine.portfolio
 
         # Create PriceDataManager objects for each symbol
@@ -165,8 +169,11 @@ class Strategy(metaclass=PreInitABCMeta):
             TypeError: If the provided sizer is not an instance of Sizer.
         """
         if not isinstance(sizer, Sizer):
-            logger_main.error(f"Invalid position sizer type: {type(sizer)}")
-            raise TypeError("sizer must be an instance of Sizer")
+            logger_main.log_and_raise(
+                TypeError(
+                    "Invalid position sizer type: {type(sizer)}. sizer must be an instance of Sizer"
+                )
+            )
 
         self._sizer = sizer
         logger_main.info(f"Position sizer updated to: {sizer.get_info()['name']}")
@@ -218,7 +225,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the value is not a positive integer.
         """
         if not isinstance(value, int) or value <= 0:
-            raise ValueError("max_bars_back must be a positive integer.")
+            logger_main.log_and_raise(
+                ValueError("max_bars_back must be a positive integer.")
+            )
         self._max_bars_back = value
         if self._engine:
             self._engine.update_strategy_max_bars_back(self._id, value)
@@ -246,7 +255,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the value is not between 0 and 1.
         """
         if not 0 <= value <= 1:
-            raise ValueError("Risk percentage must be between 0 and 1")
+            logger_main.log_and_raise(
+                ValueError("Risk percentage must be between 0 and 1")
+            )
         self._risk_percentage = ExtendedDecimal(str(value))
         logger_main.info(f"Updated risk percentage to {value}")
 
@@ -272,7 +283,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the value is not a positive integer.
         """
         if not isinstance(value, int) or value <= 0:
-            raise ValueError("warmup_period must be a positive integer.")
+            logger_main.log_and_raise(
+                ValueError("warmup_period must be a positive integer.")
+            )
         self._warmup_period = value
         logger_main.info(f"Updated warmup_period to {value}")
 
@@ -296,7 +309,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy hasn't been initialized or if there's no primary symbol set.
         """
         if self._primary_symbol is None:
-            raise ValueError("No primary symbol set for the strategy.")
+            logger_main.log_and_raise(
+                ValueError("No primary symbol set for the strategy.")
+            )
         return self.datas[self._primary_symbol]
 
     def get_data(self, symbol: Optional[str] = None) -> PriceDataManager:
@@ -317,7 +332,9 @@ class Strategy(metaclass=PreInitABCMeta):
         """
         symbol = symbol or self._primary_symbol
         if symbol not in self.datas:
-            raise ValueError(f"No data available for symbol: {symbol}")
+            logger_main.log_and_raise(
+                ValueError(f"No data available for symbol: {symbol}")
+            )
         return self.datas[symbol]
 
     def get_data_timeframe(self, symbol: str, timeframe: Timeframe) -> PriceDataManager:
@@ -335,7 +352,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the requested symbol is not found.
         """
         if symbol not in self.datas:
-            raise ValueError(f"Symbol {symbol} not found in strategy data.")
+            logger_main.log_and_raise(
+                ValueError(f"Symbol {symbol} not found in strategy data.")
+            )
         return self.datas[symbol][timeframe]
 
     def get_data_length(
@@ -484,8 +503,10 @@ class Strategy(metaclass=PreInitABCMeta):
             AttributeError: If the specified output does not exist for the indicator.
         """
         if indicator_name not in self._indicators:
-            raise KeyError(
-                f"Indicator '{indicator_name}' does not exist in this strategy"
+            logger_main.log_and_raise(
+                KeyError(
+                    f"Indicator '{indicator_name}' does not exist in this strategy"
+                )
             )
 
         return self._indicators[indicator_name].get(output_name)
@@ -523,7 +544,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         order_details = OrderDetails(
             ticker=symbol,
@@ -603,7 +626,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         order_details = OrderDetails(
             ticker=symbol,
@@ -669,7 +694,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         return self._portfolio.close_positions(
             strategy_id=self._id, symbol=symbol, size=size
@@ -689,7 +716,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         return self._portfolio.cancel_order(order_id)
 
@@ -720,7 +749,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         oco_details = OCOOrderDetails(
             limit_order=OrderDetails(
@@ -764,7 +795,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         return self._portfolio.get_trades_for_strategy(self._id)
 
@@ -779,7 +812,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         return self._portfolio.get_pending_orders_for_strategy(self._id)
 
@@ -794,7 +829,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         return self._portfolio.get_positions_for_strategy(self._id)
 
@@ -812,7 +849,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         return self._portfolio.get_position_size(symbol)
 
@@ -841,11 +880,15 @@ class Strategy(metaclass=PreInitABCMeta):
             RuntimeError: If the sizer is not set.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         if not hasattr(self, "_sizer") or self._sizer is None:
-            raise RuntimeError(
-                "Position sizer must be set before calculating position size"
+            logger_main.log_and_raise(
+                RuntimeError(
+                    "Position sizer must be set before calculating position size"
+                )
             )
 
         try:
@@ -858,7 +901,7 @@ class Strategy(metaclass=PreInitABCMeta):
             logger_main.info(f"Calculated position size: {position_size}")
             return position_size
         except ValueError as e:
-            logger_main.error(f"Position size calculation failed: {str(e)}")
+            logger_main.log_and_raise(f"Position size calculation failed: {str(e)}")
             raise
 
     def validate_position_size(
@@ -887,7 +930,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the position size is 0 or negative, or if it's below the minimum allowed size.
         """
         if position_size <= 0:
-            raise ValueError("Calculated position size must be greater than 0.")
+            logger_main.log_and_raise(
+                ValueError("Calculated position size must be greater than 0.")
+            )
 
         if min_position_size is not None and position_size < min_position_size:
             logger_main.warning(
@@ -915,7 +960,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy is not connected to a portfolio.
         """
         if not hasattr(self, "_portfolio") or self._portfolio is None:
-            raise ValueError("Strategy is not connected to a portfolio.")
+            logger_main.log_and_raise(
+                ValueError("Strategy is not connected to a portfolio.")
+            )
 
         return self._portfolio.get_strategy_performance(self._id)
 
@@ -1011,7 +1058,9 @@ class Strategy(metaclass=PreInitABCMeta):
             ValueError: If the strategy hasn't been initialized or if there's no primary symbol set.
         """
         if not self._primary_symbol or not self._primary_timeframe:
-            raise ValueError("Strategy has not been properly initialized.")
+            logger_main.log_and_raise(
+                ValueError("Strategy has not been properly initialized.")
+            )
         return self.get_data_length(self._primary_symbol, self._primary_timeframe)
 
     # endregion

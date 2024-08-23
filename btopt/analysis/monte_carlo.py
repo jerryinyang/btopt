@@ -6,6 +6,7 @@ import pandas as pd
 import seaborn as sns
 
 from ..reporter import Reporter
+from ..util.log_config import logger_main
 from .stress_test import StressTest
 
 
@@ -58,8 +59,10 @@ class MonteCarloTest(StressTest):
         elif self.simulation_method == "resample":
             return self._monte_carlo_resample()
         else:
-            raise ValueError(
-                "Invalid simulation method. Choose 'reshuffle' or 'resample'."
+            logger_main.log_and_raise(
+                ValueError(
+                    "Invalid simulation method. Choose 'reshuffle' or 'resample'."
+                )
             )
 
     def _monte_carlo_reshuffle(self) -> np.ndarray:

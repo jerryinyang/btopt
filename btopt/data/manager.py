@@ -104,11 +104,15 @@ class DataManager:
             timeframe = self.primary_timeframe
 
         if timeframe not in self._data:
-            raise ValueError(f"No data available for timeframe: {timeframe}")
+            logger_main.log_and_raise(
+                ValueError(f"No data available for timeframe: {timeframe}")
+            )
 
         if column is not None and column not in self._data[timeframe]:
-            raise ValueError(
-                f"Column '{column}' does not exist for timeframe: {timeframe}"
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Column '{column}' does not exist for timeframe: {timeframe}"
+                )
             )
 
         end_index = min(index + size, self._max_length)
@@ -147,7 +151,9 @@ class DataManager:
             timeframe = self.primary_timeframe
 
         if timeframe not in self._timestamps:
-            raise ValueError(f"No data available for timeframe: {timeframe}")
+            logger_main.log_and_raise(
+                ValueError(f"No data available for timeframe: {timeframe}")
+            )
 
         current_timestamp = self._timestamps[timeframe][0]
 
@@ -171,7 +177,9 @@ class DataManager:
             KeyError: If the specified timeframe does not exist.
         """
         if timeframe not in self._data:
-            raise KeyError(f"No data available for timeframe: {timeframe}")
+            logger_main.log_and_raise(
+                KeyError(f"No data available for timeframe: {timeframe}")
+            )
         return DataTimeframeManager(self, timeframe)
 
     @property
@@ -191,8 +199,9 @@ class DataManager:
             ValueError: If the value is not a positive integer.
         """
         if value <= 0:
-            raise ValueError("max_length must be a positive integer.")
-
+            logger_main.log_and_raise(
+                ValueError("max_length must be a positive integer.")
+            )
         old_max_length = self._max_length
         self._max_length = value
 
@@ -282,14 +291,18 @@ class DataTimeframeManager:
         """
         if isinstance(key, str):
             if key not in self._data._data[self._timeframe]:
-                raise KeyError(
-                    f"Column '{key}' does not exist for timeframe: {self._timeframe}"
+                logger_main.log_and_raise(
+                    KeyError(
+                        f"Column '{key}' does not exist for timeframe: {self._timeframe}"
+                    )
                 )
             return self._data._data[self._timeframe][key]
         elif isinstance(key, (int, slice)):
             return self._data.get(self._timeframe, index=key)
         else:
-            raise TypeError("Key must be a string, integer, or slice.")
+            logger_main.log_and_raise(
+                TypeError("Key must be a string, integer, or slice.")
+            )
 
     def __getattr__(self, name: str) -> ReadOnlyColumnAccessor:
         """
@@ -306,8 +319,10 @@ class DataTimeframeManager:
         """
         if name in self._data._data[self._timeframe]:
             return ReadOnlyColumnAccessor(self._data, self._timeframe, name)
-        raise AttributeError(
-            f"Column '{name}' does not exist for timeframe: {self._timeframe}"
+        logger_main.log_and_raise(
+            AttributeError(
+                f"Column '{name}' does not exist for timeframe: {self._timeframe}"
+            )
         )
 
     def __len__(self) -> int:

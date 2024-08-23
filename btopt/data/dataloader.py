@@ -388,10 +388,12 @@ class YFDataloader(BaseDataLoader):
                         if data is not None:
                             results[symbol] = data
                     except Exception as e:
-                        logger_main.error(f"Error fetching data for {symbol}: {e}")
+                        logger_main.log_and_raise(
+                            f"Error fetching data for {symbol}: {e}"
+                        )
             return results
         except Exception as e:
-            logger_main.error(f"Error in data fetching process: {e}")
+            logger_main.log_and_raise(f"Error in data fetching process: {e}")
             logger_main.log_and_raise(RuntimeError(f"Failed to fetch data: {e}"))
 
     def _fetch_symbol_data(self, symbol: str) -> Union[pd.DataFrame, None]:
@@ -432,7 +434,7 @@ class YFDataloader(BaseDataLoader):
             return data
 
         except Exception as e:
-            logger_main.error(f"Failed to fetch data for {symbol}: {e}")
+            logger_main.log_and_raise(f"Failed to fetch data for {symbol}: {e}")
             return None
 
 
@@ -461,7 +463,7 @@ class CSVDataLoader(BaseDataLoader):
                 if data is not None:
                     results[symbol] = data
             except Exception as e:
-                logger_main.error(f"Error fetching data for {symbol}: {e}")
+                logger_main.log_and_raise(f"Error fetching data for {symbol}: {e}")
         return results
 
     def _get_ticker_data(self, symbol: str) -> Optional[pd.DataFrame]:
@@ -507,7 +509,7 @@ class CSVDataLoader(BaseDataLoader):
                     )
                     return data
                 except Exception as e:
-                    logger_main.error(
+                    logger_main.log_and_raise(
                         f"Error reading parquet file for {symbol} at {file_path}: {e}"
                     )
                     continue
@@ -575,7 +577,7 @@ class MySQLDataLoader(BaseDataLoader):
             return results
 
         except connector.Error as err:
-            logger_main.error(f"MySQL Error: {err}")
+            logger_main.log_and_raise(f"MySQL Error: {err}")
             logger_main.log_and_raise(
                 RuntimeError(f"Failed to fetch data from MySQL: {err}")
             )

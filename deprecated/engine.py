@@ -7,8 +7,8 @@ from .data.bar import Bar
 from .data.dataloader import BaseDataLoader
 from .data.dataview import DataView
 from .data.timeframe import Timeframe
-from .order import Order
 from .old_portfolio import Portfolio
+from .order import Order
 from .reporter import Reporter
 from .strategy import Strategy
 from .trade import Trade
@@ -869,7 +869,7 @@ class Engine:
             return position_size
 
         except Exception as e:
-            logger_main.error(
+            logger_main.log_and_raise(
                 f"Error calculating position size for strategy {strategy_id}, symbol {symbol}: {str(e)}"
             )
             raise ValueError(f"Failed to calculate position size: {str(e)}")

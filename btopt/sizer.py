@@ -12,7 +12,9 @@ class Sizer(ABC):
     def __init__(self, params: Optional[Parameters] = None):
         if params:
             if not isinstance(params, Parameters):
-                raise TypeError("params must be an instance of Parameters")
+                logger_main.log_and_raise(
+                    TypeError("params must be an instance of Parameters")
+                )
             self.params = params
         else:
             self.params = Parameters()
@@ -161,17 +163,22 @@ class NaiveSizer(Sizer):
             ValueError: If any of the inputs are invalid.
         """
         if risk_amount <= ExtendedDecimal("0"):
-            logger_main.error(f"Invalid risk amount: {risk_amount}")
-            raise ValueError("Risk amount must be a positive decimal, greater than 0")
+            logger_main.log_and_raise(
+                ValueError(
+                    "Invalid risk amount: Risk amount must be a positive decimal, greater than 0"
+                )
+            )
 
         if entry_price <= ExtendedDecimal("0"):
-            logger_main.error(f"Invalid entry price: {entry_price}")
-            raise ValueError("Entry price must be positive")
+            logger_main.log_and_raise(
+                ValueError("Invalid entry price: Entry price must be positive")
+            )
 
         if exit_price is not None:
             if exit_price <= ExtendedDecimal("0"):
-                logger_main.error(f"Invalid exit price: {exit_price}")
-                raise ValueError("Exit price must be positive")
+                logger_main.log_and_raise(
+                    ValueError("Invalid exit price: Exit price must be positive")
+                )
 
             if exit_price == entry_price:
                 logger_main.warning("Exit price is equal to entry price")
@@ -223,11 +230,11 @@ class ForexSizer(Sizer):
             ValueError: If the input parameters are invalid or the strategy is not properly initialized.
         """
         if not strategy or not isinstance(strategy, StrategyType):
-            raise ValueError("Invalid strategy object provided.")
+            logger_main.log_and_raise(ValueError("Invalid strategy object provided."))
 
         engine = strategy._engine
         if not engine:
-            raise ValueError("Strategy engine is not initialized.")
+            logger_main.log_and_raise(ValueError("Strategy engine is not initialized."))
 
         risk_percentage = strategy.risk_percentage
 
@@ -284,19 +291,22 @@ class ForexSizer(Sizer):
         if risk_percentage <= ExtendedDecimal("0") or risk_percentage > ExtendedDecimal(
             "1"
         ):
-            logger_main.error(f"Invalid risk percentage: {risk_percentage}")
-            raise ValueError(
-                "Risk percentage must be a positive decimal between 0 and 1"
+            logger_main.log_and_raise(
+                ValueError(
+                    "Invalid risk percentage: Risk percentage must be a positive decimal between 0 and 1"
+                )
             )
 
         if entry_price <= ExtendedDecimal("0"):
-            logger_main.error(f"Invalid entry price: {entry_price}")
-            raise ValueError("Entry price must be positive")
+            logger_main.log_and_raise(
+                ValueError("Invalid entry price: Entry price must be positive")
+            )
 
         if exit_price is not None:
             if exit_price <= ExtendedDecimal("0"):
-                logger_main.error(f"Invalid exit price: {exit_price}")
-                raise ValueError("Exit price must be positive")
+                logger_main.log_and_raise(
+                    ValueError("Invalid exit price: Exit price must be positive")
+                )
 
             if exit_price == entry_price:
                 logger_main.warning("Exit price is equal to entry price")

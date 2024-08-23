@@ -125,9 +125,10 @@ class Timeframe:
             multiplier = int(numeric_part)
             unit = TimeframeUnit.from_string(unit_part)
             return multiplier, unit
-        except ValueError as e:
-            logger_main.error(f"Failed to parse timeframe string: {value}")
-            raise ValueError(f"Invalid timeframe string: {value}") from e
+        except ValueError:
+            logger_main.log_and_raise(
+                f"Invalid timeframe string: Failed to parse timeframe string: {value}"
+            )
 
     @property
     def in_minutes(self) -> int:

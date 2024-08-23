@@ -4,6 +4,7 @@ from typing import Any, List, Optional, Union
 import pandas as pd
 
 from ..util.ext_decimal import ExtendedDecimal
+from ..util.log_config import logger_main
 from .bar import Bar
 from .manager import DataManager, DataTimeframeManager
 from .timeframe import Timeframe
@@ -115,7 +116,9 @@ class PriceDataManager(DataManager):
             KeyError: If the specified timeframe does not exist.
         """
         if timeframe not in self._data:
-            raise KeyError(f"No data available for timeframe: {timeframe}")
+            logger_main.log_and_raise(
+                KeyError(f"No data available for timeframe: {timeframe}")
+            )
         return PriceDataTimeframe(self, timeframe)
 
 

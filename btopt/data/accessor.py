@@ -2,6 +2,7 @@ from typing import Any, Union
 
 from ..data.timeframe import Timeframe
 from ..types import DataManagerType
+from ..util.log_config import logger_main
 
 
 class ReadOnlyColumnAccessor:
@@ -76,7 +77,10 @@ class WritableColumnAccessor(ReadOnlyColumnAccessor):
         if index == 0:
             self._data.set_current(self._timeframe, self._name, value)
         else:
-            raise ValueError("Can only set the current (index 0) value of a column")
+            logger_main.log_and_raise(
+                ValueError("Can only set the current (index 0) value of a column")
+            )
 
     def __repr__(self) -> str:
+        return f"WritableColumnAccessor(name='{self._name}', timeframe={self._timeframe}, length={len(self)})"
         return f"WritableColumnAccessor(name='{self._name}', timeframe={self._timeframe}, length={len(self)})"

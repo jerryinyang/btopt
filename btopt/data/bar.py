@@ -74,17 +74,22 @@ class Bar:
             if key in self.__annotations__:
                 return getattr(self, key)
             else:
-                logger_main.error(f"Invalid key: {key}")
-                raise KeyError(f"'{key}' is not a valid attribute of Bar")
+                logger_main.log_and_raise(
+                    KeyError(
+                        f"Invalid key: {key}. '{key}' is not a valid attribute of Bar"
+                    )
+                )
         elif isinstance(key, int):
             if 0 <= key <= 4:
                 return [self.open, self.high, self.low, self.close, self.volume][key]
             else:
-                logger_main.error(f"Index out of range: {key}")
-                raise IndexError("Bar index out of range")
+                logger_main.log_and_raise(ValueError(f"Index out of range: {key}"))
         else:
-            logger_main.error(f"Invalid key type: {type(key)}")
-            raise TypeError("Bar indices must be integers or strings")
+            logger_main.log_and_raise(
+                TypeError(
+                    "Invalid key type: {type(key)}. Bar indices must be integers or strings"
+                )
+            )
 
     # region Validation
 
@@ -96,32 +101,30 @@ class Bar:
             ValueError: If any of the validation checks fail.
         """
         if self.low > self.high:
-            logger_main.error(
-                f"Invalid bar data: Low ({self.low}) is greater than High ({self.high})"
-            )
-            raise ValueError(
-                f"Low ({self.low}) cannot be greater than High ({self.high})"
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Invalid bar data: Low ({self.low}) is greater than High ({self.high})"
+                )
             )
 
         if self.open < self.low or self.open > self.high:
-            logger_main.error(
-                f"Invalid bar data: Open ({self.open}) is outside the range of Low ({self.low}) and High ({self.high})"
-            )
-            raise ValueError(
-                f"Open ({self.open}) must be between Low ({self.low}) and High ({self.high})"
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Invalid bar data: Open ({self.open}) is outside the range of Low ({self.low}) and High ({self.high})"
+                )
             )
 
         if self.close < self.low or self.close > self.high:
-            logger_main.error(
-                f"Invalid bar data: Close ({self.close}) is outside the range of Low ({self.low}) and High ({self.high})"
-            )
-            raise ValueError(
-                f"Close ({self.close}) must be between Low ({self.low}) and High ({self.high})"
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Invalid bar data: Close ({self.close}) is outside the range of Low ({self.low}) and High ({self.high})"
+                )
             )
 
         if self.volume < 0:
-            logger_main.error(f"Invalid bar data: Volume ({self.volume}) is negative")
-            raise ValueError(f"Volume ({self.volume}) cannot be negative")
+            logger_main.log_and_raise(
+                ValueError(f"Invalid bar data: Volume ({self.volume}) is negative")
+            )
 
     # endregion
 
@@ -159,9 +162,10 @@ class Bar:
             TypeError: If other is not a Bar object.
         """
         if not isinstance(other, Bar):
-            logger_main.error(f"Cannot compare Bar with {type(other)}")
-            raise TypeError(
-                f"'<' not supported between instances of 'Bar' and '{type(other).__name__}'"
+            logger_main.log_and_raise(
+                TypeError(
+                    f"'<' not supported between instances of 'Bar' and '{type(other).__name__}'"
+                )
             )
         return self.timestamp < other.timestamp
 
@@ -179,9 +183,10 @@ class Bar:
             TypeError: If other is not a Bar object.
         """
         if not isinstance(other, Bar):
-            logger_main.error(f"Cannot compare Bar with {type(other)}")
-            raise TypeError(
-                f"'>' not supported between instances of 'Bar' and '{type(other).__name__}'"
+            logger_main.log_and_raise(
+                TypeError(
+                    f"'>' not supported between instances of 'Bar' and '{type(other).__name__}'"
+                )
             )
         return self.timestamp > other.timestamp
 
@@ -247,8 +252,11 @@ class Bar:
                 index=data.get("index"),
             )
         except (KeyError, ValueError) as e:
-            logger_main.error(f"Error creating Bar from dictionary: {e}")
-            raise ValueError(f"Invalid dictionary data: {e}")
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Invalid dictionary data: Error creating Bar from dictionary: {e}"
+                )
+            )
 
     def __repr__(self) -> str:
         """

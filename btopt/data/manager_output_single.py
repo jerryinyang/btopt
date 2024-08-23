@@ -104,7 +104,9 @@ class SingleTimeframeOutputManager:
             ValueError: If the column already exists.
         """
         if column_name in self._data:
-            raise ValueError(f"Column '{column_name}' already exists")
+            logger_main.log_and_raise(
+                ValueError(f"Column '{column_name}' already exists")
+            )
 
         self._data[column_name] = np.empty(self._max_length)
         self._data[column_name].fill(np.nan)
@@ -141,7 +143,9 @@ class SingleTimeframeOutputManager:
 
         if column is not None:
             if column not in self._data:
-                raise ValueError(f"Column '{column}' does not exist")
+                logger_main.log_and_raise(
+                    ValueError(f"Column '{column}' does not exist")
+                )
             data = self._data[column][index:end_index]
             return data[0] if size == 1 else data.tolist()
         else:
@@ -168,7 +172,7 @@ class SingleTimeframeOutputManager:
             ValueError: If the column does not exist.
         """
         if column not in self._data:
-            raise ValueError(f"Column '{column}' does not exist")
+            logger_main.log_and_raise(ValueError(f"Column '{column}' does not exist"))
 
         self._data[column][0] = value
         logger_main.info(f"Updated current value of column '{column}'")
@@ -195,12 +199,16 @@ class SingleTimeframeOutputManager:
         """
         if isinstance(key, str):
             if key == self._placeholder_column:
-                raise KeyError("Cannot access placeholder column directly")
+                logger_main.log_and_raise(
+                    KeyError("Cannot access placeholder column directly")
+                )
             return self._data[key]
         elif isinstance(key, (int, slice)):
             return self.get(index=key)
         else:
-            raise TypeError("Key must be a string, integer, or slice.")
+            logger_main.log_and_raise(
+                TypeError("Key must be a string, integer, or slice.")
+            )
 
     def __setitem__(self, key: Union[str, int], value: Any) -> None:
         """
@@ -218,14 +226,20 @@ class SingleTimeframeOutputManager:
         """
         if isinstance(key, str):
             if key == self._placeholder_column:
-                raise KeyError("Cannot set placeholder column directly")
+                logger_main.log_and_raise(
+                    KeyError("Cannot set placeholder column directly")
+                )
             self.set_current(key, value)
         elif isinstance(key, int):
             if key != 0:
-                raise ValueError("Can only set the current (index 0) value of a column")
-            raise ValueError("Column name must be specified when setting a value")
+                logger_main.log_and_raise(
+                    ValueError("Can only set the current (index 0) value of a column")
+                )
+            logger_main.log_and_raise(
+                ValueError("Column name must be specified when setting a value")
+            )
         else:
-            raise TypeError("Key must be a string or 0")
+            logger_main.log_and_raise(TypeError("Key must be a string or 0"))
 
     def __getattr__(self, name: str) -> "ColumnAccessor":
         """
@@ -241,10 +255,12 @@ class SingleTimeframeOutputManager:
             AttributeError: If the specified column does not exist or is the placeholder column.
         """
         if name == self._placeholder_column:
-            raise AttributeError("Cannot access placeholder column directly")
+            logger_main.log_and_raise(
+                AttributeError("Cannot access placeholder column directly")
+            )
         if name in self._data:
             return ColumnAccessor(self, name)
-        raise AttributeError(f"Column '{name}' does not exist")
+        logger_main.log_and_raise(AttributeError(f"Column '{name}' does not exist"))
 
     def to_dataframe(self) -> pd.DataFrame:
         """
@@ -312,7 +328,9 @@ class ColumnAccessor:
         if index == 0:
             self._manager.set_current(self._name, value)
         else:
-            raise ValueError("Can only set the current (index 0) value of a column")
+            logger_main.log_and_raise(
+                ValueError("Can only set the current (index 0) value of a column")
+            )
 
     def __len__(self) -> int:
         """

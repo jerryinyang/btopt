@@ -69,8 +69,10 @@ class MultiTimframeOuputManager(DataManager):
             ValueError: If the column already exists.
         """
         if column_name in self._data[timeframe]:
-            raise ValueError(
-                f"Column '{column_name}' already exists for timeframe {timeframe}"
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Column '{column_name}' already exists for timeframe {timeframe}"
+                )
             )
 
         self._data[timeframe][column_name] = np.full(self._max_length, np.nan)
@@ -132,8 +134,10 @@ class MultiTimframeOuputManager(DataManager):
             ValueError: If the column does not exist for the specified timeframe.
         """
         if column not in self._data[timeframe]:
-            raise ValueError(
-                f"Column '{column}' does not exist for timeframe {timeframe}"
+            logger_main.log_and_raise(
+                ValueError(
+                    f"Column '{column}' does not exist for timeframe {timeframe}"
+                )
             )
 
         self._data[timeframe][column][0] = value
@@ -155,7 +159,9 @@ class MultiTimframeOuputManager(DataManager):
             KeyError: If the specified timeframe does not exist.
         """
         if timeframe not in self._data:
-            raise KeyError(f"No data available for timeframe: {timeframe}")
+            logger_main.log_and_raise(
+                KeyError(f"No data available for timeframe: {timeframe}")
+            )
         return MTFOuputTimeframeManager(self, timeframe)
 
 
@@ -201,12 +207,16 @@ class MTFOuputTimeframeManager(DataTimeframeManager):
         """
         if isinstance(key, str):
             if key == self._data._placeholder_column:
-                raise KeyError("Cannot access placeholder column directly")
+                logger_main.log_and_raise(
+                    KeyError("Cannot access placeholder column directly")
+                )
             return self._data._data[self._timeframe][key]
         elif isinstance(key, (int, slice)):
             return self._data.get(self._timeframe, index=key)
         else:
-            raise TypeError("Key must be a string, integer, or slice.")
+            logger_main.log_and_raise(
+                TypeError("Key must be a string, integer, or slice.")
+            )
 
     def __setitem__(self, key: Union[str, int], value: Any) -> None:
         """
@@ -224,14 +234,20 @@ class MTFOuputTimeframeManager(DataTimeframeManager):
         """
         if isinstance(key, str):
             if key == self._data._placeholder_column:
-                raise KeyError("Cannot set placeholder column directly")
+                logger_main.log_and_raise(
+                    KeyError("Cannot set placeholder column directly")
+                )
             self._data.set_current(self._timeframe, key, value)
         elif isinstance(key, int):
             if key != 0:
-                raise ValueError("Can only set the current (index 0) value of a column")
-            raise ValueError("Column name must be specified when setting a value")
+                logger_main.log_and_raise(
+                    ValueError("Can only set the current (index 0) value of a column")
+                )
+            logger_main.log_and_raise(
+                ValueError("Column name must be specified when setting a value")
+            )
         else:
-            raise TypeError("Key must be a string or 0")
+            logger_main.log_and_raise(TypeError("Key must be a string or 0"))
 
     def __getattr__(self, name: str) -> WritableColumnAccessor:
         """
@@ -247,11 +263,15 @@ class MTFOuputTimeframeManager(DataTimeframeManager):
             AttributeError: If the specified column does not exist or is the placeholder column.
         """
         if name == self._data._placeholder_column:
-            raise AttributeError("Cannot access placeholder column directly")
+            logger_main.log_and_raise(
+                AttributeError("Cannot access placeholder column directly")
+            )
         if name in self._data._data[self._timeframe]:
             return WritableColumnAccessor(self._data, self._timeframe, name)
-        raise AttributeError(
-            f"Column '{name}' does not exist for timeframe: {self._timeframe}"
+        logger_main.log_and_raise(
+            AttributeError(
+                f"Column '{name}' does not exist for timeframe: {self._timeframe}"
+            )
         )
 
     def to_dataframe(self) -> pd.DataFrame:

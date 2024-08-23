@@ -97,7 +97,9 @@ class Engine:
             ValueError: If no data has been added to the DataView yet.
         """
         if self._dataview.lowest_timeframe is None:
-            raise ValueError("No data has been added to the DataView yet.")
+            logger_main.log_and_raise(
+                ValueError("No data has been added to the DataView yet.")
+            )
         return self._dataview.lowest_timeframe
 
     def set_config(self, config: Dict[str, Any]) -> None:
@@ -339,8 +341,7 @@ class Engine:
         try:
             strategy_instance = strategy(**init_parameters)
         except Exception as e:
-            logger_main.error(f"Failed to initialize strategy: {str(e)}")
-            raise ValueError(f"Failed to initialize strategy: {str(e)}")
+            logger_main.log_and_raise(f"Failed to initialize strategy: {str(e)}")
 
         strategy_instance.set_engine(self)
 
@@ -412,7 +413,9 @@ class Engine:
             elif param.default is not param.empty:
                 init_parameters[param_name] = param.default
             else:
-                raise ValueError(f"Missing required parameter: {param_name}")
+                logger_main.log_and_raise(
+                    ValueError(f"Missing required parameter: {param_name}")
+                )
         return init_parameters
 
     def remove_strategy(self, strategy_id: str) -> None:
@@ -492,15 +495,19 @@ class Engine:
             return self.reporter if self.reporter else Reporter(self.portfolio, self)
 
         if not self._config:
-            raise ValueError(
-                "Configuration not set. Call set_config before running the backtest."
+            logger_main.log_and_raise(
+                ValueError(
+                    "Configuration not set. Call set_config before running the backtest."
+                )
             )
 
         try:
             self._dataview.align_all_data()
 
             if not self.validate_data():
-                raise ValueError("Data validation failed. Cannot start backtest.")
+                logger_main.log_and_raise(
+                    ValueError("Data validation failed. Cannot start backtest.")
+                )
 
             self._is_running = True
             self._initialize_backtest()
@@ -525,7 +532,7 @@ class Engine:
             logger_main.info("Backtest completed. Reporter initialized.")
 
         except Exception as e:
-            logger_main.error(f"Error during backtest: {str(e)}")
+            logger_main.log_and_raise(f"Error during backtest: {str(e)}")
             raise
         finally:
             self._is_running = False
@@ -773,16 +780,20 @@ class Engine:
             ValueError: If the symbol is not found in the current market data or if there's no data for the symbol.
         """
         if self._current_market_data is None:
-            raise ValueError("No current market data available.")
+            logger_main.log_and_raise(ValueError("No current market data available."))
 
         if symbol not in self._current_market_data:
-            raise ValueError(f"Symbol {symbol} not found in the current market data")
+            logger_main.log_and_raise(
+                ValueError(f"Symbol {symbol} not found in the current market data")
+            )
 
         # Get the lowest timeframe data for the symbol
         lowest_timeframe = min(self._current_market_data[symbol].keys())
         current_bar = self._current_market_data[symbol][lowest_timeframe]
 
         if current_bar is None:
-            raise ValueError(f"No data available for symbol {symbol}")
+            logger_main.log_and_raise(
+                ValueError(f"No data available for symbol {symbol}")
+            )
 
         return current_bar
