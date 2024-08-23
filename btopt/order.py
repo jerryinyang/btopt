@@ -135,7 +135,7 @@ class OCAGroup(OrderGroup):
 
 class BracketGroup(OrderGroup):
     """
-    Represents a Bracket order group.
+    Represents a Bracket order group that allows for optional take-profit or stop-loss orders.
     """
 
     def __init__(self):
@@ -145,11 +145,23 @@ class BracketGroup(OrderGroup):
         self.stop_loss_order: Optional[Order] = None
 
     def add_order(self, order: "Order") -> None:
+        """
+        Add an order to the bracket group.
+
+        Args:
+            order (Order): The order to be added to the group.
+        """
         if not self.entry_order:
             self.entry_order = order
-        elif not self.take_profit_order:
+        elif (
+            not self.take_profit_order
+            and order.details.exectype == Order.ExecType.LIMIT
+        ):
             self.take_profit_order = order
-        elif not self.stop_loss_order:
+        elif not self.stop_loss_order and order.details.exectype in [
+            Order.ExecType.STOP,
+            Order.ExecType.STOP_LIMIT,
+        ]:
             self.stop_loss_order = order
         else:
             logger_main.warning("Bracket group already has all required orders.")
@@ -158,6 +170,12 @@ class BracketGroup(OrderGroup):
         order.order_group = self
 
     def remove_order(self, order: "Order") -> None:
+        """
+        Remove an order from the bracket group.
+
+        Args:
+            order (Order): The order to be removed from the group.
+        """
         if order in self.orders:
             self.orders.remove(order)
             order.order_group = None
@@ -169,14 +187,20 @@ class BracketGroup(OrderGroup):
                 self.stop_loss_order = None
 
     def on_order_filled(self, filled_order: "Order") -> None:
+        """
+        Handle the event when an order in the group is filled.
+
+        Args:
+            filled_order (Order): The order that was filled.
+        """
         if filled_order == self.entry_order:
-            # Activate take-profit and stop-loss orders
+            # Activate take-profit and stop-loss orders if they exist
             if self.take_profit_order:
                 self.take_profit_order.activate()
             if self.stop_loss_order:
                 self.stop_loss_order.activate()
         elif filled_order in [self.take_profit_order, self.stop_loss_order]:
-            # Cancel the other exit order
+            # Cancel the other exit order if it exists
             other_exit_order = (
                 self.take_profit_order
                 if filled_order == self.stop_loss_order
@@ -186,15 +210,27 @@ class BracketGroup(OrderGroup):
                 other_exit_order.cancel()
 
     def on_order_cancelled(self, cancelled_order: "Order") -> None:
+        """
+        Handle the event when an order in the group is cancelled.
+
+        Args:
+            cancelled_order (Order): The order that was cancelled.
+        """
         if cancelled_order == self.entry_order:
-            # Cancel both exit orders
+            # Cancel both exit orders if they exist
             for order in [self.take_profit_order, self.stop_loss_order]:
                 if order and order.status != Order.Status.CANCELED:
                     order.cancel()
 
     def on_order_rejected(self, rejected_order: "Order") -> None:
+        """
+        Handle the event when an order in the group is rejected.
+
+        Args:
+            rejected_order (Order): The order that was rejected.
+        """
         if rejected_order == self.entry_order:
-            # Cancel both exit orders
+            # Cancel both exit orders if they exist
             for order in [self.take_profit_order, self.stop_loss_order]:
                 if order and order.status != Order.Status.CANCELED:
                     order.cancel()
@@ -246,8 +282,8 @@ class OCAOrderDetails:
 @dataclass
 class BracketOrderDetails:
     entry_order: OrderDetails
-    take_profit_order: OrderDetails
-    stop_loss_order: OrderDetails
+    take_profit_order: Optional[OrderDetails] = None
+    stop_loss_order: Optional[OrderDetails] = None
 
 
 class Order:
@@ -534,6 +570,11 @@ class Order:
         if self.fills:
             total_value = sum(fill.price * fill.size for fill in self.fills)
             total_size = self.get_filled_size()
+
+            logger_main.warning(
+                f"\n----- TEST -----: \nORDER: {self.id}\nTOTAL VALUE: {total_value}\nTOTAL SIZE : {total_size}\n"
+            )
+
             return total_value / total_size
         return None
 

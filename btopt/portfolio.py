@@ -249,6 +249,7 @@ class Portfolio:
         Returns:
             The created Order object.
         """
+
         return self.order_manager.create_order(order_details)
 
     def create_oco_order(
@@ -286,20 +287,31 @@ class Portfolio:
 
     def create_bracket_order(
         self, bracket_details: BracketOrderDetails
-    ) -> Tuple[Order, Order, Order, BracketGroup]:
+    ) -> Tuple[Order, Optional[Order], Optional[Order], BracketGroup]:
         """
         Create a Bracket order.
 
         Args:
-            bracket_details: A BracketOrderDetails object containing the details for entry, take profit, and stop loss orders.
+            bracket_details (BracketOrderDetails): A BracketOrderDetails object containing the details for entry,
+                                                optional take profit, and optional stop loss orders.
 
         Returns:
-            A tuple containing the entry order, take profit order, stop loss order, and the BracketGroup.
+            Tuple[Order, Optional[Order], Optional[Order], BracketGroup]: A tuple containing the entry order,
+            take profit order (if specified), stop loss order (if specified), and the BracketGroup.
         """
         entry_order = self.create_order(bracket_details.entry_order)
-        take_profit_order = self.create_order(bracket_details.take_profit_order)
-        stop_loss_order = self.create_order(bracket_details.stop_loss_order)
-        bracket_group = self.order_manager.create_bracket_group(
+        take_profit_order = (
+            self.create_order(bracket_details.take_profit_order)
+            if bracket_details.take_profit_order
+            else None
+        )
+        stop_loss_order = (
+            self.create_order(bracket_details.stop_loss_order)
+            if bracket_details.stop_loss_order
+            else None
+        )
+
+        bracket_group = self.order_manager.create_bracket_order(
             entry_order, take_profit_order, stop_loss_order
         )
         return entry_order, take_profit_order, stop_loss_order, bracket_group

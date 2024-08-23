@@ -523,7 +523,7 @@ class Strategy(metaclass=PreInitABCMeta):
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         **kwargs: Any,
-    ) -> Union[Order, Tuple[List[Order], BracketGroup]]:
+    ) -> Union[Order, Tuple[Order, Optional[Order], Optional[Order], BracketGroup]]:
         """
         Create a buy order request, automatically creating a bracket order if stop_loss or take_profit is specified.
 
@@ -536,9 +536,10 @@ class Strategy(metaclass=PreInitABCMeta):
             **kwargs: Additional order parameters.
 
         Returns:
-            Union[Order, Tuple[List[Order], BracketGroup]]:
+            Union[Order, Tuple[Order, Optional[Order], Optional[Order], BracketGroup]]:
                 - A single Order object if no stop_loss or take_profit is specified.
-                - A tuple containing the list of orders and the BracketGroup if stop_loss or take_profit is specified.
+                - A tuple containing the entry order, take-profit order (if specified),
+                stop-loss order (if specified), and the BracketGroup if stop_loss or take_profit is specified.
 
         Raises:
             ValueError: If the strategy is not connected to a portfolio.
@@ -559,43 +560,40 @@ class Strategy(metaclass=PreInitABCMeta):
             timestamp=self._engine._current_timestamp,
             timeframe=self._primary_timeframe,
             strategy_id=self._id,
-            exit_loss=ExtendedDecimal(str(stop_loss))
-            if stop_loss is not None
-            else None,
-            exit_profit=ExtendedDecimal(str(take_profit))
-            if take_profit is not None
-            else None,
             **kwargs,
         )
 
         if stop_loss is None and take_profit is None:
             return self._portfolio.create_order(order_details)
         else:
-            return self._portfolio.create_bracket_order(
-                BracketOrderDetails(
-                    entry_order=order_details,
-                    take_profit_order=OrderDetails(
-                        ticker=symbol,
-                        direction=Order.Direction.SHORT,
-                        size=ExtendedDecimal(str(size)),
-                        price=ExtendedDecimal(str(take_profit)),
-                        exectype=Order.ExecType.LIMIT,
-                        timestamp=self._engine._current_timestamp,
-                        timeframe=self._primary_timeframe,
-                        strategy_id=self._id,
-                    ),
-                    stop_loss_order=OrderDetails(
-                        ticker=symbol,
-                        direction=Order.Direction.SHORT,
-                        size=ExtendedDecimal(str(size)),
-                        price=ExtendedDecimal(str(stop_loss)),
-                        exectype=Order.ExecType.STOP,
-                        timestamp=self._engine._current_timestamp,
-                        timeframe=self._primary_timeframe,
-                        strategy_id=self._id,
-                    ),
+            bracket_details = BracketOrderDetails(
+                entry_order=order_details,
+                take_profit_order=OrderDetails(
+                    ticker=symbol,
+                    direction=Order.Direction.SHORT,
+                    size=ExtendedDecimal(str(size)),
+                    price=ExtendedDecimal(str(take_profit)),
+                    exectype=Order.ExecType.LIMIT,
+                    timestamp=self._engine._current_timestamp,
+                    timeframe=self._primary_timeframe,
+                    strategy_id=self._id,
                 )
+                if take_profit is not None
+                else None,
+                stop_loss_order=OrderDetails(
+                    ticker=symbol,
+                    direction=Order.Direction.SHORT,
+                    size=ExtendedDecimal(str(size)),
+                    price=ExtendedDecimal(str(stop_loss)),
+                    exectype=Order.ExecType.STOP,
+                    timestamp=self._engine._current_timestamp,
+                    timeframe=self._primary_timeframe,
+                    strategy_id=self._id,
+                )
+                if stop_loss is not None
+                else None,
             )
+            return self._portfolio.create_bracket_order(bracket_details)
 
     def sell(
         self,
@@ -605,7 +603,7 @@ class Strategy(metaclass=PreInitABCMeta):
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         **kwargs: Any,
-    ) -> Union[Order, Tuple[List[Order], BracketGroup]]:
+    ) -> Union[Order, Tuple[Order, Optional[Order], Optional[Order], BracketGroup]]:
         """
         Create a sell order request, automatically creating a bracket order if stop_loss or take_profit is specified.
 
@@ -618,9 +616,10 @@ class Strategy(metaclass=PreInitABCMeta):
             **kwargs: Additional order parameters.
 
         Returns:
-            Union[Order, Tuple[List[Order], BracketGroup]]:
+            Union[Order, Tuple[Order, Optional[Order], Optional[Order], BracketGroup]]:
                 - A single Order object if no stop_loss or take_profit is specified.
-                - A tuple containing the list of orders and the BracketGroup if stop_loss or take_profit is specified.
+                - A tuple containing the entry order, take-profit order (if specified),
+                stop-loss order (if specified), and the BracketGroup if stop_loss or take_profit is specified.
 
         Raises:
             ValueError: If the strategy is not connected to a portfolio.
@@ -641,43 +640,40 @@ class Strategy(metaclass=PreInitABCMeta):
             timestamp=self._engine._current_timestamp,
             timeframe=self._primary_timeframe,
             strategy_id=self._id,
-            exit_loss=ExtendedDecimal(str(stop_loss))
-            if stop_loss is not None
-            else None,
-            exit_profit=ExtendedDecimal(str(take_profit))
-            if take_profit is not None
-            else None,
             **kwargs,
         )
 
         if stop_loss is None and take_profit is None:
             return self._portfolio.create_order(order_details)
         else:
-            return self._portfolio.create_bracket_order(
-                BracketOrderDetails(
-                    entry_order=order_details,
-                    take_profit_order=OrderDetails(
-                        ticker=symbol,
-                        direction=Order.Direction.LONG,
-                        size=ExtendedDecimal(str(size)),
-                        price=ExtendedDecimal(str(take_profit)),
-                        exectype=Order.ExecType.LIMIT,
-                        timestamp=self._engine._current_timestamp,
-                        timeframe=self._primary_timeframe,
-                        strategy_id=self._id,
-                    ),
-                    stop_loss_order=OrderDetails(
-                        ticker=symbol,
-                        direction=Order.Direction.LONG,
-                        size=ExtendedDecimal(str(size)),
-                        price=ExtendedDecimal(str(stop_loss)),
-                        exectype=Order.ExecType.STOP,
-                        timestamp=self._engine._current_timestamp,
-                        timeframe=self._primary_timeframe,
-                        strategy_id=self._id,
-                    ),
+            bracket_details = BracketOrderDetails(
+                entry_order=order_details,
+                take_profit_order=OrderDetails(
+                    ticker=symbol,
+                    direction=Order.Direction.LONG,
+                    size=ExtendedDecimal(str(size)),
+                    price=ExtendedDecimal(str(take_profit)),
+                    exectype=Order.ExecType.LIMIT,
+                    timestamp=self._engine._current_timestamp,
+                    timeframe=self._primary_timeframe,
+                    strategy_id=self._id,
                 )
+                if take_profit is not None
+                else None,
+                stop_loss_order=OrderDetails(
+                    ticker=symbol,
+                    direction=Order.Direction.LONG,
+                    size=ExtendedDecimal(str(size)),
+                    price=ExtendedDecimal(str(stop_loss)),
+                    exectype=Order.ExecType.STOP,
+                    timestamp=self._engine._current_timestamp,
+                    timeframe=self._primary_timeframe,
+                    strategy_id=self._id,
+                )
+                if stop_loss is not None
+                else None,
             )
+            return self._portfolio.create_bracket_order(bracket_details)
 
     def close(self, symbol: Optional[str] = None, size: Optional[float] = None) -> bool:
         """

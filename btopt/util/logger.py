@@ -10,23 +10,17 @@ class CustomFormatter(logging.Formatter):
     This formatter attempts to create clickable links for both filename and line number.
     """
 
+    base_format = "[%(levelname)s] %(message)s\n"
+
     def __init__(self):
         super().__init__()
         self.formats = {
-            logging.DEBUG: "%(levelname)s [%(name)s] - %(message)s",
-            logging.INFO: "%(levelname)s [%(name)s] - %(message)s",
-            logging.WARNING: "%(levelname)s [%(name)s]\n%(message)s\n   Source: %(pathname)s:%(lineno)d",
-            logging.ERROR: "%(levelname)s [%(name)s]\n%(message)s\n     Source: %(pathname)s:%(lineno)d",
-            logging.CRITICAL: "%(levelname)s [%(name)s]\n%(message)s\n  Source: %(pathname)s:%(lineno)d",
+            logging.DEBUG: self.base_format,
+            logging.INFO: self.base_format,
+            logging.WARNING: self.base_format + "Source: %(pathname)s:%(lineno)d",
+            logging.ERROR: self.base_format + "Source: %(pathname)s:%(lineno)d",
+            logging.CRITICAL: self.base_format + "Source: %(pathname)s:%(lineno)d",
         }
-
-        # self.formats = {
-        #     logging.DEBUG: "%(asctime)s - %(levelname)s [%(name)s] - %(message)s",
-        #     logging.INFO: "%(asctime)s - %(levelname)s [%(name)s] - %(message)s",
-        #     logging.WARNING: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
-        #     logging.ERROR: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
-        #     logging.CRITICAL: '%(asctime)s - %(levelname)s [%(name)s]\n%(message)s\n  File "%(pathname)s", line %(lineno)d',
-        # }
 
     def format(self, record: logging.LogRecord) -> str:
         """
@@ -135,8 +129,7 @@ class Logger(logging.Logger):
         filename = caller_frame.f_code.co_filename
         lineno = caller_frame.f_lineno
 
-        # Create a message with potentially clickable filename and line number
-        message = f'{str(error)}\n  File "{filename}", line {lineno}'
+        message = f'{str(error)}\n  File "{filename}:{lineno}'
 
         log_method(message, exc_info=True, stack_info=True, *args, **kwargs)
         raise error

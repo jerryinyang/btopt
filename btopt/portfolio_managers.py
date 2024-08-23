@@ -78,24 +78,40 @@ class OrderManager:
         logger_main.info(f"Created OCA group: {oca_group.id}")
         return oca_group
 
-    def create_bracket_group(
-        self, entry_order: Order, take_profit_order: Order, stop_loss_order: Order
+    def create_bracket_order(
+        self,
+        entry_order: Order,
+        take_profit_order: Optional[Order] = None,
+        stop_loss_order: Optional[Order] = None,
     ) -> BracketGroup:
         """
         Create a new Bracket order group.
 
         Args:
             entry_order (Order): The entry order for the bracket.
-            take_profit_order (Order): The take-profit order for the bracket.
-            stop_loss_order (Order): The stop-loss order for the bracket.
+            take_profit_order (Optional[Order]): The take-profit order for the bracket. Defaults to None.
+            stop_loss_order (Optional[Order]): The stop-loss order for the bracket. Defaults to None.
 
         Returns:
             BracketGroup: The newly created Bracket group.
+
+        Raises:
+            ValueError: If the entry order is not provided.
         """
+        if not entry_order:
+            logger_main.log_and_raise(
+                ValueError("Entry order must be provided for a bracket order.")
+            )
+
         bracket_group = BracketGroup()
         bracket_group.add_order(entry_order)
-        bracket_group.add_order(take_profit_order)
-        bracket_group.add_order(stop_loss_order)
+
+        if take_profit_order:
+            bracket_group.add_order(take_profit_order)
+
+        if stop_loss_order:
+            bracket_group.add_order(stop_loss_order)
+
         self.order_groups[bracket_group.id] = bracket_group
         logger_main.info(f"Created Bracket group: {bracket_group.id}")
         return bracket_group
