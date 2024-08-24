@@ -599,9 +599,7 @@ class Engine:
         logger_main.info("Backtest initialized.")
 
     def _process_timestamp(
-        self,
-        timestamp: pd.Timestamp,
-        data_point: Dict[str, Dict[Timeframe, Bar]],
+        self, timestamp: pd.Timestamp, data_point: Dict[str, Dict[Timeframe, Bar]]
     ) -> None:
         """
         Process a single timestamp in the backtest.
@@ -623,6 +621,9 @@ class Engine:
 
         # Notify strategies of updates
         self._notify_strategies()
+
+        # Process any remaining orders in the order execution manager
+        self.portfolio.order_execution_manager.process_orders(timestamp, data_point)
 
         # Clear updated orders and trades in the portfolio
         self.portfolio.order_manager.clear_updated_orders()

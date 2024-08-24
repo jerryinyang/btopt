@@ -535,16 +535,6 @@ class Order:
             self.status = self.Status.ACCEPTED
             logger_main.info(f"Order {self.id} activated")
 
-    def __repr__(self) -> str:
-        """Return a string representation of the Order."""
-        return (
-            f"Order(id={self.id}, ticker={self.details.ticker}, "
-            f"direction={self.details.direction.name}, "
-            f"price={self.details.price}, status={self.status.name}, "
-            f"exectype={self.details.exectype.name}, "
-            f"filled={self.get_filled_size()}/{self.details.size})"
-        )
-
     def get_filled_size(self) -> ExtendedDecimal:
         """Get the total filled size of the order."""
         return sum(fill.size for fill in self.fills)
@@ -570,10 +560,6 @@ class Order:
         if self.fills:
             total_value = sum(fill.price * fill.size for fill in self.fills)
             total_size = self.get_filled_size()
-
-            logger_main.warning(
-                f"\n----- TEST -----: \nORDER: {self.id}\nTOTAL VALUE: {total_value}\nTOTAL SIZE : {total_size}\n"
-            )
 
             return total_value / total_size
         return None
@@ -619,3 +605,44 @@ class Order:
             self.details.price = self._calculate_trailing_stop_price(
                 current_price, is_long
             )
+
+    def __repr__(self) -> str:
+        """Return a string representation of the Order."""
+        return (
+            f"Order(id={self.id}, ticker={self.details.ticker}, "
+            f"direction={self.details.direction.name}, "
+            f"price={self.details.price}, status={self.status.name}, "
+            f"exectype={self.details.exectype.name}, "
+            f"filled={self.get_filled_size()}/{self.details.size})"
+        )
+
+    def __lt__(self, other: "Order") -> bool:
+        """
+        Compare orders for sorting based on creation time.
+
+        Args:
+            other (Order): The other order to compare with.
+
+        Returns:
+            bool: True if this order should be executed before the other order, False otherwise.
+        """
+        if self.details.exectype != other.details.exectype:
+            # Market orders always come first
+            return self.details.exectype == self.ExecType.MARKET
+        elif self.details.exectype in [
+            self.ExecType.LIMIT,
+            self.ExecType.STOP,
+            self.ExecType.STOP_LIMIT,
+        ]:
+            # For limit and stop orders, sort by price (ascending for buy, descending for sell)
+            if self.details.direction == other.details.direction:
+                if self.details.direction == self.Direction.LONG:
+                    return self.details.price > other.details.price
+                else:
+                    return self.details.price < other.details.price
+            else:
+                # If directions are different, maintain FIFO order
+                return self.details.timestamp < other.details.timestamp
+        else:
+            # For other order types, maintain FIFO order
+            return self.details.timestamp < other.details.timestamp

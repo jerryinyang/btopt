@@ -59,7 +59,6 @@ class Trade:
         self.entry_order: Order = entry_order
         self.exit_orders: List[Order] = []
 
-        # Ensure compatibility with the new Order class
         self.entry_price: ExtendedDecimal = (
             entry_order.get_average_fill_price() or entry_order.get_last_fill_price()
         )

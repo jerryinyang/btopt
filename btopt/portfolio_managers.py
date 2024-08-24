@@ -388,6 +388,148 @@ class OrderManager:
         return f"OrderManager(active_orders={len(self.get_active_orders())}, active_groups={len(self.get_active_groups())})"
 
 
+class OrderExecutionManager:
+    def __init__(self):
+        self.pending_orders: Dict[str, List[Order]] = {}
+
+    def add_order(self, order: Order) -> None:
+        """
+        Add a new order to the pending orders list.
+
+        Args:
+            order (Order): The order to be added.
+        """
+        symbol = order.details.ticker
+        if symbol not in self.pending_orders:
+            self.pending_orders[symbol] = []
+        self.pending_orders[symbol].append(order)
+
+    def process_orders(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> List[Order]:
+        """
+        Process all pending orders based on the current market data.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
+
+        Returns:
+            List[Order]: A list of orders that were filled during this processing cycle.
+        """
+        filled_orders = []
+        for symbol, orders in self.pending_orders.items():
+            if symbol not in market_data:
+                continue
+
+            bar = market_data[symbol][
+                min(market_data[symbol].keys())
+            ]  # Use the lowest timeframe
+            sorted_orders = self._sort_orders(orders, bar)
+
+            for order in sorted_orders:
+                if self._can_execute_order(order, bar, timestamp):
+                    fill_price = self._calculate_fill_price(order, bar)
+                    order.on_fill(order.get_remaining_size(), fill_price, timestamp)
+                    filled_orders.append(order)
+
+        # Remove filled orders from pending orders
+        for order in filled_orders:
+            self.pending_orders[order.details.ticker].remove(order)
+
+        return filled_orders
+
+    def _sort_orders(self, orders: List[Order], bar: Bar) -> List[Order]:
+        """
+        Sort orders based on their type and price.
+
+        Args:
+            orders (List[Order]): The list of orders to sort.
+            bar (Bar): The current price bar.
+
+        Returns:
+            List[Order]: A sorted list of orders.
+        """
+
+        def order_key(order: Order) -> Tuple[int, ExtendedDecimal]:
+            if order.details.exectype == Order.ExecType.MARKET:
+                return (0, ExtendedDecimal("0"))
+            elif order.details.exectype in [
+                Order.ExecType.STOP,
+                Order.ExecType.STOP_LIMIT,
+            ]:
+                return (1, order.details.price)
+            else:  # LIMIT orders
+                return (2, order.details.price)
+
+        is_up_bar = bar.close >= bar.open
+        return sorted(orders, key=order_key, reverse=not is_up_bar)
+
+    def _can_execute_order(self, order: Order, bar: Bar, timestamp: datetime) -> bool:
+        """
+        Check if an order can be executed based on the current bar and timestamp.
+
+        Args:
+            order (Order): The order to check.
+            bar (Bar): The current price bar.
+            timestamp (datetime): The current timestamp.
+
+        Returns:
+            bool: True if the order can be executed, False otherwise.
+        """
+        if order.details.exectype == Order.ExecType.MARKET:
+            return True
+        elif order.details.exectype in [Order.ExecType.STOP, Order.ExecType.STOP_LIMIT]:
+            return (
+                order.details.direction == Order.Direction.LONG
+                and bar.high >= order.details.price
+            ) or (
+                order.details.direction == Order.Direction.SHORT
+                and bar.low <= order.details.price
+            )
+        elif order.details.exectype == Order.ExecType.LIMIT:
+            return (
+                order.details.direction == Order.Direction.LONG
+                and bar.low <= order.details.price
+            ) or (
+                order.details.direction == Order.Direction.SHORT
+                and bar.high >= order.details.price
+            )
+        return False
+
+    def _calculate_fill_price(self, order: Order, bar: Bar) -> ExtendedDecimal:
+        """
+        Calculate the fill price for an order based on the current bar.
+
+        Args:
+            order (Order): The order to calculate the fill price for.
+            bar (Bar): The current price bar.
+
+        Returns:
+            ExtendedDecimal: The calculated fill price.
+        """
+        is_green_bar = bar.close >= bar.open
+
+        if order.details.exectype == Order.ExecType.MARKET:
+            return bar.open
+        elif order.details.exectype in [
+            Order.ExecType.STOP,
+            Order.ExecType.STOP_LIMIT,
+            Order.ExecType.LIMIT,
+        ]:
+            if order.details.direction == Order.Direction.LONG:
+                if is_green_bar:
+                    return max(order.details.price, bar.open)
+                else:
+                    return max(order.details.price, bar.close)
+            else:  # SHORT
+                if is_green_bar:
+                    return min(order.details.price, bar.close)
+                else:
+                    return min(order.details.price, bar.open)
+        return bar.open  # Default to open price if no other condition is met
+
+
 class TradeManager:
     def __init__(self, commission_rate: ExtendedDecimal):
         self.open_trades: Dict[str, List[Trade]] = {}

@@ -17,6 +17,7 @@ from .order import (
 )
 from .portfolio_managers import (
     AccountManager,
+    OrderExecutionManager,
     OrderManager,
     PositionManager,
     RiskManager,
@@ -56,6 +57,7 @@ class Portfolio:
         """
         self.engine = engine
         self.order_manager = OrderManager()
+        self.order_execution_manager = OrderExecutionManager()
         self.trade_manager = TradeManager(commission_rate)
         self.account_manager = AccountManager(initial_capital, margin_ratio)
         self.position_manager = PositionManager()
@@ -86,14 +88,20 @@ class Portfolio:
         """
         Update the portfolio state based on current market data.
 
-        This method coordinates updates across all manager components.
+        This method coordinates updates across all manager components and processes orders.
 
         Args:
-            timestamp: The current timestamp.
-            market_data: The current market data for all symbols and timeframes.
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
         """
-        # Process orders
-        filled_orders = self.order_manager.process_orders(timestamp, market_data)
+        # Process orders using the order execution manager
+        filled_orders = self.order_execution_manager.process_orders(
+            timestamp, market_data
+        )
+
+        # Handle filled orders
+        for order in filled_orders:
+            self._handle_filled_order(order, market_data)
 
         # Handle filled orders
         for order in filled_orders:
@@ -118,8 +126,8 @@ class Portfolio:
         Handle a filled order by updating positions, trades, and account state.
 
         Args:
-            order: The filled order.
-            market_data: The current market data.
+            order (Order): The filled order.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
         symbol = order.details.ticker
         if not order.details.timeframe:
@@ -140,9 +148,30 @@ class Portfolio:
 
         # Create or update trade
         if order.details.direction == Order.Direction.LONG:
-            self.trade_manager.create_trade(order, execution_price, current_bar)
+            self._create_trade(order, execution_price, current_bar)
         else:
             self._close_trades(order, execution_price, current_bar)
+
+    def _create_trade(
+        self, order: Order, execution_price: ExtendedDecimal, bar: Bar
+    ) -> None:
+        """
+        Create a new trade based on a filled order.
+
+        Args:
+            order (Order): The filled order.
+            execution_price (ExtendedDecimal): The price at which the order was executed.
+            bar (Bar): The current price bar.
+        """
+        # Check if the trade can be opened on this bar
+        if (
+            order.details.exectype == Order.ExecType.MARKET
+            and bar.timestamp == order.details.timestamp
+        ):
+            # Delay the trade opening to the next bar for market orders
+            self.order_execution_manager.add_order(order)
+        else:
+            self.trade_manager.create_trade(order, execution_price, bar)
 
     def _close_trades(
         self, order: Order, execution_price: ExtendedDecimal, bar: Bar
@@ -151,13 +180,21 @@ class Portfolio:
         Close trades based on the given order.
 
         Args:
-            order: The order that triggers trade closure.
-            execution_price: The execution price for closing trades.
-            bar: The current price bar.
+            order (Order): The order that triggers trade closure.
+            execution_price (ExtendedDecimal): The execution price for closing trades.
+            bar (Bar): The current price bar.
         """
         remaining_size = order.get_filled_size()
         symbol = order.details.ticker
         for trade in self.trade_manager.get_trades_for_symbol(symbol):
+            # Check if the trade can be closed on this bar
+            if (
+                trade.entry_timestamp == bar.timestamp
+                and order.details.exectype == Order.ExecType.MARKET
+            ):
+                # Delay the trade closure to the next bar for market orders
+                continue
+
             if remaining_size >= trade.current_size:
                 self.trade_manager.close_trade(trade, order, execution_price, bar)
                 remaining_size -= trade.current_size
@@ -241,16 +278,17 @@ class Portfolio:
 
     def create_order(self, order_details: OrderDetails) -> Order:
         """
-        Create a new order.
+        Create a new order and add it to the order execution manager.
 
         Args:
-            order_details: The details of the order to be created.
+            order_details (OrderDetails): The details of the order to be created.
 
         Returns:
-            The created Order object.
+            Order: The created Order object.
         """
-
-        return self.order_manager.create_order(order_details)
+        order = self.order_manager.create_order(order_details)
+        self.order_execution_manager.add_order(order)
+        return order
 
     def create_oco_order(
         self, oco_details: OCOOrderDetails
