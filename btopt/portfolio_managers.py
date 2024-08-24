@@ -6,7 +6,8 @@ import pandas as pd
 
 from .data.bar import Bar
 from .data.timeframe import Timeframe
-from .order import BracketGroup, OCAGroup, OCOGroup, Order, OrderDetails, OrderGroup
+from .order import (BracketGroup, OCAGroup, OCOGroup, Order, OrderDetails,
+                    OrderGroup)
 from .trade import Trade
 from .util.ext_decimal import ExtendedDecimal
 from .util.log_config import logger_main
@@ -20,11 +21,12 @@ class OrderManager:
     def __init__(self):
         self.orders: Dict[str, Order] = {}
         self.order_groups: Dict[str, OrderGroup] = {}
+        self.pending_orders: Dict[str, List[Order]] = {}
         self.updated_orders: List[Order] = []
 
     def create_order(self, details: OrderDetails) -> Order:
         """
-        Create a new order.
+        Create a new order and add it to the pending orders.
 
         Args:
             details (OrderDetails): The details of the order to be created.
@@ -36,11 +38,13 @@ class OrderManager:
         order = Order(order_id, details)
         self.orders[order_id] = order
         self.updated_orders.append(order)
-        logger_main.info(f"Created order: {order}")
 
-        logger_main.warning(
-            f"\n\n----- NEW ORDER -----\nORDER: {order}\nSIZE: {order.details.size}\nTIMESTAMP: {order.details.timestamp}"
-        )
+        symbol = details.ticker
+        if symbol not in self.pending_orders:
+            self.pending_orders[symbol] = []
+        self.pending_orders[symbol].append(order)
+
+        logger_main.info(f"Created order: {order}")
         return order
 
     def create_oco_group(self, order1: Order, order2: Order) -> OCOGroup:
@@ -104,17 +108,64 @@ class OrderManager:
             )
 
         bracket_group = BracketGroup()
-        bracket_group.add_order(entry_order)
+        bracket_group.add_order(entry_order, BracketGroup.Role.ENTRY)
 
         if take_profit_order:
-            bracket_group.add_order(take_profit_order)
+            bracket_group.add_order(take_profit_order, BracketGroup.Role.LIMIT)
 
         if stop_loss_order:
-            bracket_group.add_order(stop_loss_order)
+            bracket_group.add_order(stop_loss_order, BracketGroup.Role.STOP)
 
         self.order_groups[bracket_group.id] = bracket_group
         logger_main.info(f"Created Bracket group: {bracket_group.id}")
         return bracket_group
+
+    def update_order_group(self, group_id: str, status: str) -> None:
+        """
+        Update the status of an order group.
+
+        Args:
+            group_id (str): The ID of the order group to update.
+            status (str): The new status of the order group.
+        """
+        if group_id in self.order_groups:
+            group = self.order_groups[group_id]
+            if status == "Active":
+                group.activate()
+            elif status == "Inactive":
+                group.deactivate()
+            logger_main.info(f"Updated order group {group_id} status to {status}")
+        else:
+            logger_main.warning(f"Order group not found: {group_id}")
+
+    def get_order_group(self, group_id: str) -> Optional[OrderGroup]:
+        """
+        Get an order group by its ID.
+
+        Args:
+            group_id (str): The ID of the order group to retrieve.
+
+        Returns:
+            Optional[OrderGroup]: The order group if found, None otherwise.
+        """
+        return self.order_groups.get(group_id)
+
+    def handle_order_update(self, order: Order) -> None:
+        """
+        Handle updates to an order, including its impact on the order group.
+
+        Args:
+            order (Order): The updated order.
+        """
+        self.updated_orders.append(order)
+        if order.order_group:
+            group = order.order_group
+            if order.status == Order.Status.FILLED:
+                group.on_order_filled(order)
+            elif order.status == Order.Status.CANCELED:
+                group.on_order_cancelled(order)
+            elif order.status == Order.Status.REJECTED:
+                group.on_order_rejected(order)
 
     def cancel_order(self, order_id: str) -> None:
         """
@@ -130,6 +181,20 @@ class OrderManager:
             logger_main.info(f"Cancelled order: {order_id}")
         else:
             logger_main.warning(f"Order not found: {order_id}")
+
+    def _sort_orders(self, orders: List[Order], bar: Bar) -> List[Order]:
+        """
+        Sort orders based on their type and price.
+
+        Args:
+            orders (List[Order]): The list of orders to sort.
+            bar (Bar): The current price bar.
+
+        Returns:
+            List[Order]: The sorted list of orders.
+        """
+        is_up_bar = bar.close >= bar.open
+        return sorted(orders, key=lambda x: x.sort_key(), reverse=not is_up_bar)
 
     def modify_order(self, order_id: str, new_details: Dict[str, Any]) -> None:
         """
@@ -164,81 +229,43 @@ class OrderManager:
 
         Returns:
             List[Order]: A list of orders that were processed (filled or cancelled).
-
-        Side effects:
-            - Updates order statuses
-            - Removes filled or cancelled orders from pending orders
-            - Triggers order group events for filled orders
         """
-        processed_orders = []
+        processed_orders: List[Order] = []
 
-        for order in list(self.orders.values()):
-            if not order.is_active:
+        for symbol, orders in self.pending_orders.items():
+            if symbol not in market_data:
                 continue
 
-            symbol = order.details.ticker
-            timeframe = order.details.timeframe or min(market_data[symbol].keys())
+            bar = market_data[symbol][min(market_data[symbol].keys())]
+            sorted_orders = self._sort_orders(orders, bar)
 
-            try:
-                current_bar = market_data[symbol][timeframe]
-            except KeyError:
-                logger_main.warning(
-                    f"No market data for {symbol} at timeframe {timeframe}. Skipping order {order.id}."
-                )
-                continue
+            for order in sorted_orders:
+                if not order.is_active:
+                    continue
 
-            is_filled, fill_price = order.is_filled(current_bar)
+                is_filled, fill_price = order.is_filled(bar)
 
-            if is_filled:
-                logger_main.warning(
-                    f"\n\n---- ORDER FILLED -----\nORDER: {order}\nTIMESTAMP: {order.get_last_fill_timestamp()}"
-                )
-                order.on_fill(order.get_remaining_size(), fill_price, timestamp)
-                processed_orders.append(order)
-                self.updated_orders.append(order)
+                if is_filled:
+                    order.on_fill(order.get_remaining_size(), fill_price, timestamp)
+                    processed_orders.append(order)
+                    self.updated_orders.append(order)
 
-                if order.order_group:
-                    order.order_group.on_order_filled(order)
+                    if order.order_group:
+                        order.order_group.on_order_filled(order)
 
-            elif order.is_expired(timestamp):
-                order.on_cancel()
-                processed_orders.append(order)
-                self.updated_orders.append(order)
+                elif order.is_expired(timestamp):
+                    order.on_cancel()
+                    processed_orders.append(order)
+                    self.updated_orders.append(order)
+
+        # Remove processed orders from pending orders
+        for order in processed_orders:
+            self.pending_orders[order.details.ticker].remove(order)
 
         self.cleanup_completed_orders_and_groups()
+        self.handle_order_group_events()  # Add this line to handle order group events
 
         return processed_orders
-
-    def update(self, timestamp: datetime) -> None:
-        """
-        Update the OrderManager state in each cycle.
-
-        This method performs housekeeping tasks for the OrderManager, such as:
-        - Checking for and handling expired orders
-        - Updating trailing stop orders
-        - Cleaning up completed orders and groups
-
-        Args:
-            timestamp (datetime): The current timestamp.
-
-        Side effects:
-            - May cancel expired orders
-            - Updates trailing stop orders
-            - Removes completed orders and groups
-        """
-        for order in list(self.orders.values()):
-            if not order.is_active:
-                continue
-
-            if order.is_expired(timestamp):
-                self.cancel_order(order.id)
-
-            elif order.details.exectype == Order.ExecType.TRAILING:
-                # Update trailing stop price
-                current_price = self._get_current_price(order.details.ticker)
-                order.update_trailing_stop(current_price)
-
-        self.cleanup_completed_orders_and_groups()
 
     def _get_current_price(self, symbol: str) -> ExtendedDecimal:
         """
@@ -349,6 +376,18 @@ class OrderManager:
         else:
             logger_main.warning(f"Reject event received for unknown order: {order_id}")
 
+    def handle_order_group_events(self) -> None:
+        """
+        Handle events for order groups.
+
+        This method checks the status of each order group and removes
+        completed groups from the active order_groups dictionary.
+        """
+        for group_id, group in list(self.order_groups.items()):
+            if group.get_status() in ["Filled", "Cancelled/Rejected"]:
+                del self.order_groups[group_id]
+                logger_main.info(f"Order group {group_id} completed and removed.")
+
     def cleanup_completed_orders_and_groups(self) -> None:
         """
         Remove completed orders and groups from the manager.
@@ -386,148 +425,6 @@ class OrderManager:
     def __repr__(self) -> str:
         """Return a string representation of the OrderManager."""
         return f"OrderManager(active_orders={len(self.get_active_orders())}, active_groups={len(self.get_active_groups())})"
-
-
-class OrderExecutionManager:
-    def __init__(self):
-        self.pending_orders: Dict[str, List[Order]] = {}
-
-    def add_order(self, order: Order) -> None:
-        """
-        Add a new order to the pending orders list.
-
-        Args:
-            order (Order): The order to be added.
-        """
-        symbol = order.details.ticker
-        if symbol not in self.pending_orders:
-            self.pending_orders[symbol] = []
-        self.pending_orders[symbol].append(order)
-
-    def process_orders(
-        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
-    ) -> List[Order]:
-        """
-        Process all pending orders based on the current market data.
-
-        Args:
-            timestamp (datetime): The current timestamp.
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
-
-        Returns:
-            List[Order]: A list of orders that were filled during this processing cycle.
-        """
-        filled_orders = []
-        for symbol, orders in self.pending_orders.items():
-            if symbol not in market_data:
-                continue
-
-            bar = market_data[symbol][
-                min(market_data[symbol].keys())
-            ]  # Use the lowest timeframe
-            sorted_orders = self._sort_orders(orders, bar)
-
-            for order in sorted_orders:
-                if self._can_execute_order(order, bar, timestamp):
-                    fill_price = self._calculate_fill_price(order, bar)
-                    order.on_fill(order.get_remaining_size(), fill_price, timestamp)
-                    filled_orders.append(order)
-
-        # Remove filled orders from pending orders
-        for order in filled_orders:
-            self.pending_orders[order.details.ticker].remove(order)
-
-        return filled_orders
-
-    def _sort_orders(self, orders: List[Order], bar: Bar) -> List[Order]:
-        """
-        Sort orders based on their type and price.
-
-        Args:
-            orders (List[Order]): The list of orders to sort.
-            bar (Bar): The current price bar.
-
-        Returns:
-            List[Order]: A sorted list of orders.
-        """
-
-        def order_key(order: Order) -> Tuple[int, ExtendedDecimal]:
-            if order.details.exectype == Order.ExecType.MARKET:
-                return (0, ExtendedDecimal("0"))
-            elif order.details.exectype in [
-                Order.ExecType.STOP,
-                Order.ExecType.STOP_LIMIT,
-            ]:
-                return (1, order.details.price)
-            else:  # LIMIT orders
-                return (2, order.details.price)
-
-        is_up_bar = bar.close >= bar.open
-        return sorted(orders, key=order_key, reverse=not is_up_bar)
-
-    def _can_execute_order(self, order: Order, bar: Bar, timestamp: datetime) -> bool:
-        """
-        Check if an order can be executed based on the current bar and timestamp.
-
-        Args:
-            order (Order): The order to check.
-            bar (Bar): The current price bar.
-            timestamp (datetime): The current timestamp.
-
-        Returns:
-            bool: True if the order can be executed, False otherwise.
-        """
-        if order.details.exectype == Order.ExecType.MARKET:
-            return True
-        elif order.details.exectype in [Order.ExecType.STOP, Order.ExecType.STOP_LIMIT]:
-            return (
-                order.details.direction == Order.Direction.LONG
-                and bar.high >= order.details.price
-            ) or (
-                order.details.direction == Order.Direction.SHORT
-                and bar.low <= order.details.price
-            )
-        elif order.details.exectype == Order.ExecType.LIMIT:
-            return (
-                order.details.direction == Order.Direction.LONG
-                and bar.low <= order.details.price
-            ) or (
-                order.details.direction == Order.Direction.SHORT
-                and bar.high >= order.details.price
-            )
-        return False
-
-    def _calculate_fill_price(self, order: Order, bar: Bar) -> ExtendedDecimal:
-        """
-        Calculate the fill price for an order based on the current bar.
-
-        Args:
-            order (Order): The order to calculate the fill price for.
-            bar (Bar): The current price bar.
-
-        Returns:
-            ExtendedDecimal: The calculated fill price.
-        """
-        is_green_bar = bar.close >= bar.open
-
-        if order.details.exectype == Order.ExecType.MARKET:
-            return bar.open
-        elif order.details.exectype in [
-            Order.ExecType.STOP,
-            Order.ExecType.STOP_LIMIT,
-            Order.ExecType.LIMIT,
-        ]:
-            if order.details.direction == Order.Direction.LONG:
-                if is_green_bar:
-                    return max(order.details.price, bar.open)
-                else:
-                    return max(order.details.price, bar.close)
-            else:  # SHORT
-                if is_green_bar:
-                    return min(order.details.price, bar.close)
-                else:
-                    return min(order.details.price, bar.open)
-        return bar.open  # Default to open price if no other condition is met
 
 
 class TradeManager:
@@ -573,12 +470,22 @@ class TradeManager:
         exit_price: ExtendedDecimal,
         exit_bar: Bar,
     ) -> None:
+        """
+        Close a trade.
+
+        Args:
+            trade (Trade): The trade to close.
+            exit_order (Order): The order used to close the trade.
+            exit_price (ExtendedDecimal): The price at which the trade is being closed.
+            exit_bar (Bar): The bar at which the trade is being closed.
+        """
         trade.close(exit_order, exit_price, exit_bar)
         symbol = trade.ticker
-        self.open_trades[symbol].remove(trade)
-        if not self.open_trades[symbol]:
-            del self.open_trades[symbol]
-        self.closed_trades.append(trade)
+        if trade.status == Trade.Status.CLOSED:
+            self.open_trades[symbol].remove(trade)
+            if not self.open_trades[symbol]:
+                del self.open_trades[symbol]
+            self.closed_trades.append(trade)
         self._add_to_updated_trades(trade)
 
     def partial_close_trade(
@@ -589,6 +496,16 @@ class TradeManager:
         exit_bar: Bar,
         size: ExtendedDecimal,
     ) -> None:
+        """
+        Partially close a trade.
+
+        Args:
+            trade (Trade): The trade to partially close.
+            exit_order (Order): The order used to close part of the trade.
+            exit_price (ExtendedDecimal): The price at which part of the trade is being closed.
+            exit_bar (Bar): The bar at which part of the trade is being closed.
+            size (ExtendedDecimal): The size of the position to close.
+        """
         trade.close(exit_order, exit_price, exit_bar, size)
         self._add_to_updated_trades(trade)
 

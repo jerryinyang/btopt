@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .data.bar import Bar
 from .data.timeframe import Timeframe
@@ -18,39 +18,43 @@ class OrderGroupType(Enum):
 
 
 class OrderGroup(ABC):
-    """
-    Abstract base class for order groups.
-    """
-
     def __init__(self, group_type: OrderGroupType):
         self.id: str = str(uuid.uuid4())
         self.type: OrderGroupType = group_type
         self.orders: List[Order] = []
+        self.active: bool = False
 
     @abstractmethod
     def add_order(self, order: "Order") -> None:
-        """Add an order to the group."""
         pass
 
     @abstractmethod
     def remove_order(self, order: "Order") -> None:
-        """Remove an order from the group."""
         pass
 
     @abstractmethod
     def on_order_filled(self, filled_order: "Order") -> None:
-        """Handle the event when an order in the group is filled."""
         pass
 
     @abstractmethod
     def on_order_cancelled(self, cancelled_order: "Order") -> None:
-        """Handle the event when an order in the group is cancelled."""
         pass
 
     @abstractmethod
     def on_order_rejected(self, rejected_order: "Order") -> None:
-        """Handle the event when an order in the group is rejected."""
         pass
+
+    def activate(self) -> None:
+        """Activate the order group and all its child orders."""
+        self.active = True
+        for order in self.orders:
+            order.activate()
+
+    def deactivate(self) -> None:
+        """Deactivate the order group and all its child orders."""
+        self.active = False
+        for order in self.orders:
+            order.deactivate()
 
     def get_status(self) -> str:
         """Get the overall status of the order group."""
@@ -63,7 +67,7 @@ class OrderGroup(ABC):
             for order in self.orders
         ):
             return "Cancelled/Rejected"
-        return "Active"
+        return "Active" if self.active else "Inactive"
 
 
 class OCOGroup(OrderGroup):
@@ -134,9 +138,17 @@ class OCAGroup(OrderGroup):
 
 
 class BracketGroup(OrderGroup):
-    """
-    Represents a Bracket order group that allows for optional take-profit or stop-loss orders.
-    """
+    class Role(Enum):
+        """Enum class for different roles in the bracket order"""
+
+        ENTRY = "Entry"
+        LIMIT = "Limit"
+        STOP = "Stop"
+
+        # Adding aliases
+        PARENT = PRIMARY = ENTRY
+        TP = TAKE_PROFIT = LIMIT
+        SL = STOP_LOSS = STOP
 
     def __init__(self):
         super().__init__(OrderGroupType.BRACKET)
@@ -144,38 +156,63 @@ class BracketGroup(OrderGroup):
         self.take_profit_order: Optional[Order] = None
         self.stop_loss_order: Optional[Order] = None
 
-    def add_order(self, order: "Order") -> None:
-        """
-        Add an order to the bracket group.
+    def add_order(self, order: "Order", role: "BracketGroup.Role") -> None:
+        """Add an order to the bracket group."""
 
-        Args:
-            order (Order): The order to be added to the group.
-        """
-        if not self.entry_order:
+        if role == BracketGroup.Role.ENTRY:
+            if self.entry_order:
+                logger_main.warning(
+                    f"Entry Order `{self.entry_order}` for Bracket Order `{self.id}` already exists. Order {order.id} will not be added."
+                )
+
             self.entry_order = order
-        elif (
-            not self.take_profit_order
-            and order.details.exectype == Order.ExecType.LIMIT
-        ):
-            self.take_profit_order = order
-        elif not self.stop_loss_order and order.details.exectype in [
-            Order.ExecType.STOP,
-            Order.ExecType.STOP_LIMIT,
-        ]:
-            self.stop_loss_order = order
+
+        elif role == BracketGroup.Role.LIMIT:
+            if self.take_profit_order:
+                logger_main.warning(
+                    f"Limit Order `{self.take_profit_order}` for Bracket Order `{self.id}` already exists. Order {order.id} will not be added."
+                )
+
+            # Confirm that the order exectype is correct
+            elif order.details.exectype in [
+                Order.ExecType.LIMIT,
+                Order.ExecType.EXIT_LIMIT,
+            ]:
+                self.take_profit_order = order
+
+            else:
+                logger_main.log_and_raise(
+                    f"Invalid order exectype for the Bracket Limit Order : {order.details.exectype}. Expected exectypes are [Order.ExecType.LIMIT, Order.ExecType.EXIT_LIMIT]."
+                )
+
+        elif role == BracketGroup.Role.STOP:
+            if self.stop_loss_order:
+                logger_main.warning(
+                    f"Stop Order `{self.stop_loss_order}` for Bracket Order `{self.id}` already exists. Order {order.id} will not be added."
+                )
+
+            elif order.details.exectype in [
+                Order.ExecType.STOP,
+                Order.ExecType.STOP_LIMIT,
+                Order.ExecType.EXIT_STOP,
+            ]:
+                self.stop_loss_order = order
+
+            else:
+                logger_main.log_and_raise(
+                    f"Invalid order exectype for the Bracket Stop Order : {order.details.exectype}. Expected exectypes are [Order.ExecType.STOP, Order.ExecType.STOP_LIMIT, Order.ExecType.EXIT_STOP]."
+                )
+
         else:
-            logger_main.warning("Bracket group already has all required orders.")
+            logger_main.warning(
+                f"Invalid Bracket Role value passed for the order: {role}"
+            )
 
         self.orders.append(order)
         order.order_group = self
 
     def remove_order(self, order: "Order") -> None:
-        """
-        Remove an order from the bracket group.
-
-        Args:
-            order (Order): The order to be removed from the group.
-        """
+        """Remove an order from the bracket group."""
         if order in self.orders:
             self.orders.remove(order)
             order.order_group = None
@@ -187,20 +224,11 @@ class BracketGroup(OrderGroup):
                 self.stop_loss_order = None
 
     def on_order_filled(self, filled_order: "Order") -> None:
-        """
-        Handle the event when an order in the group is filled.
-
-        Args:
-            filled_order (Order): The order that was filled.
-        """
+        """Handle the event when an order in the group is filled."""
         if filled_order == self.entry_order:
-            # Activate take-profit and stop-loss orders if they exist
-            if self.take_profit_order:
-                self.take_profit_order.activate()
-            if self.stop_loss_order:
-                self.stop_loss_order.activate()
+            self.activate()
         elif filled_order in [self.take_profit_order, self.stop_loss_order]:
-            # Cancel the other exit order if it exists
+            self.deactivate()
             other_exit_order = (
                 self.take_profit_order
                 if filled_order == self.stop_loss_order
@@ -210,30 +238,30 @@ class BracketGroup(OrderGroup):
                 other_exit_order.cancel()
 
     def on_order_cancelled(self, cancelled_order: "Order") -> None:
-        """
-        Handle the event when an order in the group is cancelled.
-
-        Args:
-            cancelled_order (Order): The order that was cancelled.
-        """
+        """Handle the event when an order in the group is cancelled."""
         if cancelled_order == self.entry_order:
-            # Cancel both exit orders if they exist
-            for order in [self.take_profit_order, self.stop_loss_order]:
-                if order and order.status != Order.Status.CANCELED:
-                    order.cancel()
+            self.deactivate()
 
     def on_order_rejected(self, rejected_order: "Order") -> None:
-        """
-        Handle the event when an order in the group is rejected.
-
-        Args:
-            rejected_order (Order): The order that was rejected.
-        """
+        """Handle the event when an order in the group is rejected."""
         if rejected_order == self.entry_order:
-            # Cancel both exit orders if they exist
-            for order in [self.take_profit_order, self.stop_loss_order]:
-                if order and order.status != Order.Status.CANCELED:
-                    order.cancel()
+            self.deactivate()
+
+    def activate(self) -> None:
+        """Activate the bracket order group."""
+        super().activate()
+        if self.take_profit_order:
+            self.take_profit_order.activate()
+        if self.stop_loss_order:
+            self.stop_loss_order.activate()
+
+    def deactivate(self) -> None:
+        """Deactivate the bracket order group."""
+        super().deactivate()
+        if self.take_profit_order:
+            self.take_profit_order.deactivate()
+        if self.stop_loss_order:
+            self.stop_loss_order.deactivate()
 
 
 @dataclass
@@ -258,12 +286,7 @@ class OrderDetails:
     timeframe: Timeframe
     strategy_id: Optional[str]
     expiry: Optional[datetime] = None
-    parent_id: Optional[int] = None
     stoplimit_price: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
-    exit_profit: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
-    exit_loss: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
-    exit_profit_percent: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
-    exit_loss_percent: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
     trailing_percent: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
     slippage: Optional[ExtendedDecimal] = field(default_factory=lambda: None)
 
@@ -330,23 +353,51 @@ class Order:
         self.fills: List[Fill] = []
         self.order_group: Optional[OrderGroup] = None
         self.is_active: bool = True
+        self.execution_bar_timestamp: Optional[datetime] = None
 
-    def is_filled(self, bar: Bar) -> tuple[bool, Optional[ExtendedDecimal]]:
-        """Check if the order is filled based on the current price bar."""
+    def is_filled(self, bar: Bar) -> Tuple[bool, Optional[ExtendedDecimal]]:
+        """
+        Check if the order is filled based on the current price bar.
+
+        This method determines whether the order should be filled given the current
+        market conditions represented by the price bar. It also calculates and returns
+        the fill price, taking into account any specified slippage.
+
+        Args:
+            bar (Bar): The current price bar.
+
+        Returns:
+            Tuple[bool, Optional[ExtendedDecimal]]: A tuple containing a boolean indicating
+            whether the order is filled, and the fill price if filled (None otherwise).
+        """
         if self.status == self.Status.FILLED:
             return True, self.get_last_fill_price()
 
         filled, price = self._check_fill_conditions(bar)
         if filled:
-            self.on_fill(self.get_remaining_size(), price, bar.timestamp)
-        return filled, price
+            fill_price = self._apply_slippage(price)
+            return True, fill_price
+        return False, None
 
     def _check_fill_conditions(
         self, bar: Bar
-    ) -> tuple[bool, Optional[ExtendedDecimal]]:
-        """Check if the order's fill conditions are met based on the current price bar."""
+    ) -> Tuple[bool, Optional[ExtendedDecimal]]:
+        """
+        Check if the order's fill conditions are met based on the current price bar.
+
+        This method implements the logic for determining whether an order should be
+        filled based on its type (market, limit, stop, etc.) and the current market conditions.
+
+        Args:
+            bar (Bar): The current price bar.
+
+        Returns:
+            Tuple[bool, Optional[ExtendedDecimal]]: A tuple containing a boolean indicating
+            whether the fill conditions are met, and the potential fill price if conditions
+            are met (None otherwise).
+        """
         if self.details.exectype == self.ExecType.MARKET:
-            return True, self._apply_slippage(bar.open)
+            return True, bar.open
 
         if self.details.direction == self.Direction.LONG:
             return self._check_long_fill_conditions(bar)
@@ -496,6 +547,9 @@ class Order:
             self.status = self.Status.FILLED
             self.is_active = False
 
+        if self.execution_bar_timestamp is None:
+            self.execution_bar_timestamp = timestamp
+
         if self.order_group:
             self.order_group.on_order_filled(self)
 
@@ -534,6 +588,16 @@ class Order:
         if self.status == self.Status.CREATED:
             self.status = self.Status.ACCEPTED
             logger_main.info(f"Order {self.id} activated")
+
+    def deactivate(self) -> None:
+        """
+        Deactivate the order.
+
+        This method sets the order's active status to False, effectively removing it from consideration
+        for execution without cancelling it.
+        """
+        self.is_active = False
+        logger_main.info(f"Order {self.id} deactivated")
 
     def get_filled_size(self) -> ExtendedDecimal:
         """Get the total filled size of the order."""
@@ -577,13 +641,41 @@ class Order:
         return None
 
     def _apply_slippage(self, price: ExtendedDecimal) -> ExtendedDecimal:
-        """Apply slippage to the given price if slippage is specified in the order details."""
+        """
+        Apply slippage to the given price if slippage is specified in the order details.
+
+        Args:
+            price (ExtendedDecimal): The original price before slippage.
+
+        Returns:
+            ExtendedDecimal: The price after applying slippage.
+        """
         if self.details.slippage is not None:
             slippage_factor = ExtendedDecimal("1") + (
                 self.details.slippage * self.details.direction.value
             )
             return price * slippage_factor
         return price
+
+    def sort_key(self) -> Tuple[int, ExtendedDecimal]:
+        """
+        Generate a sort key for the order based on its type and price.
+
+        This method is used to determine the order's priority when multiple orders
+        are being processed. It takes into account the order type and the current
+        market direction.
+
+        Returns:
+            Tuple[int, ExtendedDecimal]: A tuple used as a sort key, where the first
+            element is an integer representing the order type priority, and the second
+            is the order price.
+        """
+        if self.details.exectype == self.ExecType.MARKET:
+            return (0, ExtendedDecimal("0"))
+        elif self.details.exectype in [self.ExecType.STOP, self.ExecType.STOP_LIMIT]:
+            return (1, self.details.price)
+        else:  # LIMIT orders
+            return (2, self.details.price)
 
     def update_trailing_stop(self, current_price: ExtendedDecimal):
         """Update the trailing stop price based on the current market price."""

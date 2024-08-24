@@ -65,13 +65,13 @@ class Trade:
         self.entry_timestamp: datetime = (
             entry_order.get_last_fill_timestamp() or entry_bar.timestamp
         )
+        self.execution_bar_timestamp: datetime = entry_bar.timestamp
         self.entry_bar: Bar = entry_bar
 
         self.exit_price: Optional[ExtendedDecimal] = None
         self.exit_timestamp: Optional[datetime] = None
         self.exit_bar: Optional[Bar] = None
 
-        self.parent_id: Optional[int] = entry_order.details.parent_id
         self.status: Trade.Status = Trade.Status.ACTIVE
         self.metrics: TradeMetrics = TradeMetrics()
 
@@ -144,6 +144,13 @@ class Trade:
 
         if exit_price <= ExtendedDecimal("0"):
             logger_main.log_and_raise(ValueError("Invalid exit price"))
+
+        # Check if the exit is allowed on this bar
+        if exit_bar.timestamp <= self.execution_bar_timestamp:
+            logger_main.warning(
+                f"Attempted to close trade {self.id} on the same bar it was created. Skipping closure."
+            )
+            return
 
         # Calculate P&L for this exit
         exit_pnl = self._calculate_pnl(exit_price, size)
