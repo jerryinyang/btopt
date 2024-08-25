@@ -555,6 +555,7 @@ class Strategy(metaclass=PreInitABCMeta):
             )
 
         symbol = bar.ticker
+        timestamp = bar.timestamp
 
         # Determine the order execution type
         exectype = kwargs.get("exectype", None)
@@ -574,7 +575,7 @@ class Strategy(metaclass=PreInitABCMeta):
             size=ExtendedDecimal(str(size)),
             price=ExtendedDecimal(str(price)) if price is not None else None,
             exectype=exectype,
-            timestamp=self._engine._current_timestamp,
+            timestamp=timestamp,
             timeframe=self._primary_timeframe,
             strategy_id=self._id,
             **kwargs,
@@ -588,11 +589,9 @@ class Strategy(metaclass=PreInitABCMeta):
                     ticker=symbol,
                     direction=Order.Direction.SHORT,
                     size=ExtendedDecimal(str(size)),
-                    price=ExtendedDecimal(str(take_profit))
-                    if take_profit is not None
-                    else None,
+                    price=ExtendedDecimal(str(take_profit)),
                     exectype=Order.ExecType.LIMIT,
-                    timestamp=self._engine._current_timestamp,
+                    timestamp=timestamp,
                     timeframe=self._primary_timeframe,
                     strategy_id=self._id,
                 )
@@ -605,11 +604,9 @@ class Strategy(metaclass=PreInitABCMeta):
                     ticker=symbol,
                     direction=Order.Direction.SHORT,
                     size=ExtendedDecimal(str(size)),
-                    price=ExtendedDecimal(str(stop_loss))
-                    if stop_loss is not None
-                    else None,
+                    price=ExtendedDecimal(str(stop_loss)),
                     exectype=Order.ExecType.STOP,
-                    timestamp=self._engine._current_timestamp,
+                    timestamp=timestamp,
                     timeframe=self._primary_timeframe,
                     strategy_id=self._id,
                 )
@@ -662,9 +659,10 @@ class Strategy(metaclass=PreInitABCMeta):
                 ValueError("Strategy is not connected to a portfolio.")
             )
 
-        # Determine the order execution type
-
         symbol = bar.ticker
+        timestamp = bar.timestamp
+
+        # Determine the order execution type
         exectype = kwargs.get("exectype", None)
         if exectype is None:
             if price is None:
@@ -682,7 +680,7 @@ class Strategy(metaclass=PreInitABCMeta):
             size=ExtendedDecimal(str(size)),
             price=ExtendedDecimal(str(price)) if price is not None else None,
             exectype=exectype,
-            timestamp=self._engine._current_timestamp,
+            timestamp=timestamp,
             timeframe=self._primary_timeframe,
             strategy_id=self._id,
             **kwargs,
@@ -696,11 +694,9 @@ class Strategy(metaclass=PreInitABCMeta):
                     ticker=symbol,
                     direction=Order.Direction.LONG,
                     size=ExtendedDecimal(str(size)),
-                    price=ExtendedDecimal(str(take_profit))
-                    if take_profit is not None
-                    else None,
+                    price=ExtendedDecimal(str(take_profit)),
                     exectype=Order.ExecType.LIMIT,
-                    timestamp=self._engine._current_timestamp,
+                    timestamp=timestamp,
                     timeframe=self._primary_timeframe,
                     strategy_id=self._id,
                 )
@@ -713,11 +709,9 @@ class Strategy(metaclass=PreInitABCMeta):
                     ticker=symbol,
                     direction=Order.Direction.LONG,
                     size=ExtendedDecimal(str(size)),
-                    price=ExtendedDecimal(str(stop_loss))
-                    if stop_loss is not None
-                    else None,
+                    price=ExtendedDecimal(str(stop_loss)),
                     exectype=Order.ExecType.STOP,
-                    timestamp=self._engine._current_timestamp,
+                    timestamp=timestamp,
                     timeframe=self._primary_timeframe,
                     strategy_id=self._id,
                 )
@@ -782,7 +776,6 @@ class Strategy(metaclass=PreInitABCMeta):
     def create_oco_order(
         self,
         bar: Bar,
-        symbol: str,
         direction: Order.Direction,
         size: float,
         limit_price: float,
@@ -816,6 +809,9 @@ class Strategy(metaclass=PreInitABCMeta):
                 ValueError("Strategy is not connected to a portfolio.")
             )
 
+        symbol = bar.ticker
+        timestamp = bar.timestamp
+
         # Determine the appropriate execution types
         if direction == Order.Direction.LONG:
             limit_exectype = (
@@ -839,7 +835,7 @@ class Strategy(metaclass=PreInitABCMeta):
                 size=ExtendedDecimal(str(size)),
                 price=ExtendedDecimal(str(limit_price)),
                 exectype=limit_exectype,
-                timestamp=self._engine._current_timestamp,
+                timestamp=timestamp,
                 timeframe=self._primary_timeframe,
                 strategy_id=self._id,
                 **kwargs,
@@ -850,7 +846,7 @@ class Strategy(metaclass=PreInitABCMeta):
                 size=ExtendedDecimal(str(size)),
                 price=ExtendedDecimal(str(stop_price)),
                 exectype=stop_exectype,
-                timestamp=self._engine._current_timestamp,
+                timestamp=timestamp,
                 timeframe=self._primary_timeframe,
                 strategy_id=self._id,
                 **kwargs,

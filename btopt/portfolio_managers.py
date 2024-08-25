@@ -6,8 +6,7 @@ import pandas as pd
 
 from .data.bar import Bar
 from .data.timeframe import Timeframe
-from .order import (BracketGroup, OCAGroup, OCOGroup, Order, OrderDetails,
-                    OrderGroup)
+from .order import BracketGroup, OCAGroup, OCOGroup, Order, OrderDetails, OrderGroup
 from .trade import Trade
 from .util.ext_decimal import ExtendedDecimal
 from .util.log_config import logger_main
@@ -105,6 +104,13 @@ class OrderManager:
         if not entry_order:
             logger_main.log_and_raise(
                 ValueError("Entry order must be provided for a bracket order.")
+            )
+
+        if not take_profit_order and not stop_loss_order:
+            logger_main.log_and_raise(
+                ValueError(
+                    "At least one out of the Take Profit order and the Stop Loss order must be provided for a bracket order."
+                )
             )
 
         bracket_group = BracketGroup()

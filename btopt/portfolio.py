@@ -377,7 +377,7 @@ class Portfolio:
         )
 
         logger_main.warning(
-            f"\n----- CREATED BRACKET ORDER -----\nENTRY: {bracket_group.entry_order}\nLIMIT: {bracket_group.take_profit_order}\nSTOP: {bracket_group.stop_loss_order}\n\n"
+            f"\n----- CREATED BRACKET ORDER -----\nENTRY: {bracket_group.entry_order.is_active}\nLIMIT: {bracket_group.take_profit_order.is_active}\nSTOP: {bracket_group.stop_loss_order.is_active}\n\n"
         )
         return entry_order, take_profit_order, stop_loss_order, bracket_group
 
