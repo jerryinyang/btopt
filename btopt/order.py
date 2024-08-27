@@ -176,13 +176,12 @@ class BracketGroup(OrderGroup):
             # Confirm that the order exectype is correct
             elif order.details.exectype in [
                 Order.ExecType.LIMIT,
-                Order.ExecType.EXIT_LIMIT,
             ]:
                 self.take_profit_order = order
 
             else:
                 logger_main.log_and_raise(
-                    f"Invalid order exectype for the Bracket Limit Order : {order.details.exectype}. Expected exectypes are [Order.ExecType.LIMIT, Order.ExecType.EXIT_LIMIT]."
+                    f"Invalid order exectype for the Bracket Limit Order : {order.details.exectype}. Expected exectype is Order.ExecType.LIMIT."
                 )
 
         elif role == BracketGroup.Role.STOP:
@@ -194,13 +193,12 @@ class BracketGroup(OrderGroup):
             elif order.details.exectype in [
                 Order.ExecType.STOP,
                 Order.ExecType.STOP_LIMIT,
-                Order.ExecType.EXIT_STOP,
             ]:
                 self.stop_loss_order = order
 
             else:
                 logger_main.log_and_raise(
-                    f"Invalid order exectype for the Bracket Stop Order : {order.details.exectype}. Expected exectypes are [Order.ExecType.STOP, Order.ExecType.STOP_LIMIT, Order.ExecType.EXIT_STOP]."
+                    f"Invalid order exectype for the Bracket Stop Order : {order.details.exectype}. Expected exectypes are [Order.ExecType.STOP, Order.ExecType.STOP_LIMIT]."
                 )
 
         else:
@@ -223,19 +221,19 @@ class BracketGroup(OrderGroup):
             elif order == self.stop_loss_order:
                 self.stop_loss_order = None
 
-    def on_order_filled(self, filled_order: "Order") -> None:
-        """Handle the event when an order in the group is filled."""
-        if filled_order == self.entry_order:
-            self.activate()
-        elif filled_order in [self.take_profit_order, self.stop_loss_order]:
-            self.deactivate()
-            other_exit_order = (
-                self.take_profit_order
-                if filled_order == self.stop_loss_order
-                else self.stop_loss_order
-            )
-            if other_exit_order and other_exit_order.status != Order.Status.FILLED:
-                other_exit_order.cancel()
+    # def on_order_filled(self, filled_order: "Order") -> None:
+    #     """Handle the event when an order in the group is filled."""
+    #     if filled_order == self.entry_order:
+    #         self.activate()
+    #     elif filled_order in [self.take_profit_order, self.stop_loss_order]:
+    #         self.deactivate()
+    #         other_exit_order = (
+    #             self.take_profit_order
+    #             if filled_order == self.stop_loss_order
+    #             else self.stop_loss_order
+    #         )
+    #         if other_exit_order and other_exit_order.status != Order.Status.FILLED:
+    #             other_exit_order.cancel()
 
     def on_order_cancelled(self, cancelled_order: "Order") -> None:
         """Handle the event when an order in the group is cancelled."""
@@ -262,6 +260,47 @@ class BracketGroup(OrderGroup):
             self.take_profit_order.deactivate()
         if self.stop_loss_order:
             self.stop_loss_order.deactivate()
+
+    def activate_child_orders(self) -> None:
+        """Activate child orders when the parent order is filled."""
+        if self.take_profit_order:
+            self.take_profit_order.activate()
+        if self.stop_loss_order:
+            self.stop_loss_order.activate()
+
+    def deactivate_remaining_child_order(self, filled_order: "Order") -> None:
+        """Deactivate the remaining child order when one is filled."""
+        if filled_order == self.take_profit_order and self.stop_loss_order:
+            self.stop_loss_order.deactivate()
+        elif filled_order == self.stop_loss_order and self.take_profit_order:
+            self.take_profit_order.deactivate()
+
+    def on_order_filled(self, filled_order: "Order") -> None:
+        """Handle the event when an order in the group is filled."""
+        if filled_order == self.entry_order:
+            self.activate_child_orders()
+        elif filled_order in [self.take_profit_order, self.stop_loss_order]:
+            self.deactivate_remaining_child_order(filled_order)
+            self.deactivate()
+
+    def get_status(self) -> str:
+        """Get the overall status of the order group."""
+        if not self.orders:
+            return "Empty"
+        if (self.entry_order.status == Order.Status.FILLED) and (
+            (
+                self.take_profit_order is not None
+                and self.take_profit_order.status == Order.Status.FILLED
+            )
+            or (
+                self.stop_loss_order is not None
+                and self.stop_loss_order.status == Order.Status.FILLED
+            )
+        ):
+            return "Filled"
+        if self.entry_order.status in [Order.Status.CANCELED, Order.Status.REJECTED]:
+            return "Cancelled/Rejected"
+        return "Active" if self.active else "Inactive"
 
 
 @dataclass
@@ -325,8 +364,6 @@ class Order:
         LIMIT = "Limit"
         STOP = "Stop"
         STOP_LIMIT = "StopLimit"
-        EXIT_LIMIT = "ExitLimit"
-        EXIT_STOP = "ExitStop"
         TRAILING = "Trailing"
 
     class Status(Enum):
@@ -408,13 +445,13 @@ class Order:
         self, bar: "Bar"
     ) -> tuple[bool, Optional[ExtendedDecimal]]:
         """Check fill conditions for long orders."""
-        if self.details.exectype in [self.ExecType.LIMIT, self.ExecType.EXIT_LIMIT]:
+        if self.details.exectype == self.ExecType.LIMIT:
             if bar.open <= self.details.price:
                 return True, self._apply_slippage(bar.open)
             elif bar.low <= self.details.price <= bar.high:
                 return True, self._apply_slippage(self.details.price)
 
-        elif self.details.exectype in [self.ExecType.STOP, self.ExecType.EXIT_STOP]:
+        elif self.details.exectype == self.ExecType.STOP:
             if bar.open >= self.details.price:
                 return True, self._apply_slippage(bar.open)
             elif bar.low <= self.details.price <= bar.high:
@@ -432,13 +469,13 @@ class Order:
         self, bar: "Bar"
     ) -> tuple[bool, Optional[ExtendedDecimal]]:
         """Check fill conditions for short orders."""
-        if self.details.exectype in [self.ExecType.LIMIT, self.ExecType.EXIT_LIMIT]:
+        if self.details.exectype == self.ExecType.LIMIT:
             if bar.open >= self.details.price:
                 return True, self._apply_slippage(bar.open)
             elif bar.low <= self.details.price <= bar.high:
                 return True, self._apply_slippage(self.details.price)
 
-        elif self.details.exectype in [self.ExecType.STOP, self.ExecType.EXIT_STOP]:
+        elif self.details.exectype == self.ExecType.STOP:
             if bar.open <= self.details.price:
                 return True, self._apply_slippage(bar.open)
             elif bar.low <= self.details.price <= bar.high:
@@ -550,8 +587,8 @@ class Order:
         if self.execution_bar_timestamp is None:
             self.execution_bar_timestamp = timestamp
 
-        if self.order_group:
-            self.order_group.on_order_filled(self)
+        # if self.order_group:
+        #     self.order_group.on_order_filled(self)
 
         logger_main.info(
             f"Order {self.id} filled: size {fill_size}, price {fill_price}"
@@ -656,26 +693,6 @@ class Order:
             )
             return price * slippage_factor
         return price
-
-    def sort_key(self) -> Tuple[int, ExtendedDecimal]:
-        """
-        Generate a sort key for the order based on its type and price.
-
-        This method is used to determine the order's priority when multiple orders
-        are being processed. It takes into account the order type and the current
-        market direction.
-
-        Returns:
-            Tuple[int, ExtendedDecimal]: A tuple used as a sort key, where the first
-            element is an integer representing the order type priority, and the second
-            is the order price.
-        """
-        if self.details.exectype == self.ExecType.MARKET:
-            return (0, ExtendedDecimal("0"))
-        elif self.details.exectype in [self.ExecType.STOP, self.ExecType.STOP_LIMIT]:
-            return (1, self.details.price)
-        else:  # LIMIT orders
-            return (2, self.details.price)
 
     def update_trailing_stop(self, current_price: ExtendedDecimal):
         """Update the trailing stop price based on the current market price."""

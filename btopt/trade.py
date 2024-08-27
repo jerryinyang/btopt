@@ -59,9 +59,7 @@ class Trade:
         self.entry_order: Order = entry_order
         self.exit_orders: List[Order] = []
 
-        self.entry_price: ExtendedDecimal = (
-            entry_order.get_average_fill_price() or entry_order.get_last_fill_price()
-        )
+        self.entry_price: ExtendedDecimal = entry_order.get_last_fill_price()
         self.entry_timestamp: datetime = (
             entry_order.get_last_fill_timestamp() or entry_bar.timestamp
         )

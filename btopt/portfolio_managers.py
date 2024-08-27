@@ -1,8 +1,10 @@
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import pandas as pd
+from scipy import stats
 
 from .data.bar import Bar
 from .data.timeframe import Timeframe
@@ -19,22 +21,27 @@ class OrderManager:
 
     def __init__(self):
         self.orders: Dict[str, Order] = {}
-        self.order_groups: Dict[str, OrderGroup] = {}
+        self.order_groups: Dict[str, Union[OCOGroup, OCAGroup, BracketGroup]] = {}
         self.pending_orders: Dict[str, List[Order]] = {}
         self.updated_orders: List[Order] = []
 
-    def create_order(self, details: OrderDetails) -> Order:
+    def create_order(self, details: OrderDetails, activated: bool = True) -> Order:
         """
         Create a new order and add it to the pending orders.
 
         Args:
             details (OrderDetails): The details of the order to be created.
+            activated (bool): Controls if the order should be activated or deactivated
 
         Returns:
             Order: The newly created order.
         """
         order_id = str(uuid.uuid4())
         order = Order(order_id, details)
+
+        if not activated:
+            order.deactivate()
+
         self.orders[order_id] = order
         self.updated_orders.append(order)
 
@@ -173,105 +180,51 @@ class OrderManager:
             elif order.status == Order.Status.REJECTED:
                 group.on_order_rejected(order)
 
-    def cancel_order(self, order_id: str) -> None:
-        """
-        Cancel an order.
-
-        Args:
-            order_id (str): The ID of the order to be cancelled.
-        """
-        if order_id in self.orders:
-            order = self.orders[order_id]
-            order.cancel()
-            self.updated_orders.append(order)
-            logger_main.info(f"Cancelled order: {order_id}")
-        else:
-            logger_main.warning(f"Order not found: {order_id}")
-
     def _sort_orders(self, orders: List[Order], bar: Bar) -> List[Order]:
         """
-        Sort orders based on their type and price.
+        Sort a list of orders based on their execution type and the current market conditions.
+
+        This method implements a custom sorting logic for orders:
+        1. Market orders are always placed at the beginning of the list.
+        2. Stop orders come after market orders but before limit orders.
+        3. Limit orders are placed at the end of the list.
+        4. For both stop and limit orders, the sorting is based on the current bar:
+           - In an up bar (close >= open), orders are sorted in ascending price order.
+           - In a down bar (close < open), orders are sorted in descending price order.
+
+        The assumption is made that bar formation follows the OLHC (Open, Low, High, Close) path.
 
         Args:
-            orders (List[Order]): The list of orders to sort.
-            bar (Bar): The current price bar.
+            orders (List[Order]): A list of Order objects to be sorted.
+            bar (Bar): The current price bar, used to determine market direction.
 
         Returns:
-            List[Order]: The sorted list of orders.
+            List[Order]: A new list containing the input orders sorted according to the specified logic.
         """
         is_up_bar = bar.close >= bar.open
-        return sorted(orders, key=lambda x: x.sort_key(), reverse=not is_up_bar)
 
-    def modify_order(self, order_id: str, new_details: Dict[str, Any]) -> None:
-        """
-        Modify an existing order.
+        # Separate orders into categories
+        market_orders = [
+            order for order in orders if order.details.exectype == Order.ExecType.MARKET
+        ]
+        stop_orders = [
+            order
+            for order in orders
+            if order.details.exectype
+            in [Order.ExecType.STOP, Order.ExecType.STOP_LIMIT]
+        ]
+        limit_orders = [
+            order for order in orders if order.details.exectype == Order.ExecType.LIMIT
+        ]
 
-        Args:
-            order_id (str): The ID of the order to be modified.
-            new_details (Dict[str, Any]): A dictionary containing the new details for the order.
-        """
-        if order_id in self.orders:
-            order = self.orders[order_id]
-            for key, value in new_details.items():
-                if hasattr(order.details, key):
-                    setattr(order.details, key, value)
-            self.updated_orders.append(order)
-            logger_main.info(f"Modified order: {order_id}")
-        else:
-            logger_main.warning(f"Order not found: {order_id}")
+        # Sort stop and limit orders
+        stop_orders.sort(key=lambda x: x.details.price, reverse=not is_up_bar)
+        limit_orders.sort(key=lambda x: x.details.price, reverse=not is_up_bar)
 
-    def process_orders(
-        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
-    ) -> List[Order]:
-        """
-        Process all pending orders based on current market data.
+        # Combine all orders in the specified order
+        sorted_orders = market_orders + stop_orders + limit_orders
 
-        This method iterates through all pending orders, checks if they can be filled
-        based on the current market data, and executes them if conditions are met.
-
-        Args:
-            timestamp (datetime): The current timestamp.
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
-
-        Returns:
-            List[Order]: A list of orders that were processed (filled or cancelled).
-        """
-        processed_orders: List[Order] = []
-
-        for symbol, orders in self.pending_orders.items():
-            if symbol not in market_data:
-                continue
-
-            bar = market_data[symbol][min(market_data[symbol].keys())]
-            sorted_orders = self._sort_orders(orders, bar)
-
-            for order in sorted_orders:
-                if not order.is_active:
-                    continue
-
-                is_filled, fill_price = order.is_filled(bar)
-
-                if is_filled:
-                    order.on_fill(order.get_remaining_size(), fill_price, timestamp)
-                    processed_orders.append(order)
-                    self.updated_orders.append(order)
-
-                    if order.order_group:
-                        order.order_group.on_order_filled(order)
-
-                elif order.is_expired(timestamp):
-                    order.on_cancel()
-                    processed_orders.append(order)
-                    self.updated_orders.append(order)
-
-        # Remove processed orders from pending orders
-        for order in processed_orders:
-            self.pending_orders[order.details.ticker].remove(order)
-
-        self.cleanup_completed_orders_and_groups()
-        self.handle_order_group_events()  # Add this line to handle order group events
-
-        return processed_orders
+        return sorted_orders
 
     def _get_current_price(self, symbol: str) -> ExtendedDecimal:
         """
@@ -342,85 +295,24 @@ class OrderManager:
             if group.get_status() == "Active"
         ]
 
-    def handle_fill_event(
-        self,
-        order_id: str,
-        fill_size: ExtendedDecimal,
-        fill_price: ExtendedDecimal,
-        timestamp: datetime,
-    ) -> None:
-        """
-        Handle a fill event for an order.
+    def cleanup_completed_orders_and_groups(self) -> None:
+        # Remove filled, cancelled and rejected order groups
+        for order_id, order in self.orders.items():
+            if order.status in [
+                Order.Status.FILLED,
+                Order.Status.CANCELED,
+                Order.Status.REJECTED,
+            ]:
+                del self.orders[order_id]
+                logger_main.info(f"Order {order_id} completed and removed.")
 
-        Args:
-            order_id (str): The ID of the order that was filled.
-            fill_size (ExtendedDecimal): The size of the fill.
-            fill_price (ExtendedDecimal): The price of the fill.
-            timestamp (datetime): The timestamp of the fill.
-        """
-        if order_id in self.orders:
-            order = self.orders[order_id]
-            order.on_fill(fill_size, fill_price, timestamp)
-            self.updated_orders.append(order)
-        else:
-            logger_main.warning(
-                f"Fill event received for unknown order: {order_id}. \n\n ORDERS: {self.orders}\n ORDER GROUPS: {self.order_groups}\n\n"
-            )
-
-    def handle_reject_event(self, order_id: str, reason: str) -> None:
-        """
-        Handle a reject event for an order.
-
-        Args:
-            order_id (str): The ID of the order that was rejected.
-            reason (str): The reason for the rejection.
-        """
-        if order_id in self.orders:
-            order = self.orders[order_id]
-            order.on_reject(reason)
-            self.updated_orders.append(order)
-        else:
-            logger_main.warning(f"Reject event received for unknown order: {order_id}")
-
-    def handle_order_group_events(self) -> None:
-        """
-        Handle events for order groups.
-
-        This method checks the status of each order group and removes
-        completed groups from the active order_groups dictionary.
-        """
-        for group_id, group in list(self.order_groups.items()):
+        # Remove filled, cancelled and rejected order groups
+        for group_id, group in self.order_groups.items():
             if group.get_status() in ["Filled", "Cancelled/Rejected"]:
                 del self.order_groups[group_id]
                 logger_main.info(f"Order group {group_id} completed and removed.")
 
-    def cleanup_completed_orders_and_groups(self) -> None:
-        """
-        Remove completed orders and groups from the manager.
-        """
-        self.orders = {
-            order_id: order
-            for order_id, order in self.orders.items()
-            if order.is_active
-        }
-        self.order_groups = {
-            group_id: group
-            for group_id, group in self.order_groups.items()
-            if group.get_status() == "Active"
-        }
         logger_main.info("Cleaned up completed orders and groups")
-
-    def check_order_expiry(self, current_time: datetime) -> None:
-        """
-        Check and cancel expired orders.
-
-        Args:
-            current_time (datetime): The current timestamp to check against.
-        """
-        for order_id, order in list(self.orders.items()):
-            if order.is_expired(current_time):
-                self.cancel_order(order_id)
-                logger_main.info(f"Order {order_id} expired and cancelled.")
 
     def get_updated_orders(self) -> List[Order]:
         return self.updated_orders
@@ -431,6 +323,366 @@ class OrderManager:
     def __repr__(self) -> str:
         """Return a string representation of the OrderManager."""
         return f"OrderManager(active_orders={len(self.get_active_orders())}, active_groups={len(self.get_active_groups())})"
+
+    # PREVIOUS MODIFICATION
+    def execute_order(
+        self, order: Order, execution_price: ExtendedDecimal, bar: Bar
+    ) -> Tuple[bool, Optional[Trade]]:
+        """
+        Execute an order and handle all aspects of order processing.
+
+        Args:
+            order (Order): The order to execute.
+            execution_price (ExtendedDecimal): The price at which the order is executed.
+            bar (Bar): The current price bar.
+
+        Returns:
+            Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
+            and the resulting Trade object if applicable.
+
+        This method handles:
+        - Margin requirement checks
+        - Different order types (market, limit, stop)
+        - Partial fill logic
+        - Trade reversal handling
+        """
+        if not self._check_margin_requirements(order):
+            return False, None
+
+        fill_size = self._calculate_fill_size(order, execution_price, bar)
+        if fill_size == ExtendedDecimal("0"):
+            return False, None
+
+        trade = self._create_or_update_trade(order, execution_price, fill_size, bar)
+        self._update_order_status(order, fill_size)
+        self._handle_order_group(order)
+
+        return True, trade
+
+    def modify_order(self, order_id: str, new_details: Dict[str, Any]) -> bool:
+        """
+        Modify an existing order.
+
+        Args:
+            order_id (str): The ID of the order to be modified.
+            new_details (Dict[str, Any]): A dictionary containing the new details for the order.
+
+        Returns:
+            bool: True if the order was successfully modified, False otherwise.
+        """
+        if order_id not in self.orders:
+            return False
+
+        order = self.orders[order_id]
+        for key, value in new_details.items():
+            if hasattr(order.details, key):
+                setattr(order.details, key, value)
+
+        self._update_order_group(order)
+        self.updated_orders.append(order)
+        return True
+
+    def cancel_order(self, order_id: str) -> bool:
+        """
+        Cancel an existing order.
+
+        Args:
+            order_id (str): The ID of the order to cancel.
+
+        Returns:
+            bool: True if the order was successfully cancelled, False otherwise.
+        """
+        if order_id not in self.orders:
+            return False
+
+        order = self.orders[order_id]
+        order.cancel()
+        self._handle_order_group(order)
+        self.updated_orders.append(order)
+        return True
+
+    def _check_margin_requirements(self, order: Order) -> bool:
+        """
+        Check if there's sufficient margin to execute the order.
+
+        Args:
+            order (Order): The order to check.
+
+        Returns:
+            bool: True if there's sufficient margin, False otherwise.
+        """
+        # Implementation depends on the specific margin requirements of your system
+        pass
+
+    def _calculate_fill_size(
+        self, order: Order, execution_price: ExtendedDecimal, bar: Bar
+    ) -> ExtendedDecimal:
+        """
+        Calculate the fill size for an order based on the order type and current market conditions.
+
+        Args:
+            order (Order): The order being executed.
+            execution_price (ExtendedDecimal): The price at which the order is being executed.
+            bar (Bar): The current price bar.
+
+        Returns:
+            ExtendedDecimal: The calculated fill size.
+        """
+        # Implementation depends on your specific order execution logic
+        pass
+
+    def _create_or_update_trade(
+        self,
+        order: Order,
+        execution_price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        bar: Bar,
+    ) -> Trade:
+        """
+        Create a new trade or update an existing one based on the executed order.
+
+        Args:
+            order (Order): The executed order.
+            execution_price (ExtendedDecimal): The price at which the order was executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+            bar (Bar): The current price bar.
+
+        Returns:
+            Trade: The created or updated Trade object.
+        """
+        # Implementation depends on your trade management logic
+        pass
+
+    def _update_order_status(self, order: Order, fill_size: ExtendedDecimal) -> None:
+        """
+        Update the status of an order after execution.
+
+        Args:
+            order (Order): The order to update.
+            fill_size (ExtendedDecimal): The size of the order fill.
+        """
+        if fill_size == order.details.size:
+            order.status = Order.Status.FILLED
+        elif fill_size > ExtendedDecimal("0"):
+            order.status = Order.Status.PARTIALLY_FILLED
+        self.updated_orders.append(order)
+
+    def _handle_order_group(self, order: Order) -> None:
+        """
+        Handle updates to the order group associated with an order.
+
+        Args:
+            order (Order): The order that was updated.
+        """
+        if order.order_group:
+            if order.status == Order.Status.FILLED:
+                order.order_group.on_order_filled(order)
+            elif order.status == Order.Status.CANCELED:
+                order.order_group.on_order_cancelled(order)
+
+    def _update_order_group(self, order: Order) -> None:
+        """
+        Update the order group when an order is modified.
+
+        Args:
+            order (Order): The order that was modified.
+        """
+        if order.order_group:
+            order.order_group.update_order(order)
+
+    # LATEST MODIFICATION
+    def process_orders(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> List[Order]:
+        """
+        Process all pending orders based on current market data, handling partial fills.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
+
+        Returns:
+            List[Order]: A list of orders that were processed (filled or cancelled).
+        """
+        processed_orders: List[Order] = []
+
+        for symbol, orders in self.pending_orders.items():
+            if symbol not in market_data:
+                continue
+
+            bar = market_data[symbol][min(market_data[symbol].keys())]
+            sorted_orders = self._sort_orders(orders, bar)
+
+            for order in sorted_orders:
+                if not order.is_active:
+                    continue
+
+                is_filled, fill_price, fill_size = self._check_order_fill(order, bar)
+
+                if is_filled:
+                    self._handle_order_fill(order, fill_price, fill_size, timestamp)
+                    processed_orders.append(order)
+
+                elif order.is_expired(timestamp):
+                    self._cancel_order(order)
+                    processed_orders.append(order)
+
+        self._cleanup_completed_orders()
+        return processed_orders
+
+    def _check_order_fill(
+        self, order: Order, bar: Bar
+    ) -> Tuple[bool, Optional[ExtendedDecimal], Optional[ExtendedDecimal]]:
+        """
+        Check if an order should be filled based on the current bar, supporting partial fills.
+
+        Args:
+            order (Order): The order to check.
+            bar (Bar): The current price bar.
+            remaining_size (ExtendedDecimal): The remaining size of the order to be filled.
+
+        Returns:
+            Tuple[bool, Optional[ExtendedDecimal], Optional[ExtendedDecimal]]:
+                A tuple containing:
+                - Whether the order should be filled (bool)
+                - The fill price if filled, None otherwise (ExtendedDecimal)
+                - The fill size if filled, None otherwise (ExtendedDecimal)
+        """
+        is_filled, fill_price = order.is_filled(bar)
+
+        return is_filled, fill_price, order.get_filled_size()
+
+    def _handle_order_fill(
+        self,
+        order: Order,
+        fill_price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        timestamp: datetime,
+    ) -> None:
+        """
+        Handle the filling of an order, including partial fills.
+
+        Args:
+            order (Order): The order being filled.
+            fill_price (ExtendedDecimal): The price at which the order is filled.
+            fill_size (ExtendedDecimal): The size of the fill.
+            timestamp (datetime): The current timestamp.
+        """
+        order.on_fill(fill_size, fill_price, timestamp)
+
+        if order.get_remaining_size() == 0:
+            self._handle_order_group_fill(order)
+        elif order.get_remaining_size() > ExtendedDecimal("0"):
+            # Handle partial fill
+            self._handle_partial_fill(order)
+
+        self.updated_orders.append(order)
+
+    def _handle_partial_fill(self, order: Order) -> None:
+        """
+        Handle partial fill of an order.
+
+        Args:
+            order (Order): The partially filled order.
+        """
+        # Implement partial fill handling logic here
+        # This might include updating the order status, notifying the strategy, etc.
+        logger_main.info(
+            f"Partial fill for order: {order.id}, remaining size: {order.get_remaining_size()}"
+        )
+
+    def _handle_order_group_fill(self, filled_order: Order) -> None:
+        """
+        Handle the implications of a filled order on its order group.
+
+        Args:
+            filled_order (Order): The order that was filled.
+        """
+        if filled_order.order_group:
+            if isinstance(filled_order.order_group, OCOGroup):
+                self._cancel_other_oco_orders(filled_order)
+            elif isinstance(filled_order.order_group, OCAGroup):
+                self._cancel_other_oca_orders(filled_order)
+            elif isinstance(filled_order.order_group, BracketGroup):
+                self._handle_bracket_order_fill(filled_order)
+
+    def _cancel_other_oco_orders(self, filled_order: Order) -> None:
+        """
+        Cancel other orders in the OCO group when one order is filled.
+
+        Args:
+            filled_order (Order): The order that was filled.
+        """
+        for order in filled_order.order_group.orders:
+            if order != filled_order:
+                self._cancel_order(order)
+
+    def _cancel_other_oca_orders(self, filled_order: Order) -> None:
+        """
+        Cancel other orders in the OCA group when one order is filled.
+
+        Args:
+            filled_order (Order): The order that was filled.
+        """
+        for order in filled_order.order_group.orders:
+            if order != filled_order:
+                self._cancel_order(order)
+
+    def _handle_bracket_order_fill(self, filled_order: Order) -> None:
+        """
+        Handle the filling of an order in a bracket group.
+
+        Args:
+            filled_order (Order): The order that was filled.
+        """
+        bracket_group: BracketGroup = filled_order.order_group
+        if filled_order == bracket_group.entry_order:
+            # Activate take profit and stop loss orders
+            if bracket_group.take_profit_order:
+                bracket_group.take_profit_order.activate()
+            if bracket_group.stop_loss_order:
+                bracket_group.stop_loss_order.activate()
+        elif filled_order in [
+            bracket_group.take_profit_order,
+            bracket_group.stop_loss_order,
+        ]:
+            # Cancel the other exit order
+            other_exit_order = (
+                bracket_group.take_profit_order
+                if filled_order == bracket_group.stop_loss_order
+                else bracket_group.stop_loss_order
+            )
+            if other_exit_order:
+                self._cancel_order(other_exit_order)
+
+    def _cancel_order(self, order: Order) -> None:
+        """
+        Cancel an order and update its status.
+
+        Args:
+            order (Order): The order to cancel.
+        """
+        order.cancel()
+        self.updated_orders.append(order)
+        logger_main.info(f"Cancelled order: {order.id}")
+
+    def _cleanup_completed_orders(self) -> None:
+        """
+        Remove completed (filled, cancelled, or rejected) orders from pending orders.
+        """
+        for symbol in list(self.pending_orders.keys()):
+            self.pending_orders[symbol] = [
+                order
+                for order in self.pending_orders[symbol]
+                if order.status
+                not in [
+                    Order.Status.FILLED,
+                    Order.Status.CANCELED,
+                    Order.Status.REJECTED,
+                ]
+            ]
+            if not self.pending_orders[symbol]:
+                del self.pending_orders[symbol]
 
 
 class TradeManager:
@@ -463,57 +715,32 @@ class TradeManager:
         self._add_to_updated_trades(trade)
         return trade
 
-    def update_trade(self, trade: Trade, current_bar: Bar) -> None:
-        pre_update_state = trade.to_dict()
-        trade.update(current_bar)
-        if trade.to_dict() != pre_update_state:
-            self._add_to_updated_trades(trade)
+    # def update_trade(self, trade: Trade, current_bar: Bar) -> None:
+    #     pre_update_state = trade.to_dict()
+    #     trade.update(current_bar)
+    #     if trade.to_dict() != pre_update_state:
+    #         self._add_to_updated_trades(trade)
 
-    def close_trade(
-        self,
-        trade: Trade,
-        exit_order: Order,
-        exit_price: ExtendedDecimal,
-        exit_bar: Bar,
-    ) -> None:
-        """
-        Close a trade.
+    # def partial_close_trade(
+    #     self,
+    #     trade: Trade,
+    #     exit_order: Order,
+    #     exit_price: ExtendedDecimal,
+    #     exit_bar: Bar,
+    #     size: ExtendedDecimal,
+    # ) -> None:
+    #     """
+    #     Partially close a trade.
 
-        Args:
-            trade (Trade): The trade to close.
-            exit_order (Order): The order used to close the trade.
-            exit_price (ExtendedDecimal): The price at which the trade is being closed.
-            exit_bar (Bar): The bar at which the trade is being closed.
-        """
-        trade.close(exit_order, exit_price, exit_bar)
-        symbol = trade.ticker
-        if trade.status == Trade.Status.CLOSED:
-            self.open_trades[symbol].remove(trade)
-            if not self.open_trades[symbol]:
-                del self.open_trades[symbol]
-            self.closed_trades.append(trade)
-        self._add_to_updated_trades(trade)
-
-    def partial_close_trade(
-        self,
-        trade: Trade,
-        exit_order: Order,
-        exit_price: ExtendedDecimal,
-        exit_bar: Bar,
-        size: ExtendedDecimal,
-    ) -> None:
-        """
-        Partially close a trade.
-
-        Args:
-            trade (Trade): The trade to partially close.
-            exit_order (Order): The order used to close part of the trade.
-            exit_price (ExtendedDecimal): The price at which part of the trade is being closed.
-            exit_bar (Bar): The bar at which part of the trade is being closed.
-            size (ExtendedDecimal): The size of the position to close.
-        """
-        trade.close(exit_order, exit_price, exit_bar, size)
-        self._add_to_updated_trades(trade)
+    #     Args:
+    #         trade (Trade): The trade to partially close.
+    #         exit_order (Order): The order used to close part of the trade.
+    #         exit_price (ExtendedDecimal): The price at which part of the trade is being closed.
+    #         exit_bar (Bar): The bar at which part of the trade is being closed.
+    #         size (ExtendedDecimal): The size of the position to close.
+    #     """
+    #     trade.close(exit_order, exit_price, exit_bar, size)
+    #     self._add_to_updated_trades(trade)
 
     def get_open_trades(self, strategy_id: Optional[str] = None) -> List[Trade]:
         if strategy_id:
@@ -544,8 +771,7 @@ class TradeManager:
         self, symbol: str, current_price: ExtendedDecimal
     ) -> ExtendedDecimal:
         return sum(
-            trade.calculate_unrealized_pnl(current_price)
-            for trade in self.open_trades.get(symbol, [])
+            trade.get_unrealized_pnl() for trade in self.open_trades.get(symbol, [])
         )
 
     def _add_to_updated_trades(self, trade: Trade) -> None:
@@ -561,6 +787,383 @@ class TradeManager:
     def clear_updated_trades(self) -> None:
         self.updated_trades.clear()
 
+    # PREVIOUS MODIFICATION
+    def handle_bracket_order(
+        self,
+        entry_order: Order,
+        take_profit_order: Optional[Order],
+        stop_loss_order: Optional[Order],
+    ) -> None:
+        """
+        Handle a bracket order by associating the entry, take profit, and stop loss orders.
+
+        Args:
+            entry_order (Order): The entry order of the bracket.
+            take_profit_order (Optional[Order]): The take profit order of the bracket.
+            stop_loss_order (Optional[Order]): The stop loss order of the bracket.
+        """
+        trade = self._get_trade_by_order(entry_order)
+        if trade:
+            if take_profit_order:
+                trade.take_profit_order = take_profit_order
+            if stop_loss_order:
+                trade.stop_loss_order = stop_loss_order
+
+    def update_open_trades(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
+        """
+        Update all open trades based on current market data.
+
+        Args:
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
+        """
+        for symbol, trades in self.open_trades.items():
+            if symbol in market_data:
+                current_bar = market_data[symbol][min(market_data[symbol].keys())]
+                for trade in trades:
+                    trade.update(current_bar)
+                    self.updated_trades.append(trade)
+
+    def close_trade(
+        self,
+        trade: Trade,
+        execution_price: ExtendedDecimal,
+        order: Optional[Order] = None,
+    ) -> None:
+        """
+        Close a specific trade and update the portfolio accordingly.
+
+        Args:
+            trade (Trade): The trade to close.
+            execution_price (ExtendedDecimal): The price at which to close the trade.
+            order (Optional[Order]): The order that triggered the trade closure, if any.
+        """
+        trade.close(execution_price, order)
+        symbol = trade.ticker
+        self.open_trades[symbol].remove(trade)
+        if not self.open_trades[symbol]:
+            del self.open_trades[symbol]
+        self.closed_trades.append(trade)
+        self.updated_trades.append(trade)
+
+    def _get_position_size(self, symbol: str) -> ExtendedDecimal:
+        """
+        Get the current position size for a given symbol.
+
+        Args:
+            symbol (str): The symbol to check.
+
+        Returns:
+            ExtendedDecimal: The current position size.
+        """
+        return sum(trade.current_size for trade in self.open_trades.get(symbol, []))
+
+    def _get_trade_by_order(self, order: Order) -> Optional[Trade]:
+        """
+        Get the trade associated with a given order.
+
+        Args:
+            order (Order): The order to look up.
+
+        Returns:
+            Optional[Trade]: The associated Trade object, if found.
+        """
+        for trades in self.open_trades.values():
+            for trade in trades:
+                if trade.entry_order == order:
+                    return trade
+        return None
+
+    # LATEST MODIFICATION
+    def manage_trade(
+        self,
+        order: Order,
+        execution_price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        bar: Bar,
+    ) -> Optional[Trade]:
+        """
+        Manage trade creation, updates, closures, and reversals.
+
+        Args:
+            order (Order): The order being executed.
+            execution_price (ExtendedDecimal): The price at which the order is executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+            bar (Bar): The current price bar.
+
+        Returns:
+            Optional[Trade]: The created or updated Trade object, if applicable.
+        """
+        symbol = order.details.ticker
+        existing_position = self._get_position_size(symbol)
+
+        if self._is_trade_reversal(existing_position, order.details.direction):
+            return self._handle_trade_reversal(
+                order, execution_price, fill_size, bar, existing_position
+            )
+        elif existing_position != ExtendedDecimal("0"):
+            return self._update_existing_trade(order, execution_price, fill_size, bar)
+        else:
+            return self._create_new_trade(order, execution_price, fill_size, bar)
+
+    def _is_trade_reversal(
+        self, existing_position: ExtendedDecimal, order_direction: Order.Direction
+    ) -> bool:
+        """
+        Check if the trade is a reversal.
+
+        Args:
+            existing_position (ExtendedDecimal): The existing position size.
+            order_direction (Order.Direction): The direction of the new order.
+
+        Returns:
+            bool: True if the trade is a reversal, False otherwise.
+        """
+        return (
+            existing_position > ExtendedDecimal("0")
+            and order_direction == Order.Direction.SHORT
+        ) or (
+            existing_position < ExtendedDecimal("0")
+            and order_direction == Order.Direction.LONG
+        )
+
+    def _handle_trade_reversal(
+        self,
+        order: Order,
+        execution_price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        bar: Bar,
+        existing_position: ExtendedDecimal,
+    ) -> Trade:
+        """
+        Handle a trade reversal by closing existing trades and opening a new one.
+
+        Args:
+            order (Order): The order causing the reversal.
+            execution_price (ExtendedDecimal): The price at which the order is executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+            bar (Bar): The current price bar.
+            existing_position (ExtendedDecimal): The size of the existing position.
+
+        Returns:
+            Trade: The new Trade object created after the reversal.
+        """
+        self._close_existing_trades(
+            order.details.ticker, execution_price, bar, abs(existing_position)
+        )
+        remaining_size = fill_size - abs(existing_position)
+
+        if remaining_size > ExtendedDecimal("0"):
+            return self._create_new_trade(order, execution_price, remaining_size, bar)
+        return None
+
+    def _close_existing_trades(
+        self,
+        symbol: str,
+        execution_price: ExtendedDecimal,
+        bar: Bar,
+        size_to_close: ExtendedDecimal,
+    ) -> None:
+        """
+        Close existing trades for a symbol.
+
+        Args:
+            symbol (str): The symbol of the trades to close.
+            execution_price (ExtendedDecimal): The price at which to close the trades.
+            bar (Bar): The current price bar.
+            size_to_close (ExtendedDecimal): The total size of positions to close.
+        """
+        remaining_size = size_to_close
+        for trade in self.open_trades.get(symbol, [])[
+            :
+        ]:  # Create a copy of the list to iterate
+            if remaining_size <= ExtendedDecimal("0"):
+                break
+
+            if remaining_size >= trade.current_size:
+                self.close_trade(trade, execution_price, bar)
+                remaining_size -= trade.current_size
+            else:
+                self.partial_close_trade(trade, execution_price, bar, remaining_size)
+                remaining_size = ExtendedDecimal("0")
+
+    def _update_existing_trade(
+        self,
+        order: Order,
+        execution_price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        bar: Bar,
+    ) -> Trade:
+        """
+        Update an existing trade based on a new order execution.
+
+        Args:
+            order (Order): The order being executed.
+            execution_price (ExtendedDecimal): The price at which the order is executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+            bar (Bar): The current price bar.
+
+        Returns:
+            Trade: The updated Trade object.
+        """
+        symbol = order.details.ticker
+        existing_trade = self._get_latest_trade(symbol)
+
+        if existing_trade:
+            existing_trade.update(bar)
+            existing_trade.add_to_position(fill_size, execution_price)
+            self._update_average_entry_price(existing_trade, fill_size, execution_price)
+            return existing_trade
+        else:
+            return self._create_new_trade(order, execution_price, fill_size, bar)
+
+    def _create_new_trade(
+        self,
+        order: Order,
+        execution_price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        bar: Bar,
+    ) -> Trade:
+        """
+        Create a new trade based on an order execution.
+
+        Args:
+            order (Order): The order being executed.
+            execution_price (ExtendedDecimal): The price at which the order is executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+            bar (Bar): The current price bar.
+
+        Returns:
+            Trade: The newly created Trade object.
+        """
+        self.trade_count += 1
+        new_trade = Trade(
+            trade_id=self.trade_count,
+            entry_order=order,
+            entry_bar=bar,
+            commission_rate=self.commission_rate,
+            strategy_id=order.details.strategy_id,
+        )
+        new_trade.initial_size = fill_size
+        new_trade.current_size = fill_size
+        new_trade.entry_price = execution_price
+
+        symbol = order.details.ticker
+        if symbol not in self.open_trades:
+            self.open_trades[symbol] = []
+        self.open_trades[symbol].append(new_trade)
+
+        self.updated_trades.append(new_trade)
+        return new_trade
+
+    def _update_average_entry_price(
+        self, trade: Trade, new_size: ExtendedDecimal, new_price: ExtendedDecimal
+    ) -> None:
+        """
+        Update the average entry price of a trade when adding to the position.
+
+        Args:
+            trade (Trade): The trade to update.
+            new_size (ExtendedDecimal): The size of the new addition to the position.
+            new_price (ExtendedDecimal): The price of the new addition.
+        """
+        total_size = trade.current_size + new_size
+        trade.entry_price = (
+            (trade.entry_price * trade.current_size) + (new_price * new_size)
+        ) / total_size
+
+    def _get_latest_trade(self, symbol: str) -> Optional[Trade]:
+        """
+        Get the most recent open trade for a symbol.
+
+        Args:
+            symbol (str): The symbol to get the latest trade for.
+
+        Returns:
+            Optional[Trade]: The most recent open trade for the symbol, if any.
+        """
+        trades = self.open_trades.get(symbol, [])
+        return trades[-1] if trades else None
+
+    def partial_close_trade(
+        self,
+        trade: Trade,
+        execution_price: ExtendedDecimal,
+        bar: Bar,
+        close_size: ExtendedDecimal,
+    ) -> None:
+        """
+        Partially close a trade and update its metrics.
+
+        Args:
+            trade (Trade): The trade to partially close.
+            execution_price (ExtendedDecimal): The price at which to close the part of the trade.
+            bar (Bar): The current price bar.
+            close_size (ExtendedDecimal): The size of the position to close.
+        """
+        if close_size > trade.current_size:
+            logger_main.warning(
+                "Attempted to close more than the current trade size. Closing entire trade."
+            )
+            close_size = trade.current_size
+
+        trade.close(close_size, execution_price, bar)
+
+        if trade.current_size == ExtendedDecimal("0"):
+            self.close_trade(trade, execution_price, bar)
+        else:
+            trade.update(bar)
+            self.updated_trades.append(trade)
+
+        logger_main.info(
+            f"Partially closed trade {trade.id}. Realized PnL: {trade.get_realized_pnl()}"
+        )
+
+    def update_trade(self, trade: Trade, bar: Bar) -> None:
+        """
+        Update a trade's metrics based on the current market data.
+
+        Args:
+            trade (Trade): The trade to update.
+            bar (Bar): The current price bar.
+        """
+        trade.update(bar)
+        self.updated_trades.append(trade)
+
+    def _get_position_size(self, symbol: str) -> ExtendedDecimal:
+        """
+        Get the current position size for a symbol.
+
+        Args:
+            symbol (str): The symbol to get the position size for.
+
+        Returns:
+            ExtendedDecimal: The current position size (positive for long, negative for short).
+        """
+        return sum(
+            trade.current_size * trade.direction.value
+            for trade in self.open_trades.get(symbol, [])
+        )
+
+    def get_average_entry_price(self, symbol: str) -> Optional[ExtendedDecimal]:
+        """
+        Get the average entry price for a symbol across all open trades.
+
+        Args:
+            symbol (str): The symbol to get the average entry price for.
+
+        Returns:
+            Optional[ExtendedDecimal]: The average entry price, or None if there are no open trades.
+        """
+        trades = self.open_trades.get(symbol, [])
+        if not trades:
+            return None
+
+        total_size = sum(abs(trade.current_size) for trade in trades)
+        weighted_price_sum = sum(
+            trade.entry_price * abs(trade.current_size) for trade in trades
+        )
+        return weighted_price_sum / total_size if total_size > 0 else None
+
 
 class AccountManager:
     def __init__(self, initial_capital: ExtendedDecimal, margin_ratio: ExtendedDecimal):
@@ -569,28 +1172,10 @@ class AccountManager:
         self.margin_ratio = margin_ratio
         self.margin_used = ExtendedDecimal("0")
         self.equity = initial_capital
-        self.buying_power = initial_capital
+        self.buying_power = initial_capital  # Removed in latest
         self.unrealized_pnl = ExtendedDecimal("0")
         self.realized_pnl = ExtendedDecimal("0")
-        self.transaction_log: List[Dict] = []
-
-    def update_cash(self, amount: ExtendedDecimal, reason: str) -> None:
-        self.cash += amount
-        self._log_transaction("Cash", amount, reason)
-
-    def update_margin(self, amount: ExtendedDecimal) -> None:
-        self.margin_used += amount
-        self._update_buying_power()
-
-    def update_equity(self, unrealized_pnl: ExtendedDecimal) -> None:
-        self.unrealized_pnl = unrealized_pnl
-        self.equity = self.cash + self.unrealized_pnl
-        self._update_buying_power()
-
-    def realize_pnl(self, amount: ExtendedDecimal) -> None:
-        self.realized_pnl += amount
-        self.cash += amount
-        self._log_transaction("PnL Realization", amount, "Trade closed")
+        self.transaction_log: List[Dict] = []  # Removed in latest
 
     def _update_buying_power(self) -> None:
         self.buying_power = (self.equity - self.margin_used) / self.margin_ratio
@@ -625,6 +1210,87 @@ class AccountManager:
     def get_transaction_log(self) -> List[Dict]:
         return self.transaction_log
 
+    # PREVIOUS MODIFICATION
+    def update_margin(self, margin_change: ExtendedDecimal) -> None:
+        """
+        Update the margin used.
+
+        Args:
+            margin_change (ExtendedDecimal): The change in margin used.
+        """
+        self.margin_used += margin_change
+        self._update_buying_power()
+
+    def _update_buying_power(self) -> None:
+        """
+        Update the buying power based on current equity and margin used.
+        """
+        self.buying_power = self.get_buying_power()
+
+    # LATEST MODIFICATION
+    def update_cash(self, amount: ExtendedDecimal, reason: str) -> None:
+        """
+        Update the cash balance.
+
+        Args:
+            amount (ExtendedDecimal): The amount to add (positive) or subtract (negative) from the cash balance.
+            reason (str): The reason for the cash update.
+        """
+        self.cash += amount
+        logger_main.info(
+            f"Cash updated: {amount} due to {reason}. New balance: {self.cash}"
+        )
+
+    def update_equity(self, unrealized_pnl: ExtendedDecimal) -> None:
+        """
+        Update the account equity based on unrealized PnL.
+
+        Args:
+            unrealized_pnl (ExtendedDecimal): The current unrealized PnL.
+        """
+        self.unrealized_pnl = unrealized_pnl
+        self.equity = self.cash + self.unrealized_pnl
+        logger_main.info(f"Equity updated. New equity: {self.equity}")
+
+    def update_margin_used(
+        self, long_value: ExtendedDecimal, short_value: ExtendedDecimal
+    ) -> None:
+        """
+        Update the margin used based on current long and short position values.
+
+        Args:
+            long_value (ExtendedDecimal): The total value of long positions.
+            short_value (ExtendedDecimal): The total value of short positions.
+        """
+        long_margin = long_value * self.margin_ratio
+        short_margin = (
+            short_value * self.margin_ratio * ExtendedDecimal("1.5")
+        )  # Higher margin for short positions
+        self.margin_used = long_margin + short_margin
+        logger_main.info(f"Margin used updated. New margin used: {self.margin_used}")
+
+    def get_buying_power(self) -> ExtendedDecimal:
+        """
+        Calculate and return the current buying power.
+
+        Returns:
+            ExtendedDecimal: The current buying power.
+        """
+        return self.equity / self.margin_ratio - self.margin_used
+
+    def realize_pnl(self, amount: ExtendedDecimal) -> None:
+        """
+        Realize PnL and update cash balance.
+
+        Args:
+            amount (ExtendedDecimal): The amount of PnL to realize.
+        """
+        self.realized_pnl += amount
+        self.cash += amount
+        logger_main.info(
+            f"Realized PnL: {amount}. New realized PnL: {self.realized_pnl}"
+        )
+
 
 class Position:
     def __init__(self, symbol: str):
@@ -638,93 +1304,15 @@ class Position:
 class PositionManager:
     def __init__(self):
         self.positions: Dict[str, Position] = {}
-
-    def update_position(self, order: Order, fill_price: ExtendedDecimal) -> None:
-        symbol = order.details.ticker
-        quantity = order.get_filled_size() * (
-            1 if order.details.direction == Order.Direction.LONG else -1
-        )
-
-        if symbol not in self.positions:
-            self.positions[symbol] = Position(symbol)
-
-        position = self.positions[symbol]
-
-        if (
-            position.quantity * quantity >= 0
-        ):  # Adding to existing position or new position
-            new_total = position.quantity + quantity
-            if new_total != ExtendedDecimal("0"):
-                position.average_price = (
-                    position.average_price * position.quantity + fill_price * quantity
-                ) / new_total
-            position.quantity = new_total
-        else:  # Reducing or closing position
-            closed_quantity = min(abs(position.quantity), abs(quantity))
-            pnl = (
-                (fill_price - position.average_price)
-                * closed_quantity
-                * (-1 if position.quantity > 0 else 1)
-            )
-            position.realized_pnl += pnl
-            position.quantity += quantity
-            if position.quantity == ExtendedDecimal("0"):
-                position.average_price = ExtendedDecimal("0")
-
-        if position.quantity == ExtendedDecimal("0"):
-            del self.positions[symbol]
-
-    def get_position(self, symbol: str) -> Optional[Position]:
-        return self.positions.get(symbol)
-
-    def calculate_position_value(
-        self, symbol: str, current_price: ExtendedDecimal
-    ) -> ExtendedDecimal:
-        position = self.get_position(symbol)
-        return position.quantity * current_price if position else ExtendedDecimal("0")
-
-    def update_unrealized_pnl(
-        self, symbol: str, current_price: ExtendedDecimal
-    ) -> None:
-        position = self.get_position(symbol)
-        if position:
-            position.unrealized_pnl = (
-                current_price - position.average_price
-            ) * position.quantity
-
-    def get_long_position_value(
-        self, current_prices: Dict[str, ExtendedDecimal]
-    ) -> ExtendedDecimal:
-        return sum(
-            position.quantity * current_prices[symbol]
-            for symbol, position in self.positions.items()
-            if position.quantity > 0
-        )
-
-    def get_short_position_value(
-        self, current_prices: Dict[str, ExtendedDecimal]
-    ) -> ExtendedDecimal:
-        return sum(
-            abs(position.quantity) * current_prices[symbol]
-            for symbol, position in self.positions.items()
-            if position.quantity < 0
-        )
+        self.average_entry_prices: Dict[
+            str, ExtendedDecimal
+        ] = {}  # Renamed from avg_entry_prices
+        self.unrealized_pnl: Dict[str, ExtendedDecimal] = {}  # Removed in latest
 
     def get_all_positions(self) -> Dict[str, ExtendedDecimal]:
         return {
             symbol: position.quantity for symbol, position in self.positions.items()
         }
-
-    def get_total_position_value(
-        self, current_prices: Dict[str, ExtendedDecimal]
-    ) -> ExtendedDecimal:
-        return sum(
-            self.calculate_position_value(symbol, current_prices[symbol])
-            for symbol in self.positions
-        )
-
-    def get_total_unrealized_pnl(self) -> ExtendedDecimal:
-        return sum(position.unrealized_pnl for position in self.positions.values())
 
     def get_total_realized_pnl(self) -> ExtendedDecimal:
         return sum(position.realized_pnl for position in self.positions.values())
@@ -782,6 +1370,218 @@ class PositionManager:
 
         return close_orders
 
+    # PREVIOUS MODIFICATIONS
+    def calculate_position_value(
+        self, symbol: str, current_price: ExtendedDecimal
+    ) -> ExtendedDecimal:
+        """
+        Calculate the current value of a position.
+
+        Args:
+            symbol (str): The symbol of the position.
+            current_price (ExtendedDecimal): The current market price of the symbol.
+
+        Returns:
+            ExtendedDecimal: The current value of the position.
+        """
+        position = self.positions.get(symbol, ExtendedDecimal("0"))
+        return position * current_price
+
+    def update_unrealized_pnl(
+        self, symbol: str, current_price: ExtendedDecimal
+    ) -> None:
+        """
+        Update the unrealized PnL for a specific position.
+
+        Args:
+            symbol (str): The symbol of the position.
+            current_price (ExtendedDecimal): The current market price of the symbol.
+        """
+        if symbol in self.positions:
+            position = self.positions[symbol]
+            avg_entry_price = self.average_entry_prices[symbol]
+            self.unrealized_pnl[symbol] = (current_price - avg_entry_price) * position
+
+    def get_total_position_value(
+        self, current_prices: Dict[str, ExtendedDecimal]
+    ) -> ExtendedDecimal:
+        """
+        Calculate the total value of all positions.
+
+        Args:
+            current_prices (Dict[str, ExtendedDecimal]): A dictionary of current prices for all symbols.
+
+        Returns:
+            ExtendedDecimal: The total value of all positions.
+        """
+        return sum(
+            self.calculate_position_value(symbol, current_prices[symbol])
+            for symbol in self.positions
+        )
+
+    def get_total_unrealized_pnl(self) -> ExtendedDecimal:
+        """
+        Get the total unrealized PnL across all positions.
+
+        Returns:
+            ExtendedDecimal: The total unrealized PnL.
+        """
+        return sum(self.unrealized_pnl.values())
+
+    def generate_close_orders(
+        self, timestamp: datetime, timeframe: Timeframe
+    ) -> List[Order]:
+        """
+        Generate orders to close all current positions.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            timeframe (Timeframe): The timeframe for the close orders.
+
+        Returns:
+            List[Order]: A list of orders to close all positions.
+        """
+        close_orders = []
+        for symbol, position in self.positions.items():
+            order_details = OrderDetails(
+                ticker=symbol,
+                direction=Order.Direction.SHORT
+                if position > 0
+                else Order.Direction.LONG,
+                size=abs(position),
+                price=None,  # Market order
+                exectype=Order.ExecType.MARKET,
+                timestamp=timestamp,
+                timeframe=timeframe,
+                strategy_id="CLOSE_ALL",
+            )
+            close_orders.append(Order(str(uuid.uuid4()), order_details))
+        return close_orders
+
+    # LATEST MODIFICATIONS
+    def update_position(
+        self, order: Order, execution_price: ExtendedDecimal, fill_size: ExtendedDecimal
+    ) -> None:
+        """
+        Update the position for a given symbol based on an executed order.
+
+        Args:
+            order (Order): The executed order.
+            execution_price (ExtendedDecimal): The price at which the order was executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+        """
+        symbol = order.details.ticker
+        direction = 1 if order.details.direction == Order.Direction.LONG else -1
+        position_change = fill_size * direction
+
+        current_position = self.positions.get(symbol, ExtendedDecimal("0"))
+        new_position = current_position + position_change
+
+        if current_position == ExtendedDecimal("0"):
+            self.average_entry_prices[symbol] = execution_price
+        else:
+            # Calculate new average entry price
+            current_value = abs(current_position) * self.average_entry_prices[symbol]
+            new_value = fill_size * execution_price
+            total_size = abs(current_position) + fill_size
+            self.average_entry_prices[symbol] = (current_value + new_value) / total_size
+
+        self.positions[symbol] = new_position
+
+        if new_position == ExtendedDecimal("0"):
+            del self.positions[symbol]
+            del self.average_entry_prices[symbol]
+
+        logger_main.info(
+            f"Updated position for {symbol}: {new_position} @ {self.average_entry_prices.get(symbol)}"
+        )
+
+    def get_long_position_value(
+        self, current_prices: Dict[str, ExtendedDecimal]
+    ) -> ExtendedDecimal:
+        """
+        Calculate the total value of all long positions.
+
+        Args:
+            current_prices (Dict[str, ExtendedDecimal]): Current prices for all symbols.
+
+        Returns:
+            ExtendedDecimal: The total value of all long positions.
+        """
+        return sum(
+            position * current_prices[symbol]
+            for symbol, position in self.positions.items()
+            if position > 0
+        )
+
+    def get_short_position_value(
+        self, current_prices: Dict[str, ExtendedDecimal]
+    ) -> ExtendedDecimal:
+        """
+        Calculate the total value of all short positions.
+
+        Args:
+            current_prices (Dict[str, ExtendedDecimal]): Current prices for all symbols.
+
+        Returns:
+            ExtendedDecimal: The total value of all short positions.
+        """
+        return sum(
+            abs(position) * current_prices[symbol]
+            for symbol, position in self.positions.items()
+            if position < 0
+        )
+
+    def get_position(self, symbol: str) -> ExtendedDecimal:
+        """
+        Get the current position for a symbol.
+
+        Args:
+            symbol (str): The symbol to get the position for.
+
+        Returns:
+            ExtendedDecimal: The current position size (positive for long, negative for short).
+        """
+        position = self.positions.get(symbol, None)
+
+        if position:
+            return position.quantity
+        return ExtendedDecimal("0")
+
+    def get_average_entry_price(self, symbol: str) -> Optional[ExtendedDecimal]:
+        """
+        Get the average entry price for a symbol.
+
+        Args:
+            symbol (str): The symbol to get the average entry price for.
+
+        Returns:
+            Optional[ExtendedDecimal]: The average entry price, or None if there's no position.
+        """
+        return self.average_entry_prices.get(symbol)
+
+    def get_position_weights(
+        self, current_prices: Dict[str, ExtendedDecimal]
+    ) -> Dict[str, float]:
+        """
+        Calculate the weight of each position in the portfolio.
+
+        Args:
+            current_prices (Dict[str, ExtendedDecimal]): Current prices for all symbols.
+
+        Returns:
+            Dict[str, float]: A dictionary of position weights.
+        """
+        total_value = sum(
+            abs(pos) * current_prices[sym] for sym, pos in self.positions.items()
+        )
+        if total_value == ExtendedDecimal("0"):
+            return {sym: 0.0 for sym in self.positions}
+        return {
+            sym: float(abs(pos) * current_prices[sym] / total_value)
+            for sym, pos in self.positions.items()
+        }
+
 
 class RiskManager:
     def __init__(
@@ -796,17 +1596,21 @@ class RiskManager:
         margin_call_threshold: ExtendedDecimal = ExtendedDecimal("0.01"),
         symbols: List[str] = [],
     ):
-        self.initial_capital = initial_capital
+        self.initial_capital = initial_capital  # Removed in latest version
         self.max_risk = max_risk
         self.max_risk_per_trade = max_risk_per_trade
-        self.max_risk_per_symbol = max_risk_per_symbol
+        self.max_risk_per_symbol = max_risk_per_symbol  # Removed in latest version
         self.max_drawdown = max_drawdown
         self.var_confidence_level = var_confidence_level
-        self.margin_ratio = margin_ratio
-        self.margin_call_threshold = margin_call_threshold
-        self.equity_history: List[ExtendedDecimal] = [initial_capital]
-        self.symbol_weights: Dict[str, ExtendedDecimal] = {}
-        self._initialize_symbol_weights(symbols)
+        self.margin_ratio = margin_ratio  # Removed in latest version
+        self.margin_call_threshold = margin_call_threshold  # Removed in latest version
+        self.equity_history: List[ExtendedDecimal] = [
+            initial_capital
+        ]  # Removed in latest version
+        self.symbol_weights: Dict[
+            str, ExtendedDecimal
+        ] = {}  # Removed in latest version
+        self._initialize_symbol_weights(symbols)  # Removed in latest version
 
     def _initialize_symbol_weights(self, symbols: List[str]) -> None:
         """Initialize symbol weights equally among all symbols."""
@@ -850,97 +1654,8 @@ class RiskManager:
         risk_amount = account_value * self.max_risk * symbol_weight
         return min(risk_amount, account_value * self.max_risk_per_trade)
 
-    def check_risk_limits(
-        self,
-        order: Order,
-        account_value: ExtendedDecimal,
-        current_positions: Dict[str, ExtendedDecimal],
-    ) -> bool:
-        symbol = order.details.ticker
-        new_position_size = (
-            current_positions.get(symbol, ExtendedDecimal("0")) + order.details.size
-        )
-
-        # Check max position size
-        if new_position_size > self.max_position_size:
-            return False
-
-        # Check max risk per symbol
-        symbol_risk = (new_position_size * order.details.price) / account_value
-        if symbol_risk > self.max_risk_per_symbol:
-            return False
-
-        return True
-
-    def calculate_var(self, returns: pd.Series) -> ExtendedDecimal:
-        return ExtendedDecimal(str(returns.quantile(1 - self.var_confidence_level)))
-
-    def calculate_cvar(self, returns: pd.Series) -> ExtendedDecimal:
-        var = self.calculate_var(returns)
-        return ExtendedDecimal(str(returns[returns <= var].mean()))
-
-    def calculate_drawdown(self, equity: ExtendedDecimal) -> ExtendedDecimal:
-        self.equity_history.append(equity)
-        peak = max(self.equity_history)
-        return (peak - equity) / peak
-
     def check_drawdown(self, equity: ExtendedDecimal) -> bool:
         return self.calculate_drawdown(equity) <= self.max_drawdown
-
-    def check_margin_call(
-        self, equity: ExtendedDecimal, margin_used: ExtendedDecimal
-    ) -> bool:
-        if margin_used > ExtendedDecimal("0"):
-            return equity / margin_used < self.margin_call_threshold
-        return False
-
-    def handle_margin_call(
-        self,
-        positions: Dict[str, ExtendedDecimal],
-        current_prices: Dict[str, ExtendedDecimal],
-    ) -> List[Order]:
-        """
-        Handle a margin call by generating orders to close positions.
-
-        Args:
-            positions (Dict[str, ExtendedDecimal]): Current positions.
-            current_prices (Dict[str, ExtendedDecimal]): Current market prices.
-
-        Returns:
-            List[Order]: List of orders to close positions to meet margin requirements.
-        """
-        orders_to_close = []
-        sorted_positions = sorted(
-            positions.items(), key=lambda x: abs(x[1]), reverse=True
-        )
-
-        for symbol, size in sorted_positions:
-            close_size = abs(size)
-            direction = Order.Direction.SHORT if size > 0 else Order.Direction.LONG
-
-            order_details = OrderDetails(
-                ticker=symbol,
-                direction=direction,
-                size=close_size,
-                price=current_prices[symbol],
-                exectype=Order.ExecType.MARKET,
-                timestamp=datetime.now(),
-                timeframe=None,  # This should be set appropriately
-                strategy_id=None,  # This should be set appropriately
-            )
-
-            orders_to_close.append(Order(str(uuid.uuid4()), order_details))
-
-            # Check if we've closed enough positions
-            remaining_positions = {s: p for s, p in positions.items() if s != symbol}
-            remaining_positions[symbol] = ExtendedDecimal("0")
-            if not self.check_margin_call(
-                self._calculate_equity(remaining_positions, current_prices),
-                self._calculate_margin_used(remaining_positions, current_prices),
-            ):
-                break
-
-        return orders_to_close
 
     def _calculate_equity(
         self,
@@ -1080,3 +1795,385 @@ class RiskManager:
 
         # Limit the reduction to the position value
         return min(reduction_needed, position_value)
+
+    # PREVIOUS MODIFICATIONS
+    def check_margin_requirements(
+        self,
+        order: Order,
+        account_value: ExtendedDecimal,
+        current_positions: Dict[str, ExtendedDecimal],
+    ) -> bool:
+        """
+        Perform comprehensive margin and risk checks for an order.
+
+        This method checks:
+        1. Margin requirements
+        2. Position size limits
+        3. Per-symbol risk limits
+        4. Overall portfolio risk limits
+
+        Args:
+            order (Order): The order to check.
+            account_value (ExtendedDecimal): The current account value.
+            current_positions (Dict[str, ExtendedDecimal]): The current positions.
+
+        Returns:
+            bool: True if the order passes all checks, False otherwise.
+        """
+        symbol = order.details.ticker
+        fill_price = order.get_last_fill_price()
+        new_position_size = (
+            current_positions.get(symbol, ExtendedDecimal("0")) + order.details.size
+        )
+
+        # Check margin requirement
+        required_margin = order.details.size * fill_price * self.margin_ratio
+        if required_margin > account_value:
+            logger_main.warning(
+                f"Insufficient margin. Required: {required_margin}, Available: {account_value}"
+            )
+            return False
+
+        # Check position size limits
+        max_position_size = account_value * self.max_risk_per_symbol
+        if abs(new_position_size) > max_position_size:
+            logger_main.warning(
+                f"Position size ({new_position_size}) exceeds maximum allowed ({max_position_size})"
+            )
+            return False
+
+        # Check per-symbol risk limit
+        symbol_exposure = abs(new_position_size * fill_price)
+        max_symbol_risk = account_value * self.max_risk_per_symbol
+        if symbol_exposure > max_symbol_risk:
+            logger_main.warning(
+                f"Symbol exposure ({symbol_exposure}) exceeds maximum allowed ({max_symbol_risk})"
+            )
+            return False
+
+        # Check overall portfolio risk limit
+        new_total_exposure = sum(
+            (pos + (order.details.size if sym == symbol else 0)) * fill_price
+            for sym, pos in current_positions.items()
+        )
+        max_portfolio_risk = account_value * self.max_risk
+        if new_total_exposure > max_portfolio_risk:
+            logger_main.warning(
+                f"Portfolio exposure ({new_total_exposure}) would exceed maximum allowed ({max_portfolio_risk})"
+            )
+            return False
+
+        return True
+
+    def calculate_position_size(
+        self,
+        symbol: str,
+        account_value: ExtendedDecimal,
+        risk_per_trade: ExtendedDecimal,
+        entry_price: ExtendedDecimal,
+        stop_loss: ExtendedDecimal,
+    ) -> ExtendedDecimal:
+        """
+        Calculate the position size based on risk parameters.
+
+        Args:
+            symbol (str): The symbol for the trade.
+            account_value (ExtendedDecimal): The current account value.
+            risk_per_trade (ExtendedDecimal): The risk percentage per trade.
+            entry_price (ExtendedDecimal): The entry price for the trade.
+            stop_loss (ExtendedDecimal): The stop loss price for the trade.
+
+        Returns:
+            ExtendedDecimal: The calculated position size.
+        """
+        risk_amount = (
+            account_value
+            * risk_per_trade
+            * self.symbol_weights.get(symbol, ExtendedDecimal("1"))
+        )
+        price_difference = abs(entry_price - stop_loss)
+        position_size = risk_amount / price_difference
+
+        # Ensure position size doesn't exceed max_position_size
+        return min(position_size, self.max_position_size)
+
+    def calculate_drawdown(
+        self, current_equity: ExtendedDecimal, peak_equity: ExtendedDecimal
+    ) -> ExtendedDecimal:
+        """
+        Calculate the current drawdown.
+
+        Args:
+            current_equity (ExtendedDecimal): The current equity.
+            peak_equity (ExtendedDecimal): The peak equity reached.
+
+        Returns:
+            ExtendedDecimal: The current drawdown as a percentage.
+        """
+        return (peak_equity - current_equity) / peak_equity
+
+    def _calculate_margin_usage(
+        self,
+        positions: Dict[str, ExtendedDecimal],
+        current_prices: Dict[str, ExtendedDecimal],
+    ) -> ExtendedDecimal:
+        """
+        Calculate the total margin usage for given positions.
+
+        Args:
+            positions (Dict[str, ExtendedDecimal]): The current positions.
+            current_prices (Dict[str, ExtendedDecimal]): The current market prices.
+
+        Returns:
+            ExtendedDecimal: The total margin usage.
+        """
+        return sum(
+            abs(size) * current_prices[symbol] * self.margin_ratio
+            for symbol, size in positions.items()
+        )
+
+    # LATEST MODIFICATIONS
+    def check_margin_call(
+        self,
+        equity: ExtendedDecimal,
+        margin_used: ExtendedDecimal,
+        margin_call_threshold: ExtendedDecimal,
+    ) -> bool:
+        """
+        Check if a margin call should be triggered.
+
+        Args:
+            equity (ExtendedDecimal): Current account equity.
+            margin_used (ExtendedDecimal): Current margin used.
+            margin_call_threshold (ExtendedDecimal): The threshold for triggering a margin call.
+
+        Returns:
+            bool: True if a margin call should be triggered, False otherwise.
+        """
+        if margin_used > ExtendedDecimal("0"):
+            return equity / margin_used < margin_call_threshold
+        return False
+
+    def calculate_var(self, returns: np.ndarray) -> ExtendedDecimal:
+        """
+        Calculate Value at Risk (VaR) using the historical method.
+
+        Args:
+            returns (np.ndarray): Array of historical returns.
+
+        Returns:
+            ExtendedDecimal: The calculated VaR.
+        """
+        var = np.percentile(returns, (1 - self.var_confidence_level) * 100)
+        return ExtendedDecimal(str(var))
+
+    def calculate_cvar(self, returns: np.ndarray) -> ExtendedDecimal:
+        """
+        Calculate Conditional Value at Risk (CVaR) using the historical method.
+
+        Args:
+            returns (np.ndarray): Array of historical returns.
+
+        Returns:
+            ExtendedDecimal: The calculated CVaR.
+        """
+        var = self.calculate_var(returns)
+        cvar = np.mean(returns[returns <= float(var)])
+        return ExtendedDecimal(str(cvar))
+
+    def check_risk_limits(
+        self,
+        order: Order,
+        fill_size: ExtendedDecimal,
+        account_value: ExtendedDecimal,
+        current_positions: Dict[str, ExtendedDecimal],
+    ) -> bool:
+        """
+        Check if an order's risk is within the set limits.
+
+        Args:
+            order (Order): The order being checked.
+            fill_size (ExtendedDecimal): The size of the order fill.
+            account_value (ExtendedDecimal): The current account value.
+            current_positions (Dict[str, ExtendedDecimal]): The current positions.
+
+        Returns:
+            bool: True if the order is within risk limits, False otherwise.
+        """
+        symbol = order.details.ticker
+        fill_price = order.get_last_fill_price()
+        order_value = fill_size * fill_price
+
+        # Check max risk per trade
+        if order_value > account_value * self.max_risk_per_trade:
+            logger_main.warning(
+                f"Order value {order_value} exceeds max risk per trade {self.max_risk_per_trade * account_value}"
+            )
+            return False
+
+        # Check max risk per symbol
+        new_position_value = (
+            current_positions.get(symbol, ExtendedDecimal("0")) + fill_size
+        ) * fill_price
+        if new_position_value > account_value * self.max_risk_per_symbol:
+            logger_main.warning(
+                f"New position value {new_position_value} for {symbol} exceeds max risk per symbol {self.max_risk_per_symbol * account_value}"
+            )
+            return False
+
+        # Check total portfolio risk
+        total_position_value = sum(
+            (pos + (fill_size if sym == symbol else 0)) * fill_price
+            for sym, pos in current_positions.items()
+        )
+        if total_position_value > account_value * self.max_risk:
+            logger_main.warning(
+                f"Total position value {total_position_value} would exceed max portfolio risk {self.max_risk * account_value}"
+            )
+            return False
+
+        return True
+
+    def calculate_unrealized_pnl(
+        self,
+        position: ExtendedDecimal,
+        entry_price: ExtendedDecimal,
+        current_price: ExtendedDecimal,
+    ) -> ExtendedDecimal:
+        """
+        Calculate the unrealized P&L for a position.
+
+        Args:
+            position (ExtendedDecimal): The position size.
+            entry_price (ExtendedDecimal): The average entry price of the position.
+            current_price (ExtendedDecimal): The current market price.
+
+        Returns:
+            ExtendedDecimal: The unrealized P&L.
+        """
+        return (current_price - entry_price) * position
+
+    def handle_margin_call(
+        self,
+        positions: Dict[str, ExtendedDecimal],
+        current_prices: Dict[str, ExtendedDecimal],
+        open_trades: List[Trade],
+        equity: ExtendedDecimal,
+        margin_used: ExtendedDecimal,
+        margin_call_threshold: ExtendedDecimal,
+    ) -> List[Tuple[str, ExtendedDecimal]]:
+        """
+        Handle a margin call by gradually reducing positions.
+
+        Args:
+            positions (Dict[str, ExtendedDecimal]): Current positions keyed by symbol.
+            current_prices (Dict[str, ExtendedDecimal]): Current market prices keyed by symbol.
+            open_trades (List[Trade]): List of all open trades.
+            equity (ExtendedDecimal): Current account equity.
+            margin_used (ExtendedDecimal): Current margin used.
+            margin_call_threshold (ExtendedDecimal): The threshold for triggering a margin call.
+
+        Returns:
+            List[Tuple[str, ExtendedDecimal]]: A list of tuples containing the symbol and amount to reduce for each position.
+        """
+        positions_to_reduce = []
+        while self.check_margin_call(equity, margin_used, margin_call_threshold):
+            # Calculate unrealized P&L for each position
+            unrealized_pnls = {
+                symbol: self.calculate_unrealized_pnl(
+                    pos, trade.entry_price, current_prices[symbol]
+                )
+                for symbol, pos in positions.items()
+                for trade in open_trades
+                if trade.ticker == symbol
+            }
+
+            # Sort positions by unrealized P&L (most negative first)
+            sorted_positions = sorted(unrealized_pnls.items(), key=lambda x: x[1])
+
+            if not sorted_positions:
+                logger_main.error(
+                    "Unable to resolve margin call. No suitable positions to reduce."
+                )
+                break
+
+            symbol, _ = sorted_positions[0]
+            reduce_amount = min(
+                abs(positions[symbol]), abs(positions[symbol]) * ExtendedDecimal("0.1")
+            )  # Reduce by 10% or full position
+
+            positions_to_reduce.append((symbol, reduce_amount))
+
+            # Update positions and recalculate margin
+            positions[symbol] -= (
+                reduce_amount if positions[symbol] > 0 else -reduce_amount
+            )
+            position_value = sum(
+                abs(pos) * current_prices[sym] for sym, pos in positions.items()
+            )
+            margin_used = position_value * margin_call_threshold
+            equity = equity - (
+                reduce_amount * current_prices[symbol]
+            )  # Assuming worst-case scenario
+
+            logger_main.info(
+                f"Reducing position in {symbol} by {reduce_amount} to address margin call."
+            )
+
+        return positions_to_reduce
+
+    def calculate_portfolio_var(
+        self, returns: Dict[str, np.ndarray], weights: Dict[str, float]
+    ) -> ExtendedDecimal:
+        """
+        Calculate portfolio Value at Risk (VaR) using the variance-covariance method.
+
+        Args:
+            returns (Dict[str, np.ndarray]): Dictionary of historical returns for each asset.
+            weights (Dict[str, float]): Dictionary of portfolio weights for each asset.
+
+        Returns:
+            ExtendedDecimal: The calculated portfolio VaR.
+        """
+        # Combine returns into a single matrix
+        return_matrix = np.column_stack([returns[asset] for asset in weights.keys()])
+
+        # Calculate the covariance matrix
+        cov_matrix = np.cov(return_matrix.T)
+
+        # Calculate portfolio variance
+        portfolio_variance = np.dot(
+            np.dot(list(weights.values()), cov_matrix), list(weights.values())
+        )
+
+        # Calculate portfolio VaR
+        z_score = stats.norm.ppf(1 - self.var_confidence_level)
+        portfolio_var = z_score * np.sqrt(portfolio_variance)
+
+        return ExtendedDecimal(str(portfolio_var))
+
+    def calculate_portfolio_cvar(
+        self, returns: Dict[str, np.ndarray], weights: Dict[str, float]
+    ) -> ExtendedDecimal:
+        """
+        Calculate portfolio Conditional Value at Risk (CVaR) using the historical method.
+
+        Args:
+            returns (Dict[str, np.ndarray]): Dictionary of historical returns for each asset.
+            weights (Dict[str, float]): Dictionary of portfolio weights for each asset.
+
+        Returns:
+            ExtendedDecimal: The calculated portfolio CVaR.
+        """
+        # Combine returns into a single array, weighted by portfolio weights
+        portfolio_returns = sum(
+            returns[asset] * weights[asset] for asset in weights.keys()
+        )
+
+        # Calculate VaR
+        var = np.percentile(portfolio_returns, (1 - self.var_confidence_level) * 100)
+
+        # Calculate CVaR
+        cvar = np.mean(portfolio_returns[portfolio_returns <= var])
+
+        return ExtendedDecimal(str(cvar))
