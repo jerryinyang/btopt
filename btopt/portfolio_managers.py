@@ -1294,43 +1294,187 @@ class AccountManager:
 
 class Position:
     def __init__(self, symbol: str):
-        self.symbol = symbol
-        self.quantity = ExtendedDecimal("0")
-        self.average_price = ExtendedDecimal("0")
-        self.unrealized_pnl = ExtendedDecimal("0")
-        self.realized_pnl = ExtendedDecimal("0")
+        self.symbol: str = symbol
+        self.quantity: ExtendedDecimal = ExtendedDecimal("0")
+        self.average_price: ExtendedDecimal = ExtendedDecimal("0")
+        self.unrealized_pnl: ExtendedDecimal = ExtendedDecimal("0")
+        self.realized_pnl: ExtendedDecimal = ExtendedDecimal("0")
+        self.last_update_time: datetime = datetime.now()
+        self.cost_basis: ExtendedDecimal = ExtendedDecimal("0")
+
+    def update_position(
+        self, quantity: ExtendedDecimal, price: ExtendedDecimal, timestamp: datetime
+    ) -> None:
+        new_quantity = self.quantity + quantity
+        new_cost = self.cost_basis + (quantity * price)
+
+        if new_quantity != ExtendedDecimal("0"):
+            self.average_price = new_cost / new_quantity
+        else:
+            self.average_price = ExtendedDecimal("0")
+
+        self.quantity = new_quantity
+        self.cost_basis = new_cost
+        self.last_update_time = timestamp
+
+    def calculate_unrealized_pnl(
+        self, current_price: ExtendedDecimal
+    ) -> ExtendedDecimal:
+        return (current_price - self.average_price) * self.quantity
 
 
 class PositionManager:
     def __init__(self):
         self.positions: Dict[str, Position] = {}
-        self.average_entry_prices: Dict[
-            str, ExtendedDecimal
-        ] = {}  # Renamed from avg_entry_prices
-        self.unrealized_pnl: Dict[str, ExtendedDecimal] = {}  # Removed in latest
 
-    def get_all_positions(self) -> Dict[str, ExtendedDecimal]:
-        return {
-            symbol: position.quantity for symbol, position in self.positions.items()
-        }
+    def get_all_positions(self) -> Dict[str, Position]:
+        return self.positions
+
+    def calculate_position_value(
+        self, symbol: str, current_price: ExtendedDecimal
+    ) -> ExtendedDecimal:
+        """
+        Calculate the current value of a position.
+
+        Args:
+            symbol (str): The symbol of the position.
+            current_price (ExtendedDecimal): The current market price of the symbol.
+
+        Returns:
+            ExtendedDecimal: The current value of the position.
+        """
+        position = self.get_position(symbol)
+        return position.quantity * current_price
+
+    def update_position(
+        self, order: Order, execution_price: ExtendedDecimal, fill_size: ExtendedDecimal
+    ) -> None:
+        """
+        Update the position for a given symbol based on an executed order.
+
+        Args:
+            order (Order): The executed order.
+            execution_price (ExtendedDecimal): The price at which the order was executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+        """
+        symbol = order.details.ticker
+        position = self.get_position(symbol)
+        direction = 1 if order.details.direction == Order.Direction.LONG else -1
+        quantity = fill_size * ExtendedDecimal(str(direction))
+        position.update_position(quantity, execution_price, order.details.timestamp)
+
+        logger_main.info(
+            f"Updated position for {symbol}: {position} @ {self.average_entry_prices.get(symbol)}"
+        )
+
+    def get_long_position_value(
+        self, current_prices: Dict[str, ExtendedDecimal]
+    ) -> ExtendedDecimal:
+        """
+        Calculate the total value of all long positions.
+
+        Args:
+            current_prices (Dict[str, ExtendedDecimal]): Current prices for all symbols.
+
+        Returns:
+            ExtendedDecimal: The total value of all long positions.
+        """
+        return sum(
+            position.quantity * current_prices[symbol]
+            for symbol, position in self.positions.items()
+            if position.quantity > 0
+        )
+
+    def get_short_position_value(
+        self, current_prices: Dict[str, ExtendedDecimal]
+    ) -> ExtendedDecimal:
+        """
+        Calculate the total value of all short positions.
+
+        Args:
+            current_prices (Dict[str, ExtendedDecimal]): Current prices for all symbols.
+
+        Returns:
+            ExtendedDecimal: The total value of all short positions.
+        """
+        return sum(
+            abs(position.quantity) * current_prices[symbol]
+            for symbol, position in self.positions.items()
+            if position.quantity < 0
+        )
+
+    def get_position(self, symbol: str) -> Position:
+        """
+        Get the current position for a symbol.
+
+        Args:
+            symbol (str): The symbol to get the position for.
+
+        Returns:
+            ExtendedDecimal: The current position size (positive for long, negative for short).
+        """
+        if symbol not in self.positions:
+            self.positions[symbol] = Position(symbol)
+        return self.positions[symbol]
+
+    def get_total_position_value(
+        self, current_prices: Dict[str, ExtendedDecimal]
+    ) -> ExtendedDecimal:
+        """
+        Calculate the total value of all positions.
+
+        Args:
+            current_prices (Dict[str, ExtendedDecimal]): A dictionary of current prices for all symbols.
+
+        Returns:
+            ExtendedDecimal: The total value of all positions.
+        """
+        return sum(
+            self.calculate_position_value(symbol, current_prices[symbol])
+            for symbol in self.positions
+        )
+
+    def get_total_unrealized_pnl(self) -> ExtendedDecimal:
+        """
+        Get the total unrealized PnL across all positions.
+
+        Returns:
+            ExtendedDecimal: The total unrealized PnL.
+        """
+        return sum(position.unrealized_pnl for position in self.positions.values())
 
     def get_total_realized_pnl(self) -> ExtendedDecimal:
         return sum(position.realized_pnl for position in self.positions.values())
 
-    def calculate_position_size(
-        self,
-        account_value: ExtendedDecimal,
-        risk_per_trade: ExtendedDecimal,
-        entry_price: ExtendedDecimal,
-        stop_loss: ExtendedDecimal,
-    ) -> ExtendedDecimal:
-        risk_amount = account_value * risk_per_trade
-        price_difference = abs(entry_price - stop_loss)
-        return (
-            risk_amount / price_difference
-            if price_difference != ExtendedDecimal("0")
-            else ExtendedDecimal("0")
-        )
+    def generate_close_orders(
+        self, timestamp: datetime, timeframe: Timeframe
+    ) -> List[Order]:
+        """
+        Generate orders to close all current positions.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            timeframe (Timeframe): The timeframe for the close orders.
+
+        Returns:
+            List[Order]: A list of orders to close all positions.
+        """
+        close_orders = []
+        for symbol, position in self.positions.items():
+            order_details = OrderDetails(
+                ticker=symbol,
+                direction=Order.Direction.SHORT
+                if position > 0
+                else Order.Direction.LONG,
+                size=abs(position),
+                price=None,  # Market order
+                exectype=Order.ExecType.MARKET,
+                timestamp=timestamp,
+                timeframe=timeframe,
+                strategy_id="CLOSE_ALL",
+            )
+            close_orders.append(Order(str(uuid.uuid4()), order_details))
+        return close_orders
 
     def generate_close_all_orders(
         self,
@@ -1369,218 +1513,6 @@ class PositionManager:
                 close_orders.append(Order(str(uuid.uuid4()), order_details))
 
         return close_orders
-
-    # PREVIOUS MODIFICATIONS
-    def calculate_position_value(
-        self, symbol: str, current_price: ExtendedDecimal
-    ) -> ExtendedDecimal:
-        """
-        Calculate the current value of a position.
-
-        Args:
-            symbol (str): The symbol of the position.
-            current_price (ExtendedDecimal): The current market price of the symbol.
-
-        Returns:
-            ExtendedDecimal: The current value of the position.
-        """
-        position = self.positions.get(symbol, ExtendedDecimal("0"))
-        return position * current_price
-
-    def update_unrealized_pnl(
-        self, symbol: str, current_price: ExtendedDecimal
-    ) -> None:
-        """
-        Update the unrealized PnL for a specific position.
-
-        Args:
-            symbol (str): The symbol of the position.
-            current_price (ExtendedDecimal): The current market price of the symbol.
-        """
-        if symbol in self.positions:
-            position = self.positions[symbol]
-            avg_entry_price = self.average_entry_prices[symbol]
-            self.unrealized_pnl[symbol] = (current_price - avg_entry_price) * position
-
-    def get_total_position_value(
-        self, current_prices: Dict[str, ExtendedDecimal]
-    ) -> ExtendedDecimal:
-        """
-        Calculate the total value of all positions.
-
-        Args:
-            current_prices (Dict[str, ExtendedDecimal]): A dictionary of current prices for all symbols.
-
-        Returns:
-            ExtendedDecimal: The total value of all positions.
-        """
-        return sum(
-            self.calculate_position_value(symbol, current_prices[symbol])
-            for symbol in self.positions
-        )
-
-    def get_total_unrealized_pnl(self) -> ExtendedDecimal:
-        """
-        Get the total unrealized PnL across all positions.
-
-        Returns:
-            ExtendedDecimal: The total unrealized PnL.
-        """
-        return sum(self.unrealized_pnl.values())
-
-    def generate_close_orders(
-        self, timestamp: datetime, timeframe: Timeframe
-    ) -> List[Order]:
-        """
-        Generate orders to close all current positions.
-
-        Args:
-            timestamp (datetime): The current timestamp.
-            timeframe (Timeframe): The timeframe for the close orders.
-
-        Returns:
-            List[Order]: A list of orders to close all positions.
-        """
-        close_orders = []
-        for symbol, position in self.positions.items():
-            order_details = OrderDetails(
-                ticker=symbol,
-                direction=Order.Direction.SHORT
-                if position > 0
-                else Order.Direction.LONG,
-                size=abs(position),
-                price=None,  # Market order
-                exectype=Order.ExecType.MARKET,
-                timestamp=timestamp,
-                timeframe=timeframe,
-                strategy_id="CLOSE_ALL",
-            )
-            close_orders.append(Order(str(uuid.uuid4()), order_details))
-        return close_orders
-
-    # LATEST MODIFICATIONS
-    def update_position(
-        self, order: Order, execution_price: ExtendedDecimal, fill_size: ExtendedDecimal
-    ) -> None:
-        """
-        Update the position for a given symbol based on an executed order.
-
-        Args:
-            order (Order): The executed order.
-            execution_price (ExtendedDecimal): The price at which the order was executed.
-            fill_size (ExtendedDecimal): The size of the order fill.
-        """
-        symbol = order.details.ticker
-        direction = 1 if order.details.direction == Order.Direction.LONG else -1
-        position_change = fill_size * direction
-
-        current_position = self.positions.get(symbol, ExtendedDecimal("0"))
-        new_position = current_position + position_change
-
-        if current_position == ExtendedDecimal("0"):
-            self.average_entry_prices[symbol] = execution_price
-        else:
-            # Calculate new average entry price
-            current_value = abs(current_position) * self.average_entry_prices[symbol]
-            new_value = fill_size * execution_price
-            total_size = abs(current_position) + fill_size
-            self.average_entry_prices[symbol] = (current_value + new_value) / total_size
-
-        self.positions[symbol] = new_position
-
-        if new_position == ExtendedDecimal("0"):
-            del self.positions[symbol]
-            del self.average_entry_prices[symbol]
-
-        logger_main.info(
-            f"Updated position for {symbol}: {new_position} @ {self.average_entry_prices.get(symbol)}"
-        )
-
-    def get_long_position_value(
-        self, current_prices: Dict[str, ExtendedDecimal]
-    ) -> ExtendedDecimal:
-        """
-        Calculate the total value of all long positions.
-
-        Args:
-            current_prices (Dict[str, ExtendedDecimal]): Current prices for all symbols.
-
-        Returns:
-            ExtendedDecimal: The total value of all long positions.
-        """
-        return sum(
-            position * current_prices[symbol]
-            for symbol, position in self.positions.items()
-            if position > 0
-        )
-
-    def get_short_position_value(
-        self, current_prices: Dict[str, ExtendedDecimal]
-    ) -> ExtendedDecimal:
-        """
-        Calculate the total value of all short positions.
-
-        Args:
-            current_prices (Dict[str, ExtendedDecimal]): Current prices for all symbols.
-
-        Returns:
-            ExtendedDecimal: The total value of all short positions.
-        """
-        return sum(
-            abs(position) * current_prices[symbol]
-            for symbol, position in self.positions.items()
-            if position < 0
-        )
-
-    def get_position(self, symbol: str) -> ExtendedDecimal:
-        """
-        Get the current position for a symbol.
-
-        Args:
-            symbol (str): The symbol to get the position for.
-
-        Returns:
-            ExtendedDecimal: The current position size (positive for long, negative for short).
-        """
-        position = self.positions.get(symbol, None)
-
-        if position:
-            return position.quantity
-        return ExtendedDecimal("0")
-
-    def get_average_entry_price(self, symbol: str) -> Optional[ExtendedDecimal]:
-        """
-        Get the average entry price for a symbol.
-
-        Args:
-            symbol (str): The symbol to get the average entry price for.
-
-        Returns:
-            Optional[ExtendedDecimal]: The average entry price, or None if there's no position.
-        """
-        return self.average_entry_prices.get(symbol)
-
-    def get_position_weights(
-        self, current_prices: Dict[str, ExtendedDecimal]
-    ) -> Dict[str, float]:
-        """
-        Calculate the weight of each position in the portfolio.
-
-        Args:
-            current_prices (Dict[str, ExtendedDecimal]): Current prices for all symbols.
-
-        Returns:
-            Dict[str, float]: A dictionary of position weights.
-        """
-        total_value = sum(
-            abs(pos) * current_prices[sym] for sym, pos in self.positions.items()
-        )
-        if total_value == ExtendedDecimal("0"):
-            return {sym: 0.0 for sym in self.positions}
-        return {
-            sym: float(abs(pos) * current_prices[sym] / total_value)
-            for sym, pos in self.positions.items()
-        }
 
 
 class RiskManager:
