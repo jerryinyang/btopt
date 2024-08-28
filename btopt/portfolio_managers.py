@@ -324,7 +324,6 @@ class OrderManager:
         """Return a string representation of the OrderManager."""
         return f"OrderManager(active_orders={len(self.get_active_orders())}, active_groups={len(self.get_active_groups())})"
 
-    # PREVIOUS MODIFICATION
     def execute_order(
         self, order: Order, execution_price: ExtendedDecimal, bar: Bar
     ) -> Tuple[bool, Optional[Trade]]:
@@ -490,7 +489,6 @@ class OrderManager:
         if order.order_group:
             order.order_group.update_order(order)
 
-    # LATEST MODIFICATION
     def process_orders(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
     ) -> List[Order]:
@@ -715,32 +713,50 @@ class TradeManager:
         self._add_to_updated_trades(trade)
         return trade
 
-    # def update_trade(self, trade: Trade, current_bar: Bar) -> None:
-    #     pre_update_state = trade.to_dict()
-    #     trade.update(current_bar)
-    #     if trade.to_dict() != pre_update_state:
-    #         self._add_to_updated_trades(trade)
+    def manage_trade(
+        self,
+        order: Order,
+        execution_price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        bar: Bar,
+        position: "Position",
+    ) -> Optional[Trade]:
+        """
+        Manage trade creation, updates, closures, and reversals.
 
-    # def partial_close_trade(
-    #     self,
-    #     trade: Trade,
-    #     exit_order: Order,
-    #     exit_price: ExtendedDecimal,
-    #     exit_bar: Bar,
-    #     size: ExtendedDecimal,
-    # ) -> None:
-    #     """
-    #     Partially close a trade.
+        Args:
+            order (Order): The order being executed.
+            execution_price (ExtendedDecimal): The price at which the order is executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+            bar (Bar): The current price bar.
 
-    #     Args:
-    #         trade (Trade): The trade to partially close.
-    #         exit_order (Order): The order used to close part of the trade.
-    #         exit_price (ExtendedDecimal): The price at which part of the trade is being closed.
-    #         exit_bar (Bar): The bar at which part of the trade is being closed.
-    #         size (ExtendedDecimal): The size of the position to close.
-    #     """
-    #     trade.close(exit_order, exit_price, exit_bar, size)
-    #     self._add_to_updated_trades(trade)
+        Returns:
+            Optional[Trade]: The created or updated Trade object, if applicable.
+        """
+        existing_position = position.quantity
+
+        logger_main.warning(f"EXISTING POSITION VALUE: {existing_position}")
+
+        if self._is_trade_reversal(existing_position, order.details.direction):
+            logger_main.warning(f"----- REVERSAL -----\nORDER: {order}")
+            return self._handle_trade_reversal(
+                order,
+                execution_price,
+                fill_size,
+                bar,
+                existing_position,
+            )
+        elif existing_position != ExtendedDecimal("0"):
+            logger_main.warning(f"----- NON-REVERSAL -----\nORDER: {order}")
+            return self._update_existing_trade(
+                order,
+                execution_price,
+                fill_size,
+                bar,
+                position,
+            )
+        else:
+            return self._create_new_trade(order, execution_price, fill_size, bar)
 
     def get_open_trades(self, strategy_id: Optional[str] = None) -> List[Trade]:
         if strategy_id:
@@ -845,18 +861,6 @@ class TradeManager:
         self.closed_trades.append(trade)
         self.updated_trades.append(trade)
 
-    def _get_position_size(self, symbol: str) -> ExtendedDecimal:
-        """
-        Get the current position size for a given symbol.
-
-        Args:
-            symbol (str): The symbol to check.
-
-        Returns:
-            ExtendedDecimal: The current position size.
-        """
-        return sum(trade.current_size for trade in self.open_trades.get(symbol, []))
-
     def _get_trade_by_order(self, order: Order) -> Optional[Trade]:
         """
         Get the trade associated with a given order.
@@ -874,36 +878,6 @@ class TradeManager:
         return None
 
     # LATEST MODIFICATION
-    def manage_trade(
-        self,
-        order: Order,
-        execution_price: ExtendedDecimal,
-        fill_size: ExtendedDecimal,
-        bar: Bar,
-    ) -> Optional[Trade]:
-        """
-        Manage trade creation, updates, closures, and reversals.
-
-        Args:
-            order (Order): The order being executed.
-            execution_price (ExtendedDecimal): The price at which the order is executed.
-            fill_size (ExtendedDecimal): The size of the order fill.
-            bar (Bar): The current price bar.
-
-        Returns:
-            Optional[Trade]: The created or updated Trade object, if applicable.
-        """
-        symbol = order.details.ticker
-        existing_position = self._get_position_size(symbol)
-
-        if self._is_trade_reversal(existing_position, order.details.direction):
-            return self._handle_trade_reversal(
-                order, execution_price, fill_size, bar, existing_position
-            )
-        elif existing_position != ExtendedDecimal("0"):
-            return self._update_existing_trade(order, execution_price, fill_size, bar)
-        else:
-            return self._create_new_trade(order, execution_price, fill_size, bar)
 
     def _is_trade_reversal(
         self, existing_position: ExtendedDecimal, order_direction: Order.Direction
@@ -992,6 +966,7 @@ class TradeManager:
         execution_price: ExtendedDecimal,
         fill_size: ExtendedDecimal,
         bar: Bar,
+        position: "Position",
     ) -> Trade:
         """
         Update an existing trade based on a new order execution.
@@ -1001,20 +976,24 @@ class TradeManager:
             execution_price (ExtendedDecimal): The price at which the order is executed.
             fill_size (ExtendedDecimal): The size of the order fill.
             bar (Bar): The current price bar.
+            position (Position): The corresponding Position object.
 
         Returns:
             Trade: The updated Trade object.
         """
+        return
         symbol = order.details.ticker
         existing_trade = self._get_latest_trade(symbol)
 
         if existing_trade:
             existing_trade.update(bar)
             existing_trade.add_to_position(fill_size, execution_price)
-            self._update_average_entry_price(existing_trade, fill_size, execution_price)
+            existing_trade.unrealized_pnl = position.calculate_unrealized_pnl(bar.close)
             return existing_trade
         else:
-            return self._create_new_trade(order, execution_price, fill_size, bar)
+            return self._create_new_trade(
+                order, execution_price, fill_size, bar, position
+            )
 
     def _create_new_trade(
         self,
@@ -1210,7 +1189,6 @@ class AccountManager:
     def get_transaction_log(self) -> List[Dict]:
         return self.transaction_log
 
-    # PREVIOUS MODIFICATION
     def update_margin(self, margin_change: ExtendedDecimal) -> None:
         """
         Update the margin used.
@@ -1227,7 +1205,6 @@ class AccountManager:
         """
         self.buying_power = self.get_buying_power()
 
-    # LATEST MODIFICATION
     def update_cash(self, amount: ExtendedDecimal, reason: str) -> None:
         """
         Update the cash balance.
@@ -1363,9 +1340,7 @@ class PositionManager:
         quantity = fill_size * ExtendedDecimal(str(direction))
         position.update_position(quantity, execution_price, order.details.timestamp)
 
-        logger_main.info(
-            f"Updated position for {symbol}: {position} @ {self.average_entry_prices.get(symbol)}"
-        )
+        logger_main.info(f"Updated position for {symbol}: {position}")
 
     def get_long_position_value(
         self, current_prices: Dict[str, ExtendedDecimal]
@@ -1728,7 +1703,6 @@ class RiskManager:
         # Limit the reduction to the position value
         return min(reduction_needed, position_value)
 
-    # PREVIOUS MODIFICATIONS
     def check_margin_requirements(
         self,
         order: Order,
@@ -1754,6 +1728,7 @@ class RiskManager:
         """
         symbol = order.details.ticker
         fill_price = order.get_last_fill_price()
+
         new_position_size = (
             current_positions.get(symbol, ExtendedDecimal("0")) + order.details.size
         )
@@ -1864,7 +1839,6 @@ class RiskManager:
             for symbol, size in positions.items()
         )
 
-    # LATEST MODIFICATIONS
     def check_margin_call(
         self,
         equity: ExtendedDecimal,
@@ -1918,7 +1892,7 @@ class RiskManager:
         order: Order,
         fill_size: ExtendedDecimal,
         account_value: ExtendedDecimal,
-        current_positions: Dict[str, ExtendedDecimal],
+        current_positions: Dict[str, Position],
     ) -> bool:
         """
         Check if an order's risk is within the set limits.
@@ -1927,7 +1901,7 @@ class RiskManager:
             order (Order): The order being checked.
             fill_size (ExtendedDecimal): The size of the order fill.
             account_value (ExtendedDecimal): The current account value.
-            current_positions (Dict[str, ExtendedDecimal]): The current positions.
+            current_positions (Dict[str, Position]): The current positions.
 
         Returns:
             bool: True if the order is within risk limits, False otherwise.
@@ -1944,9 +1918,8 @@ class RiskManager:
             return False
 
         # Check max risk per symbol
-        new_position_value = (
-            current_positions.get(symbol, ExtendedDecimal("0")) + fill_size
-        ) * fill_price
+        current_position = current_positions.get(symbol, Position(symbol))
+        new_position_value = (current_position.quantity + fill_size) * fill_price
         if new_position_value > account_value * self.max_risk_per_symbol:
             logger_main.warning(
                 f"New position value {new_position_value} for {symbol} exceeds max risk per symbol {self.max_risk_per_symbol * account_value}"
@@ -1955,7 +1928,8 @@ class RiskManager:
 
         # Check total portfolio risk
         total_position_value = sum(
-            (pos + (fill_size if sym == symbol else 0)) * fill_price
+            (pos.quantity + (fill_size if sym == symbol else ExtendedDecimal("0")))
+            * fill_price
             for sym, pos in current_positions.items()
         )
         if total_position_value > account_value * self.max_risk:

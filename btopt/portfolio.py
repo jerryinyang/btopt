@@ -98,53 +98,6 @@ class Portfolio:
         self._update_metrics(timestamp, market_data)
         self._check_and_handle_margin_call(market_data)
 
-    def _handle_filled_order(
-        self, order: Order, market_data: Dict[str, Dict[Timeframe, Bar]]
-    ) -> None:
-        """
-        Handle a filled order by updating positions, trades, and account state.
-
-        Args:
-            order (Order): The filled order to be handled.
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
-
-        Raises:
-            ValueError: If the order's symbol is not found in the market data.
-        """
-        symbol: str = order.details.ticker
-
-        if symbol not in market_data:
-            raise ValueError(f"Symbol {symbol} not found in market data")
-
-        current_bar: Bar = market_data[symbol][order.details.timeframe]
-        execution_price: ExtendedDecimal = (
-            order.get_last_fill_price() or current_bar.close
-        )
-        filled_size: ExtendedDecimal = order.get_filled_size()
-
-        # Update position
-        self.position_manager.update_position(order, execution_price, filled_size)
-
-        # Calculate and update account for the trade
-        cost: ExtendedDecimal = execution_price * filled_size
-        commission: ExtendedDecimal = cost * self.trade_manager.commission_rate
-        self.account_manager.update_cash(
-            -cost - commission, f"Order execution for {symbol}"
-        )
-
-        # Create or update trade
-        self.trade_manager.manage_trade(
-            order, execution_price, filled_size, current_bar
-        )
-
-        # Handle order group updates
-        self.order_manager.handle_order_update(order)
-
-        logger_main.info(
-            f"Filled order: {order.id}, Symbol: {symbol}, "
-            f"Price: {execution_price}, Size: {filled_size}"
-        )
-
     def _close_trades(
         self, order: Order, execution_price: ExtendedDecimal, bar: Bar
     ) -> None:
@@ -223,6 +176,8 @@ class Portfolio:
                 "portfolio_return": [portfolio_return],
             }
         )
+        if self.metrics.empty:
+            self.metrics = new_metrics
 
         self.metrics = pd.concat([self.metrics, new_metrics], ignore_index=True)
 
@@ -415,11 +370,17 @@ class Portfolio:
             self._reject_order(order, "Risk limits breached")
             return False, None
 
+        # Update trade
+        trade = self.trade_manager.manage_trade(
+            order,
+            execution_price,
+            fill_size,
+            bar,
+            self.position_manager.get_position(order.details.ticker),
+        )
+
         # Update position
         self.position_manager.update_position(order, execution_price, fill_size)
-
-        # Update trade
-        trade = self.trade_manager.manage_trade(order, execution_price, fill_size, bar)
 
         # Update account
         cost = execution_price * fill_size
@@ -463,7 +424,9 @@ class Portfolio:
         """
         for symbol, position in self.position_manager.positions.items():
             if position != ExtendedDecimal("0"):
-                close_order = self._create_market_order_to_close(symbol, abs(position))
+                close_order = self._create_market_order_to_close(
+                    symbol, abs(position.quantity)
+                )
                 self._execute_order(close_order, self.engine.get_current_bar(symbol))
 
         logger_main.info("All positions have been closed.")
@@ -817,7 +780,9 @@ class Portfolio:
         """
         current_position = self.position_manager.get_position(symbol)
         direction = (
-            Order.Direction.SELL if current_position > 0 else Order.Direction.BUY
+            Order.Direction.SHORT
+            if current_position.quantity > 0
+            else Order.Direction.LONG
         )
         order_details = OrderDetails(
             ticker=symbol,
