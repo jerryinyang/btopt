@@ -200,18 +200,21 @@ class Portfolio:
 
     # region Order Management
 
-    def create_order(self, order_details: OrderDetails) -> Optional[Order]:
+    def create_order(
+        self, order_details: OrderDetails, activated: bool = True
+    ) -> Optional[Order]:
         """
         Create a new order and add it to the order manager.
 
         Args:
             order_details (OrderDetails): The details of the order to be created.
+            activated (bool): Controls if the order should be activated or deactivated
 
         Returns:
             Optional[Order]: The created Order object, or None if margin requirements are not met.
         """
         if self._check_margin_requirements(order_details):
-            return self.order_manager.create_order(order_details)
+            return self.order_manager.create_order(order_details, activated=activated)
         else:
             logger_main.warning(f"Insufficient margin to create order: {order_details}")
             return None
@@ -263,18 +266,14 @@ class Portfolio:
             Tuple[Order, Optional[Order], Optional[Order], BracketGroup]: A tuple containing the entry order,
             take profit order (if specified), stop loss order (if specified), and the BracketGroup.
         """
-        entry_order = self.order_manager.create_order(bracket_details.entry_order)
+        entry_order = self.create_order(bracket_details.entry_order)
         take_profit_order = (
-            self.order_manager.create_order(
-                bracket_details.take_profit_order, activated=False
-            )
+            self.create_order(bracket_details.take_profit_order, activated=False)
             if bracket_details.take_profit_order
             else None
         )
         stop_loss_order = (
-            self.order_manager.create_order(
-                bracket_details.stop_loss_order, activated=False
-            )
+            self.create_order(bracket_details.stop_loss_order, activated=False)
             if bracket_details.stop_loss_order
             else None
         )
@@ -284,7 +283,9 @@ class Portfolio:
         )
 
         logger_main.warning(
-            f"\n----- CREATED BRACKET ORDER -----\nENTRY: {bracket_group.entry_order.is_active}\nLIMIT: {bracket_group.take_profit_order.is_active}\nSTOP: {bracket_group.stop_loss_order.is_active}\n\n"
+            f"\n----- CREATED BRACKET ORDER -----\nENTRY: {bracket_group.entry_order.is_active}\n"
+            + f"LIMIT: {bracket_group.take_profit_order.is_active}\nSTOP: {bracket_group.stop_loss_order.is_active}\n"
+            + f"ALL PENDING ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n\n"
         )
         return entry_order, take_profit_order, stop_loss_order, bracket_group
 
@@ -309,13 +310,15 @@ class Portfolio:
             ValueError: If an invalid order_details type is provided.
         """
         if isinstance(order_details, OCOOrderDetails):
-            return self.order_manager.create_oco_order(order_details)
+            return self.create_oco_order(order_details)
         elif isinstance(order_details, OCAOrderDetails):
-            return self.order_manager.create_oca_order(order_details)
+            return self.create_oca_order(order_details)
         elif isinstance(order_details, BracketOrderDetails):
-            return self.order_manager.create_bracket_order(order_details)
+            return self.create_bracket_order(order_details)
         else:
-            raise ValueError(f"Invalid order details type: {type(order_details)}")
+            logger_main.log_and_raise(
+                ValueError(f"Invalid order details type: {type(order_details)}")
+            )
 
     def cancel_order(self, order_id: str) -> bool:
         """
@@ -339,6 +342,14 @@ class Portfolio:
             timestamp (datetime): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
+
+        if len(self.order_manager.orders) > 0:
+            logger_main.warning(
+                "\n----- PROCESSING PENDING ORDERS -----\n"
+                + f"ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n\n"
+            )
+
+        # Get the executed orders
         executed_orders = self.order_manager.process_orders(timestamp, market_data)
         for order in executed_orders:
             self._execute_order(

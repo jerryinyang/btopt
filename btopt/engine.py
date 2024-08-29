@@ -622,8 +622,8 @@ class Engine:
         # Notify strategies of updates
         self._notify_strategies()
 
-        # Process any remaining orders in the order execution manager
-        self.portfolio.order_manager.process_orders(timestamp, data_point)
+        # # Process any remaining orders in the order execution manager
+        # self.portfolio.order_manager.process_orders(timestamp, data_point)
 
         # Clear updated orders and trades in the portfolio
         self.portfolio.order_manager.clear_updated_orders()

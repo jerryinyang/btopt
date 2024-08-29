@@ -569,6 +569,10 @@ class Strategy(metaclass=PreInitABCMeta):
             else:
                 exectype = Order.ExecType.MARKET
 
+        # Set the default price
+        if price is None:
+            price = bar.close
+
         order_details = OrderDetails(
             ticker=symbol,
             direction=Order.Direction.LONG,
@@ -673,6 +677,10 @@ class Strategy(metaclass=PreInitABCMeta):
                 exectype = Order.ExecType.LIMIT
             else:
                 exectype = Order.ExecType.MARKET
+
+        # Set the default price
+        if price is None:
+            price = bar.close
 
         order_details = OrderDetails(
             ticker=symbol,

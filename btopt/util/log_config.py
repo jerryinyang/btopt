@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 # Define your default logging configuration
 DEFAULT_LOG_FILE = PROJECT_ROOT / "logs/main.log"
 DEFAULT_LOG_LEVEL = "info"
-DEFAULT_CONSOLE_LEVEL = "warning"
+DEFAULT_CONSOLE_LEVEL = "error"
 
 
 def clear_log_files():
@@ -41,7 +41,7 @@ def clear_log_files():
 logger_main = get_logger(
     name="main",
     file_location=DEFAULT_LOG_FILE,
-    level="error",
+    level="warning",
     console_level=DEFAULT_CONSOLE_LEVEL,
 )
 

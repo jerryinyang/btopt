@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 
 from .data.bar import Bar
 from .data.timeframe import Timeframe
+from .types import OrderManagerType
 from .util.ext_decimal import ExtendedDecimal
 from .util.log_config import logger_main
 
@@ -21,8 +22,24 @@ class OrderGroup(ABC):
     def __init__(self, group_type: OrderGroupType):
         self.id: str = str(uuid.uuid4())
         self.type: OrderGroupType = group_type
-        self.orders: List[Order] = []
+        self.order_ids: List[str] = []
         self.active: bool = False
+
+        self.manager: Optional[OrderManagerType] = None
+
+    @property
+    def orders(self) -> List["Order"]:
+        if self.manager is None:
+            return []
+
+        return [
+            self.manager.orders[order_id]
+            for order_id in self.order_ids
+            if order_id in self.manager.orders
+        ]
+
+    def add_manager(self, manager: OrderManagerType):
+        self.manager = manager
 
     @abstractmethod
     def add_order(self, order: "Order") -> None:
@@ -33,7 +50,7 @@ class OrderGroup(ABC):
         pass
 
     @abstractmethod
-    def on_order_filled(self, filled_order: "Order") -> None:
+    def on_order_filled(self, filled_order: "Order") -> List["Order"]:
         pass
 
     @abstractmethod
@@ -79,21 +96,38 @@ class OCOGroup(OrderGroup):
         super().__init__(OrderGroupType.OCO)
 
     def add_order(self, order: "Order") -> None:
+        if not self.manager:
+            logger_main.log_and_raise(
+                f"{self.type} [{self.id}] has not been linked with an OrderManager object. self.manager must be added."
+            )
         if len(self.orders) < 2:
-            self.orders.append(order)
+            self.order_ids.append(order.id)
             order.order_group = self
         else:
             logger_main.warning("OCO group can only contain two orders.")
 
     def remove_order(self, order: "Order") -> None:
+        if not self.manager:
+            logger_main.log_and_raise(
+                f"{self.type} [{self.id}] has not been linked with an OrderManager object. self.manager must be added."
+            )
+
         if order in self.orders:
             self.orders.remove(order)
             order.order_group = None
 
-    def on_order_filled(self, filled_order: "Order") -> None:
+    def on_order_filled(self, filled_order: "Order") -> List["Order"]:
+        if not self.manager:
+            logger_main.log_and_raise(
+                f"{self.type} [{self.id}] has not been linked with an OrderManager object. self.manager must be added."
+            )
+
+        cancelled_orders = []
         for order in self.orders:
             if order != filled_order and order.status != Order.Status.FILLED:
                 order.cancel()
+                cancelled_orders.append(order)
+        return cancelled_orders
 
     def on_order_cancelled(self, cancelled_order: "Order") -> None:
         # In OCO, cancelling one order doesn't affect the other
@@ -113,20 +147,43 @@ class OCAGroup(OrderGroup):
         super().__init__(OrderGroupType.OCA)
 
     def add_order(self, order: "Order") -> None:
-        self.orders.append(order)
+        if not self.manager:
+            logger_main.log_and_raise(
+                f"{self.type} [{self.id}] has not been linked with an OrderManager object. self.manager must be added."
+            )
+
+        self.order_ids.append(order.id)
         order.order_group = self
 
     def remove_order(self, order: "Order") -> None:
-        if order in self.orders:
-            self.orders.remove(order)
+        if not self.manager:
+            logger_main.log_and_raise(
+                f"{self.type} [{self.id}] has not been linked with an OrderManager object. self.manager must be added."
+            )
+
+        if order.id in self.order_ids:
+            self.order_ids.remove(order.id)
             order.order_group = None
 
-    def on_order_filled(self, filled_order: "Order") -> None:
+    def on_order_filled(self, filled_order: "Order") -> List["Order"]:
+        if not self.manager:
+            logger_main.log_and_raise(
+                f"{self.type} [{self.id}] has not been linked with an OrderManager object. self.manager must be added."
+            )
+
+        cancelled_orders = []
         for order in self.orders:
             if order != filled_order and order.status != Order.Status.FILLED:
                 order.cancel()
+                cancelled_orders.append(order)
+        return cancelled_orders
 
     def on_order_cancelled(self, cancelled_order: "Order") -> None:
+        if not self.manager:
+            logger_main.log_and_raise(
+                f"{self.type} [{self.id}] has not been linked with an OrderManager object. self.manager must be added."
+            )
+
         # In OCA, cancelling one order cancels all others
         for order in self.orders:
             if order != cancelled_order and order.status != Order.Status.CANCELED:
@@ -152,19 +209,93 @@ class BracketGroup(OrderGroup):
 
     def __init__(self):
         super().__init__(OrderGroupType.BRACKET)
-        self.entry_order: Optional[Order] = None
-        self.take_profit_order: Optional[Order] = None
-        self.stop_loss_order: Optional[Order] = None
+
+        self.entry_order_id: Optional[str] = None
+        self.take_profit_order_id: Optional[str] = None
+        self.stop_loss_order_id: Optional[str] = None
+
+    @property
+    def entry_order(self) -> Optional["Order"]:
+        if (not self.manager) or (not self.entry_order_id):
+            return None
+
+        return self.manager.orders.get(self.entry_order_id, None)
+
+    @property
+    def take_profit_order(self) -> Optional["Order"]:
+        if (not self.manager) or (not self.take_profit_order_id):
+            return None
+
+        return self.manager.orders.get(self.take_profit_order_id, None)
+
+    @property
+    def stop_loss_order(self) -> Optional["Order"]:
+        if (not self.manager) or (not self.stop_loss_order_id):
+            return None
+
+        return self.manager.orders.get(self.stop_loss_order_id, None)
+
+    @entry_order.setter
+    def entry_order(self, order: "Order"):
+        if order is None:
+            self.entry_order_id = None
+
+        elif isinstance(order, Order):
+            # Store the order id
+            self.entry_order_id = order.id
+
+        else:
+            logger_main.log_and_raise(
+                TypeError(
+                    f" Failed to set entry_order: order argument is of an incorrect type {type(order)}. Expected an Order object."
+                )
+            )
+
+    @take_profit_order.setter
+    def take_profit_order(self, order: "Order"):
+        if order is None:
+            self.take_profit_order_id = None
+
+        elif isinstance(order, Order):
+            # Store the order id
+            self.take_profit_order_id = order.id
+
+        else:
+            logger_main.log_and_raise(
+                TypeError(
+                    f" Failed to set take_profit_order: order argument is of an incorrect type {type(order)}. Expected an Order object."
+                )
+            )
+
+    @stop_loss_order.setter
+    def stop_loss_order(self, order: "Order"):
+        if order is None:
+            self.stop_loss_order_id = None
+
+        elif isinstance(order, Order):
+            # Store the order id
+            self.stop_loss_order_id = order.id
+
+        else:
+            logger_main.log_and_raise(
+                TypeError(
+                    f" Failed to set stop_loss_order: order argument is of an incorrect type {type(order)}. Expected an Order object."
+                )
+            )
 
     def add_order(self, order: "Order", role: "BracketGroup.Role") -> None:
         """Add an order to the bracket group."""
+
+        if not self.manager:
+            logger_main.log_and_raise(
+                f"{self.type} [{self.id}] has not been linked with an OrderManager object. self.manager must be added."
+            )
 
         if role == BracketGroup.Role.ENTRY:
             if self.entry_order:
                 logger_main.warning(
                     f"Entry Order `{self.entry_order}` for Bracket Order `{self.id}` already exists. Order {order.id} will not be added."
                 )
-
             self.entry_order = order
 
         elif role == BracketGroup.Role.LIMIT:
@@ -202,17 +333,17 @@ class BracketGroup(OrderGroup):
                 )
 
         else:
-            logger_main.warning(
-                f"Invalid Bracket Role value passed for the order: {role}"
+            logger_main.log_and_raise(
+                ValueError(f"Invalid Bracket Role value passed for the order: {role}")
             )
 
-        self.orders.append(order)
+        self.order_ids.append(order.id)
         order.order_group = self
 
     def remove_order(self, order: "Order") -> None:
         """Remove an order from the bracket group."""
-        if order in self.orders:
-            self.orders.remove(order)
+        if order.id in self.order_ids:
+            self.order_ids.remove(order)
             order.order_group = None
             if order == self.entry_order:
                 self.entry_order = None
@@ -221,29 +352,45 @@ class BracketGroup(OrderGroup):
             elif order == self.stop_loss_order:
                 self.stop_loss_order = None
 
-    # def on_order_filled(self, filled_order: "Order") -> None:
-    #     """Handle the event when an order in the group is filled."""
-    #     if filled_order == self.entry_order:
-    #         self.activate()
-    #     elif filled_order in [self.take_profit_order, self.stop_loss_order]:
-    #         self.deactivate()
-    #         other_exit_order = (
-    #             self.take_profit_order
-    #             if filled_order == self.stop_loss_order
-    #             else self.stop_loss_order
-    #         )
-    #         if other_exit_order and other_exit_order.status != Order.Status.FILLED:
-    #             other_exit_order.cancel()
-
-    def on_order_cancelled(self, cancelled_order: "Order") -> None:
+    def on_order_cancelled(self, cancelled_order: "Order") -> List["Order"]:
         """Handle the event when an order in the group is cancelled."""
+        cancelled_orders = []
         if cancelled_order == self.entry_order:
-            self.deactivate()
+            # Cancel the children orders
+            if self.stop_loss_order:
+                self.stop_loss_order.cancel()
+                cancelled_orders.append(self.stop_loss_order)
+                logger_main.info(
+                    f"Cancelled stop loss order of bracket group [{self.id}]: {self.stop_loss_order.id}"
+                )
+            if self.take_profit_order:
+                self.take_profit_order.cancel()
+                cancelled_orders.append(self.take_profit_order)
+                logger_main.info(
+                    f"Cancelled take profit order of bracket group [{self.id}]: {self.take_profit_order.id}"
+                )
+
+        return cancelled_orders
 
     def on_order_rejected(self, rejected_order: "Order") -> None:
         """Handle the event when an order in the group is rejected."""
+        cancelled_orders = []
         if rejected_order == self.entry_order:
-            self.deactivate()
+            # Cancel the children orders
+            if self.stop_loss_order:
+                self.stop_loss_order.cancel()
+                cancelled_orders.append(self.stop_loss_order)
+                logger_main.info(
+                    f"Cancelled stop loss order of bracket group [{self.id}]: {self.stop_loss_order.id}"
+                )
+            if self.take_profit_order:
+                self.take_profit_order.cancel()
+                cancelled_orders.append(self.take_profit_order)
+                logger_main.info(
+                    f"Cancelled take profit order of bracket group [{self.id}]: {self.take_profit_order.id}"
+                )
+
+        return cancelled_orders
 
     def activate(self) -> None:
         """Activate the bracket order group."""
@@ -261,27 +408,34 @@ class BracketGroup(OrderGroup):
         if self.stop_loss_order:
             self.stop_loss_order.deactivate()
 
-    def activate_child_orders(self) -> None:
+    def activate_child_orders(self) -> List["Order"]:
         """Activate child orders when the parent order is filled."""
+        activated_orders: List[Order] = []
         if self.take_profit_order:
             self.take_profit_order.activate()
+            activated_orders.append(self.take_profit_order)
         if self.stop_loss_order:
             self.stop_loss_order.activate()
+            activated_orders.append(self.stop_loss_order)
+        return activated_orders
 
-    def deactivate_remaining_child_order(self, filled_order: "Order") -> None:
-        """Deactivate the remaining child order when one is filled."""
+    def cancel_remaining_child_order(self, filled_order: "Order") -> "Order":
+        """Cancel the remaining child order when one is filled."""
         if filled_order == self.take_profit_order and self.stop_loss_order:
-            self.stop_loss_order.deactivate()
+            self.stop_loss_order.cancel()
+            logger_main.info(f"Cancelled order: {self.stop_loss_order.id}")
+            return self.stop_loss_order
         elif filled_order == self.stop_loss_order and self.take_profit_order:
-            self.take_profit_order.deactivate()
+            self.take_profit_order.cancel()
+            logger_main.info(f"Cancelled order: {self.take_profit_order.id}")
+            return self.take_profit_order
 
-    def on_order_filled(self, filled_order: "Order") -> None:
+    def on_order_filled(self, filled_order: "Order") -> List["Order"]:
         """Handle the event when an order in the group is filled."""
         if filled_order == self.entry_order:
-            self.activate_child_orders()
+            return self.activate_child_orders()
         elif filled_order in [self.take_profit_order, self.stop_loss_order]:
-            self.deactivate_remaining_child_order(filled_order)
-            self.deactivate()
+            return [self.cancel_remaining_child_order(filled_order)]
 
     def get_status(self) -> str:
         """Get the overall status of the order group."""
@@ -586,9 +740,6 @@ class Order:
 
         if self.execution_bar_timestamp is None:
             self.execution_bar_timestamp = timestamp
-
-        # if self.order_group:
-        #     self.order_group.on_order_filled(self)
 
         logger_main.info(
             f"Order {self.id} filled: size {fill_size}, price {fill_price}"
