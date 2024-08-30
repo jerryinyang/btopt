@@ -347,6 +347,7 @@ class Portfolio:
             logger_main.warning(
                 "\n----- PROCESSING PENDING ORDERS -----\n"
                 + f"ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n\n"
+                + f"TRADES: {''.join(f'{trade}\n' for trade in self.trade_manager.open_trades.values())}\n\n"
             )
 
         # Get the executed orders
@@ -355,6 +356,12 @@ class Portfolio:
             self._execute_order(
                 order, market_data[order.details.ticker][order.details.timeframe]
             )
+
+        logger_main.warning(
+            "\n----- AFTER PROCESSING ORDERS -----\n"
+            + f"ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n\n"
+            + f"TRADES: {''.join(f'{trade}\n' for trade in self.trade_manager.open_trades.values())}\n\n"
+        )
 
     def _execute_order(self, order: Order, bar: Bar) -> Tuple[bool, Optional[Trade]]:
         """
@@ -368,8 +375,9 @@ class Portfolio:
             Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
             and the resulting Trade object if applicable.
         """
+
         execution_price = order.get_last_fill_price() or bar.close
-        fill_size = order.get_remaining_size()
+        fill_size = order.get_last_fill_size()
 
         # Check risk limits
         if not self.risk_manager.check_risk_limits(
@@ -384,8 +392,6 @@ class Portfolio:
         # Update trade
         trade = self.trade_manager.manage_trade(
             order,
-            execution_price,
-            fill_size,
             bar,
             self.position_manager.get_position(order.details.ticker),
         )
@@ -438,7 +444,7 @@ class Portfolio:
                 close_order = self._create_market_order_to_close(
                     symbol, abs(position.quantity)
                 )
-                self._execute_order(close_order, self.engine.get_current_bar(symbol))
+                self._execute_order(close_order, self.engine.get_current_data(symbol))
 
         logger_main.info("All positions have been closed.")
 
@@ -795,11 +801,12 @@ class Portfolio:
             if current_position.quantity > 0
             else Order.Direction.LONG
         )
+        bar = self.engine.get_current_data(symbol)
         order_details = OrderDetails(
             ticker=symbol,
             direction=direction,
             size=abs(size),
-            price=None,  # Market order
+            price=bar.close,
             exectype=Order.ExecType.MARKET,
             timestamp=self.engine._current_timestamp,
             timeframe=self.engine.default_timeframe,

@@ -525,7 +525,7 @@ class Engine:
                 if self._check_termination_condition():
                     break
 
-            self._finalize_backtest()
+            # self._finalize_backtest()
 
             # Initialize the Reporter with the final portfolio state
             self.reporter = Reporter(self.portfolio, self)

@@ -182,6 +182,11 @@ class OrderManager:
             ]
             sorted_orders = self._sort_orders(orders, bar)
 
+            if sorted_orders:
+                logger_main.warning(
+                    f"\n{bar.timestamp} | High: {bar.high} | Low: {bar.low}\nOrders to Process [{len(sorted_orders)}]: \n+ ORDERS: {''.join(f'\n{order}' for order in sorted_orders)}\n\n"
+                )
+
             for order in sorted_orders:
                 if not order.is_active:
                     continue
@@ -191,9 +196,6 @@ class OrderManager:
                 if is_filled:
                     self._handle_order_fill(order, fill_price, fill_size, timestamp)
                     processed_orders.append(order)
-
-                    if order.details.exectype == Order.ExecType.MARKET:
-                        logger_main.warning("---")
 
                 elif order.is_expired(timestamp):
                     self._cancel_order(order)
@@ -669,6 +671,244 @@ class TradeManager:
         self.trade_count = 0
         self.updated_trades: List[Trade] = []
 
+    # TESTED
+    def manage_trade(
+        self,
+        order: Order,
+        bar: Bar,
+        position: "Position",
+    ) -> Optional[Trade]:
+        """
+        Manage trade creation, updates, closures, and reversals.
+
+        Args:
+            order (Order): The order being executed.
+            bar (Bar): The current price bar.
+            position (ExtendedDecimal): The size of the existing position.
+
+        Returns:
+            Optional[Trade]: The created or updated Trade object, if applicable.
+        """
+        fill_size = order.get_filled_size()
+        existing_position = position.quantity
+
+        if self._is_trade_reversal(existing_position, order.details.direction):
+            return self._handle_trade_reversal(
+                order,
+                bar,
+                existing_position,
+            )
+        else:
+            return self._create_new_trade(order, fill_size, bar)
+
+    def close_trade(
+        self,
+        trade: Trade,
+        order: Order,
+        bar: Bar,
+    ) -> None:
+        """
+        Close a specific trade and update the portfolio accordingly.
+
+        Args:
+            trade (Trade): The trade to close.
+            order (Optional[Order]): The order that triggered the trade closure, if any.
+        """
+
+        execution_price = order.get_last_fill_price() or bar.close
+        size = order.get_last_fill_size()
+
+        trade.close(order, execution_price, bar, size)
+
+        symbol = trade.ticker
+        self.open_trades[symbol].remove(trade)
+        if not self.open_trades[symbol]:
+            del self.open_trades[symbol]
+        self.closed_trades.append(trade)
+        self.updated_trades.append(trade)
+
+    def partial_close_trade(
+        self,
+        trade: Trade,
+        order: Order,
+        bar: Bar,
+        close_size: ExtendedDecimal,
+    ) -> None:
+        """
+        Partially close a trade and update its metrics.
+
+        Args:
+            trade (Trade): The trade to partially close.
+            bar (Bar): The current price bar.
+            close_size (ExtendedDecimal): The size of the position to close.
+        """
+        execution_price = order.get_last_fill_price()
+        exit_details = OrderDetails(
+            ticker=trade.ticker,
+            direction=Order.Direction.SHORT
+            if trade.direction > Order.Direction.LONG
+            else Order.Direction.LONG,
+            size=abs(close_size),
+            price=execution_price,
+            exectype=Order.ExecType.MARKET,
+            timestamp=bar.timestamp,
+            timeframe=bar.timeframe,
+            strategy_id=trade.entry_order.details.strategy_id,
+        )
+        exit_order = Order(
+            f"EXIT_PARTIAL_{uuid.uuid3(trade.entry_order.id, "EXIT_PARTIAL")}",
+            exit_details,
+        )
+
+        if close_size > trade.current_size:
+            logger_main.warning(
+                "Attempted to close more than the current trade size. Closing entire trade."
+            )
+            close_size = trade.current_size
+
+        trade.close(exit_order, execution_price, bar, close_size)
+
+        if trade.current_size == ExtendedDecimal("0"):
+            symbol = trade.ticker
+            self.open_trades[symbol].remove(trade)
+            if not self.open_trades[symbol]:
+                del self.open_trades[symbol]
+            self.closed_trades.append(trade)
+            self.updated_trades.append(trade)
+
+        else:
+            trade.update(bar)
+
+        logger_main.info(
+            f"Partially closed trade {trade.id}. Realized PnL: {trade.get_realized_pnl()}"
+        )
+
+    def _create_new_trade(
+        self,
+        order: Order,
+        fill_size: ExtendedDecimal,
+        bar: Bar,
+    ) -> Trade:
+        """
+        Create a new trade based on an order execution.
+
+        Args:
+            order (Order): The order being executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+            bar (Bar): The current price bar.
+
+        Returns:
+            Trade: The newly created Trade object.
+        """
+        self.trade_count += 1
+        new_trade = Trade(
+            trade_id=self.trade_count,
+            entry_order=order,
+            entry_bar=bar,
+            commission_rate=self.commission_rate,
+            strategy_id=order.details.strategy_id,
+        )
+
+        # Set the fill_size
+        new_trade.initial_size = fill_size
+        new_trade.current_size = fill_size
+
+        symbol = order.details.ticker
+        if symbol not in self.open_trades:
+            self.open_trades[symbol] = []
+        self.open_trades[symbol].append(new_trade)
+
+        self.updated_trades.append(new_trade)
+        return new_trade
+
+    def _is_trade_reversal(
+        self, existing_position: ExtendedDecimal, order_direction: Order.Direction
+    ) -> bool:
+        """
+        Check if the trade is a reversal.
+
+        Args:
+            existing_position (ExtendedDecimal): The existing position size.
+            order_direction (Order.Direction): The direction of the new order.
+
+        Returns:
+            bool: True if the trade is a reversal, False otherwise.
+        """
+        return (
+            existing_position > ExtendedDecimal("0")
+            and order_direction == Order.Direction.SHORT
+        ) or (
+            existing_position < ExtendedDecimal("0")
+            and order_direction == Order.Direction.LONG
+        )
+
+    def _handle_trade_reversal(
+        self,
+        order: Order,
+        bar: Bar,
+        existing_position: ExtendedDecimal,
+    ) -> Trade:
+        """
+        Handle a trade reversal by closing existing trades and opening a new one.
+
+        Args:
+            order (Order): The order causing the reversal.
+            bar (Bar): The current price bar.
+            existing_position (ExtendedDecimal): The size of the existing position.
+
+        Returns:
+            Trade: The new Trade object created after the reversal.
+        """
+
+        self._close_existing_trades(order, bar)
+        remaining_size = order.get_filled_size() - abs(existing_position)
+
+        if remaining_size > ExtendedDecimal("0"):
+            return self._create_new_trade(order, remaining_size, bar)
+        return None
+
+    def _close_existing_trades(
+        self,
+        order: Order,
+        bar: Bar,
+    ) -> None:
+        """
+        Close existing trades for a symbol.
+
+        Args:
+            order (Order): The order causing the reversal.
+            bar (Bar): The current price bar.
+        """
+        remaining_size = order.get_last_fill_size()
+        symbol = order.details.ticker
+
+        # If the order is associated with an order group, first reduce/close the associated trade
+        associated_trades: List[Trade] = []
+        remaining_trades: List[Trade] = []
+        for trade in self.open_trades.get(symbol, []):
+            if (
+                order.order_group
+                and trade.entry_order.order_group
+                and trade.entry_order.order_group.id == order.order_group.id
+            ):
+                associated_trades.append(trade)
+            else:
+                remaining_trades.append(trade)
+
+        associated_trades.extend(remaining_trades)
+
+        for trade in associated_trades[:]:
+            if remaining_size <= ExtendedDecimal("0"):
+                break
+
+            if remaining_size >= trade.current_size:
+                self.close_trade(trade, order, bar)
+                remaining_size -= trade.current_size
+            else:
+                self.partial_close_trade(trade, order, bar, remaining_size)
+                remaining_size = ExtendedDecimal("0")
+
+    # NOT CONFIRMED
     def create_trade(
         self, order: Order, execution_price: ExtendedDecimal, bar: Bar
     ) -> Trade:
@@ -690,47 +930,6 @@ class TradeManager:
 
         self._add_to_updated_trades(trade)
         return trade
-
-    def manage_trade(
-        self,
-        order: Order,
-        execution_price: ExtendedDecimal,
-        fill_size: ExtendedDecimal,
-        bar: Bar,
-        position: "Position",
-    ) -> Optional[Trade]:
-        """
-        Manage trade creation, updates, closures, and reversals.
-
-        Args:
-            order (Order): The order being executed.
-            execution_price (ExtendedDecimal): The price at which the order is executed.
-            fill_size (ExtendedDecimal): The size of the order fill.
-            bar (Bar): The current price bar.
-
-        Returns:
-            Optional[Trade]: The created or updated Trade object, if applicable.
-        """
-        existing_position = position.quantity
-
-        if self._is_trade_reversal(existing_position, order.details.direction):
-            return self._handle_trade_reversal(
-                order,
-                execution_price,
-                fill_size,
-                bar,
-                existing_position,
-            )
-        elif existing_position != ExtendedDecimal("0"):
-            return self._update_existing_trade(
-                order,
-                execution_price,
-                fill_size,
-                bar,
-                position,
-            )
-        else:
-            return self._create_new_trade(order, execution_price, fill_size, bar)
 
     def get_open_trades(self, strategy_id: Optional[str] = None) -> List[Trade]:
         if strategy_id:
@@ -777,6 +976,22 @@ class TradeManager:
     def clear_updated_trades(self) -> None:
         self.updated_trades.clear()
 
+    def _get_trade_by_order(self, order: Order) -> Optional[Trade]:
+        """
+        Get the trade associated with a given order.
+
+        Args:
+            order (Order): The order to look up.
+
+        Returns:
+            Optional[Trade]: The associated Trade object, if found.
+        """
+        for trades in self.open_trades.values():
+            for trade in trades:
+                if trade.entry_order == order:
+                    return trade
+        return None
+
     def handle_bracket_order(
         self,
         entry_order: Order,
@@ -812,199 +1027,6 @@ class TradeManager:
                     trade.update(current_bar)
                     self.updated_trades.append(trade)
 
-    def close_trade(
-        self,
-        trade: Trade,
-        execution_price: ExtendedDecimal,
-        order: Optional[Order] = None,
-    ) -> None:
-        """
-        Close a specific trade and update the portfolio accordingly.
-
-        Args:
-            trade (Trade): The trade to close.
-            execution_price (ExtendedDecimal): The price at which to close the trade.
-            order (Optional[Order]): The order that triggered the trade closure, if any.
-        """
-        trade.close(execution_price, order)
-        symbol = trade.ticker
-        self.open_trades[symbol].remove(trade)
-        if not self.open_trades[symbol]:
-            del self.open_trades[symbol]
-        self.closed_trades.append(trade)
-        self.updated_trades.append(trade)
-
-    def _get_trade_by_order(self, order: Order) -> Optional[Trade]:
-        """
-        Get the trade associated with a given order.
-
-        Args:
-            order (Order): The order to look up.
-
-        Returns:
-            Optional[Trade]: The associated Trade object, if found.
-        """
-        for trades in self.open_trades.values():
-            for trade in trades:
-                if trade.entry_order == order:
-                    return trade
-        return None
-
-    def _is_trade_reversal(
-        self, existing_position: ExtendedDecimal, order_direction: Order.Direction
-    ) -> bool:
-        """
-        Check if the trade is a reversal.
-
-        Args:
-            existing_position (ExtendedDecimal): The existing position size.
-            order_direction (Order.Direction): The direction of the new order.
-
-        Returns:
-            bool: True if the trade is a reversal, False otherwise.
-        """
-        return (
-            existing_position > ExtendedDecimal("0")
-            and order_direction == Order.Direction.SHORT
-        ) or (
-            existing_position < ExtendedDecimal("0")
-            and order_direction == Order.Direction.LONG
-        )
-
-    def _handle_trade_reversal(
-        self,
-        order: Order,
-        execution_price: ExtendedDecimal,
-        fill_size: ExtendedDecimal,
-        bar: Bar,
-        existing_position: ExtendedDecimal,
-    ) -> Trade:
-        """
-        Handle a trade reversal by closing existing trades and opening a new one.
-
-        Args:
-            order (Order): The order causing the reversal.
-            execution_price (ExtendedDecimal): The price at which the order is executed.
-            fill_size (ExtendedDecimal): The size of the order fill.
-            bar (Bar): The current price bar.
-            existing_position (ExtendedDecimal): The size of the existing position.
-
-        Returns:
-            Trade: The new Trade object created after the reversal.
-        """
-        self._close_existing_trades(
-            order.details.ticker, execution_price, bar, abs(existing_position)
-        )
-        remaining_size = fill_size - abs(existing_position)
-
-        if remaining_size > ExtendedDecimal("0"):
-            return self._create_new_trade(order, execution_price, remaining_size, bar)
-        return None
-
-    def _close_existing_trades(
-        self,
-        symbol: str,
-        execution_price: ExtendedDecimal,
-        bar: Bar,
-        size_to_close: ExtendedDecimal,
-    ) -> None:
-        """
-        Close existing trades for a symbol.
-
-        Args:
-            symbol (str): The symbol of the trades to close.
-            execution_price (ExtendedDecimal): The price at which to close the trades.
-            bar (Bar): The current price bar.
-            size_to_close (ExtendedDecimal): The total size of positions to close.
-        """
-        remaining_size = size_to_close
-        for trade in self.open_trades.get(symbol, [])[
-            :
-        ]:  # Create a copy of the list to iterate
-            if remaining_size <= ExtendedDecimal("0"):
-                break
-
-            if remaining_size >= trade.current_size:
-                self.close_trade(trade, execution_price, bar)
-                remaining_size -= trade.current_size
-            else:
-                self.partial_close_trade(trade, execution_price, bar, remaining_size)
-                remaining_size = ExtendedDecimal("0")
-
-    def _update_existing_trade(
-        self,
-        order: Order,
-        execution_price: ExtendedDecimal,
-        fill_size: ExtendedDecimal,
-        bar: Bar,
-        position: "Position",
-    ) -> Trade:
-        """
-        Update an existing trade based on a new order execution.
-
-        Args:
-            order (Order): The order being executed.
-            execution_price (ExtendedDecimal): The price at which the order is executed.
-            fill_size (ExtendedDecimal): The size of the order fill.
-            bar (Bar): The current price bar.
-            position (Position): The corresponding Position object.
-
-        Returns:
-            Trade: The updated Trade object.
-        """
-        return
-        symbol = order.details.ticker
-        existing_trade = self._get_latest_trade(symbol)
-
-        if existing_trade:
-            existing_trade.update(bar)
-            existing_trade.add_to_position(fill_size, execution_price)
-            existing_trade.unrealized_pnl = position.calculate_unrealized_pnl(bar.close)
-            return existing_trade
-        else:
-            return self._create_new_trade(
-                order, execution_price, fill_size, bar, position
-            )
-
-    def _create_new_trade(
-        self,
-        order: Order,
-        execution_price: ExtendedDecimal,
-        fill_size: ExtendedDecimal,
-        bar: Bar,
-    ) -> Trade:
-        """
-        Create a new trade based on an order execution.
-
-        Args:
-            order (Order): The order being executed.
-            execution_price (ExtendedDecimal): The price at which the order is executed.
-            fill_size (ExtendedDecimal): The size of the order fill.
-            bar (Bar): The current price bar.
-
-        Returns:
-            Trade: The newly created Trade object.
-        """
-        self.trade_count += 1
-        new_trade = Trade(
-            trade_id=self.trade_count,
-            entry_order=order,
-            entry_bar=bar,
-            commission_rate=self.commission_rate,
-            strategy_id=order.details.strategy_id,
-        )
-        new_trade.initial_size = fill_size
-        new_trade.current_size = fill_size
-        new_trade.entry_price = execution_price
-
-        symbol = order.details.ticker
-        if symbol not in self.open_trades:
-            self.open_trades[symbol] = []
-        self.open_trades[symbol].append(new_trade)
-
-        self.updated_trades.append(new_trade)
-        return new_trade
-
     def _update_average_entry_price(
         self, trade: Trade, new_size: ExtendedDecimal, new_price: ExtendedDecimal
     ) -> None:
@@ -1033,40 +1055,6 @@ class TradeManager:
         """
         trades = self.open_trades.get(symbol, [])
         return trades[-1] if trades else None
-
-    def partial_close_trade(
-        self,
-        trade: Trade,
-        execution_price: ExtendedDecimal,
-        bar: Bar,
-        close_size: ExtendedDecimal,
-    ) -> None:
-        """
-        Partially close a trade and update its metrics.
-
-        Args:
-            trade (Trade): The trade to partially close.
-            execution_price (ExtendedDecimal): The price at which to close the part of the trade.
-            bar (Bar): The current price bar.
-            close_size (ExtendedDecimal): The size of the position to close.
-        """
-        if close_size > trade.current_size:
-            logger_main.warning(
-                "Attempted to close more than the current trade size. Closing entire trade."
-            )
-            close_size = trade.current_size
-
-        trade.close(close_size, execution_price, bar)
-
-        if trade.current_size == ExtendedDecimal("0"):
-            self.close_trade(trade, execution_price, bar)
-        else:
-            trade.update(bar)
-            self.updated_trades.append(trade)
-
-        logger_main.info(
-            f"Partially closed trade {trade.id}. Realized PnL: {trade.get_realized_pnl()}"
-        )
 
     def update_trade(self, trade: Trade, bar: Bar) -> None:
         """
@@ -1113,6 +1101,42 @@ class TradeManager:
             trade.entry_price * abs(trade.current_size) for trade in trades
         )
         return weighted_price_sum / total_size if total_size > 0 else None
+
+    # Deprecated
+    def _update_existing_trade(
+        self,
+        order: Order,
+        execution_price: ExtendedDecimal,
+        fill_size: ExtendedDecimal,
+        bar: Bar,
+        position: "Position",
+    ) -> Trade:
+        """
+        Update an existing trade based on a new order execution.
+
+        Args:
+            order (Order): The order being executed.
+            execution_price (ExtendedDecimal): The price at which the order is executed.
+            fill_size (ExtendedDecimal): The size of the order fill.
+            bar (Bar): The current price bar.
+            position (Position): The corresponding Position object.
+
+        Returns:
+            Trade: The updated Trade object.
+        """
+        return
+        symbol = order.details.ticker
+        existing_trade = self._get_latest_trade(symbol)
+
+        if existing_trade:
+            existing_trade.update(bar)
+            existing_trade.add_to_position(fill_size, execution_price)
+            existing_trade.unrealized_pnl = position.calculate_unrealized_pnl(bar.close)
+            return existing_trade
+        else:
+            return self._create_new_trade(
+                order, execution_price, fill_size, bar, position
+            )
 
 
 class AccountManager:

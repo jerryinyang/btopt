@@ -777,6 +777,8 @@ class Order:
             self.status = self.Status.ACCEPTED
             logger_main.info(f"Order {self.id} activated")
 
+        self.is_active = True
+
     def deactivate(self) -> None:
         """
         Deactivate the order.
@@ -820,6 +822,12 @@ class Order:
         """Get the price of the last fill."""
         if self.fills:
             return self.fills[-1].price
+        return None
+
+    def get_last_fill_size(self) -> Optional[ExtendedDecimal]:
+        """Get the price of the last fill."""
+        if self.fills:
+            return self.fills[-1].size
         return None
 
     def get_last_fill_timestamp(self) -> Optional[datetime]:
