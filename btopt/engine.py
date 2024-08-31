@@ -580,7 +580,7 @@ class Engine:
             self,
             initial_capital=risk_manager_config["initial_capital"],
             commission_rate=ExtendedDecimal(
-                str(self._config.get("commission_rate", "0.001"))
+                str(self._config.get("commission_rate", "0.000"))
             ),
             margin_ratio=margin_ratio,
             risk_manager_config=risk_manager_config,
@@ -702,7 +702,7 @@ class Engine:
             if strategy:
                 strategy.on_order_update(order)
 
-        for trade in self.portfolio.trade_manager.get_updated_trades():
+        for trade in self.portfolio.trade_manager.updated_trades:
             strategy = self.get_strategy_by_id(trade.strategy_id)
             if strategy:
                 strategy.on_trade_update(trade)

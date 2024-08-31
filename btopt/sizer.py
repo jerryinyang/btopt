@@ -142,7 +142,7 @@ class NaiveSizer(Sizer):
         )
 
         return position_size.quantize(
-            ExtendedDecimal("0.01"), rounding=ROUND_DOWN
+            ExtendedDecimal("0.00001"), rounding=ROUND_DOWN
         )  # Round to fractional units
 
     def validate_inputs(

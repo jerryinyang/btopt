@@ -139,7 +139,7 @@ class Portfolio:
         long_value = self.position_manager.get_long_position_value(current_prices)
         short_value = self.position_manager.get_short_position_value(current_prices)
 
-        unrealized_pnl = self.position_manager.get_total_unrealized_pnl()
+        unrealized_pnl = self.position_manager.get_total_unrealized_pnl(current_prices)
         self.account_manager.update_equity(unrealized_pnl)
         self.account_manager.update_margin_used(long_value, short_value)
 
@@ -160,7 +160,7 @@ class Portfolio:
 
         asset_value = self.position_manager.get_long_position_value(current_prices)
         liabilities = self.position_manager.get_short_position_value(current_prices)
-        open_pnl = self.position_manager.get_total_unrealized_pnl()
+        open_pnl = self.position_manager.get_total_unrealized_pnl(current_prices)
         closed_pnl = self.account_manager.realized_pnl
         portfolio_return = self._calculate_return(equity)
 
@@ -285,7 +285,7 @@ class Portfolio:
         logger_main.warning(
             f"\n----- CREATED BRACKET ORDER -----\nENTRY: {bracket_group.entry_order.is_active}\n"
             + f"LIMIT: {bracket_group.take_profit_order.is_active}\nSTOP: {bracket_group.stop_loss_order.is_active}\n"
-            + f"ALL PENDING ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n\n"
+            + f"PENDING ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n\n"
         )
         return entry_order, take_profit_order, stop_loss_order, bracket_group
 
@@ -346,8 +346,8 @@ class Portfolio:
         if len(self.order_manager.orders) > 0:
             logger_main.warning(
                 "\n----- PROCESSING PENDING ORDERS -----\n"
-                + f"ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n\n"
-                + f"TRADES: {''.join(f'{trade}\n' for trade in self.trade_manager.open_trades.values())}\n\n"
+                + f"ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n"
+                + f"TRADES: {''.join(f'{trade}\n' for trade in self.trade_manager.open_trades.values())}\n"
             )
 
         # Get the executed orders
@@ -359,8 +359,8 @@ class Portfolio:
 
         logger_main.warning(
             "\n----- AFTER PROCESSING ORDERS -----\n"
-            + f"ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n\n"
-            + f"TRADES: {''.join(f'{trade}\n' for trade in self.trade_manager.open_trades.values())}\n\n"
+            + f"ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n"
+            + f"TRADES: {''.join(f'{trade}\n' for trade in self.trade_manager.open_trades.values())}\n"
         )
 
     def _execute_order(self, order: Order, bar: Bar) -> Tuple[bool, Optional[Trade]]:
@@ -389,6 +389,24 @@ class Portfolio:
             self._reject_order(order, "Risk limits breached")
             return False, None
 
+        # Calculate cost
+        symbol = order.details.ticker
+        direction = order.details.direction
+
+        cost = execution_price * fill_size
+        commission = cost * self.trade_manager.commission_rate
+        current_position = self.position_manager.get_position(symbol).quantity
+
+        is_reversal = (current_position > 0 and direction == Order.Direction.SHORT) or (
+            current_position < 0 and direction == Order.Direction.LONG
+        )
+
+        if is_reversal:
+            # Recalculate cost and commission for the remaining order size (if any)
+            remaining_size = order.get_remaining_size()
+            cost = execution_price * remaining_size
+            commission = cost * self.trade_manager.commission_rate
+
         # Update trade
         trade = self.trade_manager.manage_trade(
             order,
@@ -400,14 +418,10 @@ class Portfolio:
         self.position_manager.update_position(order, execution_price, fill_size)
 
         # Update account
-        cost = execution_price * fill_size
-        commission = cost * self.trade_manager.commission_rate
         self.account_manager.update_cash(
-            -cost - commission, f"Order execution for {order.details.ticker}"
+            (cost * direction.value * -1) - commission,
+            f"Order execution for {symbol}",
         )
-
-        # Handle order groups
-        self.order_manager.handle_order_update(order)
 
         logger_main.info(
             f"Executed order: {order.id}, Symbol: {order.details.ticker}, "
@@ -560,7 +574,7 @@ class Portfolio:
                 "unrealized_pnl": position.unrealized_pnl,
                 "realized_pnl": position.realized_pnl,
                 "last_update_time": position.last_update_time,
-                "cost_basis": position.cost_basis,
+                "cost_basis": position.total_cost,
             }
             for symbol, position in self.position_manager.get_all_positions().items()
         }

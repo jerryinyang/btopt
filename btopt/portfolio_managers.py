@@ -725,7 +725,7 @@ class TradeManager:
         if not self.open_trades[symbol]:
             del self.open_trades[symbol]
         self.closed_trades.append(trade)
-        self.updated_trades.append(trade)
+        self._add_to_updated_trades(trade)
 
     def partial_close_trade(
         self,
@@ -742,23 +742,44 @@ class TradeManager:
             bar (Bar): The current price bar.
             close_size (ExtendedDecimal): The size of the position to close.
         """
+        # execution_price = order.get_last_fill_price()
+        # exit_details = OrderDetails(
+        #     ticker=trade.ticker,
+        #     direction=Order.Direction.SHORT
+        #     if trade.direction > Order.Direction.LONG
+        #     else Order.Direction.LONG,
+        #     size=abs(close_size),
+        #     price=execution_price,
+        #     exectype=Order.ExecType.MARKET,
+        #     timestamp=bar.timestamp,
+        #     timeframe=bar.timeframe,
+        #     strategy_id=trade.entry_order.details.strategy_id,
+        # )
+        # exit_order = Order(
+        #     f"EXIT_PARTIAL_{uuid.uuid3(trade.entry_order.id, "EXIT_PARTIAL")}",
+        #     exit_details,
+        # )
+
+        # if close_size > trade.current_size:
+        #     logger_main.warning(
+        #         "Attempted to close more than the current trade size. Closing entire trade."
+        #     )
+        #     close_size = trade.current_size
+
+        # trade.close(exit_order, execution_price, bar, close_size)
+
+        # if trade.current_size == ExtendedDecimal("0"):
+        #     symbol = trade.ticker
+        #     self.open_trades[symbol].remove(trade)
+        #     if not self.open_trades[symbol]:
+        #         del self.open_trades[symbol]
+        #     self.closed_trades.append(trade)
+        #     self._updated_trades.append(trade)
+
+        # else:
+        #     trade.update(bar)
+
         execution_price = order.get_last_fill_price()
-        exit_details = OrderDetails(
-            ticker=trade.ticker,
-            direction=Order.Direction.SHORT
-            if trade.direction > Order.Direction.LONG
-            else Order.Direction.LONG,
-            size=abs(close_size),
-            price=execution_price,
-            exectype=Order.ExecType.MARKET,
-            timestamp=bar.timestamp,
-            timeframe=bar.timeframe,
-            strategy_id=trade.entry_order.details.strategy_id,
-        )
-        exit_order = Order(
-            f"EXIT_PARTIAL_{uuid.uuid3(trade.entry_order.id, "EXIT_PARTIAL")}",
-            exit_details,
-        )
 
         if close_size > trade.current_size:
             logger_main.warning(
@@ -766,7 +787,7 @@ class TradeManager:
             )
             close_size = trade.current_size
 
-        trade.close(exit_order, execution_price, bar, close_size)
+        trade.close(order, execution_price, bar, close_size)
 
         if trade.current_size == ExtendedDecimal("0"):
             symbol = trade.ticker
@@ -774,14 +795,30 @@ class TradeManager:
             if not self.open_trades[symbol]:
                 del self.open_trades[symbol]
             self.closed_trades.append(trade)
-            self.updated_trades.append(trade)
-
         else:
             trade.update(bar)
+
+        self._add_to_updated_trades.append(trade)
 
         logger_main.info(
             f"Partially closed trade {trade.id}. Realized PnL: {trade.get_realized_pnl()}"
         )
+
+    def update_open_trades(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
+        """
+        Update all open trades based on current market data.
+
+        Args:
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
+        """
+        for symbol, trades in self.open_trades.items():
+            if symbol in market_data:
+                current_bar = market_data[symbol][min(market_data[symbol].keys())]
+                for trade in trades:
+                    trade.update(current_bar)
+
+    def clear_updated_trades(self) -> None:
+        self.updated_trades.clear()
 
     def _create_new_trade(
         self,
@@ -818,7 +855,7 @@ class TradeManager:
             self.open_trades[symbol] = []
         self.open_trades[symbol].append(new_trade)
 
-        self.updated_trades.append(new_trade)
+        self._add_to_updated_trades(new_trade)
         return new_trade
 
     def _is_trade_reversal(
@@ -908,29 +945,11 @@ class TradeManager:
                 self.partial_close_trade(trade, order, bar, remaining_size)
                 remaining_size = ExtendedDecimal("0")
 
+    def _add_to_updated_trades(self, trade: Trade) -> None:
+        if trade not in self.updated_trades:
+            self.updated_trades.append(trade)
+
     # NOT CONFIRMED
-    def create_trade(
-        self, order: Order, execution_price: ExtendedDecimal, bar: Bar
-    ) -> Trade:
-        self.trade_count += 1
-        trade = Trade(
-            trade_id=self.trade_count,
-            entry_order=order,
-            entry_bar=bar,
-            commission_rate=self.commission_rate,
-            strategy_id=order.details.strategy_id,
-        )
-        trade.initial_size = order.get_filled_size()
-        trade.current_size = trade.initial_size
-
-        symbol = order.details.ticker
-        if symbol not in self.open_trades:
-            self.open_trades[symbol] = []
-        self.open_trades[symbol].append(trade)
-
-        self._add_to_updated_trades(trade)
-        return trade
-
     def get_open_trades(self, strategy_id: Optional[str] = None) -> List[Trade]:
         if strategy_id:
             return [
@@ -963,18 +982,8 @@ class TradeManager:
             trade.get_unrealized_pnl() for trade in self.open_trades.get(symbol, [])
         )
 
-    def _add_to_updated_trades(self, trade: Trade) -> None:
-        if trade not in self.updated_trades:
-            self.updated_trades.append(trade)
-
-    def get_updated_trades(self) -> List[Trade]:
-        return self.updated_trades
-
     def get_trades_for_strategy(self, strategy_id: str) -> List[Trade]:
         return self.get_open_trades(strategy_id) + self.get_closed_trades(strategy_id)
-
-    def clear_updated_trades(self) -> None:
-        self.updated_trades.clear()
 
     def _get_trade_by_order(self, order: Order) -> Optional[Trade]:
         """
@@ -991,41 +1000,6 @@ class TradeManager:
                 if trade.entry_order == order:
                     return trade
         return None
-
-    def handle_bracket_order(
-        self,
-        entry_order: Order,
-        take_profit_order: Optional[Order],
-        stop_loss_order: Optional[Order],
-    ) -> None:
-        """
-        Handle a bracket order by associating the entry, take profit, and stop loss orders.
-
-        Args:
-            entry_order (Order): The entry order of the bracket.
-            take_profit_order (Optional[Order]): The take profit order of the bracket.
-            stop_loss_order (Optional[Order]): The stop loss order of the bracket.
-        """
-        trade = self._get_trade_by_order(entry_order)
-        if trade:
-            if take_profit_order:
-                trade.take_profit_order = take_profit_order
-            if stop_loss_order:
-                trade.stop_loss_order = stop_loss_order
-
-    def update_open_trades(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
-        """
-        Update all open trades based on current market data.
-
-        Args:
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
-        """
-        for symbol, trades in self.open_trades.items():
-            if symbol in market_data:
-                current_bar = market_data[symbol][min(market_data[symbol].keys())]
-                for trade in trades:
-                    trade.update(current_bar)
-                    self.updated_trades.append(trade)
 
     def _update_average_entry_price(
         self, trade: Trade, new_size: ExtendedDecimal, new_price: ExtendedDecimal
@@ -1055,17 +1029,6 @@ class TradeManager:
         """
         trades = self.open_trades.get(symbol, [])
         return trades[-1] if trades else None
-
-    def update_trade(self, trade: Trade, bar: Bar) -> None:
-        """
-        Update a trade's metrics based on the current market data.
-
-        Args:
-            trade (Trade): The trade to update.
-            bar (Bar): The current price bar.
-        """
-        trade.update(bar)
-        self.updated_trades.append(trade)
 
     def _get_position_size(self, symbol: str) -> ExtendedDecimal:
         """
@@ -1102,42 +1065,6 @@ class TradeManager:
         )
         return weighted_price_sum / total_size if total_size > 0 else None
 
-    # Deprecated
-    def _update_existing_trade(
-        self,
-        order: Order,
-        execution_price: ExtendedDecimal,
-        fill_size: ExtendedDecimal,
-        bar: Bar,
-        position: "Position",
-    ) -> Trade:
-        """
-        Update an existing trade based on a new order execution.
-
-        Args:
-            order (Order): The order being executed.
-            execution_price (ExtendedDecimal): The price at which the order is executed.
-            fill_size (ExtendedDecimal): The size of the order fill.
-            bar (Bar): The current price bar.
-            position (Position): The corresponding Position object.
-
-        Returns:
-            Trade: The updated Trade object.
-        """
-        return
-        symbol = order.details.ticker
-        existing_trade = self._get_latest_trade(symbol)
-
-        if existing_trade:
-            existing_trade.update(bar)
-            existing_trade.add_to_position(fill_size, execution_price)
-            existing_trade.unrealized_pnl = position.calculate_unrealized_pnl(bar.close)
-            return existing_trade
-        else:
-            return self._create_new_trade(
-                order, execution_price, fill_size, bar, position
-            )
-
 
 class AccountManager:
     def __init__(self, initial_capital: ExtendedDecimal, margin_ratio: ExtendedDecimal):
@@ -1146,13 +1073,19 @@ class AccountManager:
         self.margin_ratio = margin_ratio
         self.margin_used = ExtendedDecimal("0")
         self.equity = initial_capital
-        self.buying_power = initial_capital  # Removed in latest
         self.unrealized_pnl = ExtendedDecimal("0")
         self.realized_pnl = ExtendedDecimal("0")
-        self.transaction_log: List[Dict] = []  # Removed in latest
+        self.transaction_log: List[Dict] = []
 
-    def _update_buying_power(self) -> None:
-        self.buying_power = (self.equity - self.margin_used) / self.margin_ratio
+    @property
+    def buying_power(self) -> None:
+        """
+        Calculate and return the current buying power.
+
+        Returns:
+            ExtendedDecimal: The current buying power.
+        """
+        return self.equity / self.margin_ratio - self.margin_used
 
     def check_margin_call(self, margin_call_threshold: ExtendedDecimal) -> bool:
         if self.margin_used > ExtendedDecimal("0"):
@@ -1192,13 +1125,6 @@ class AccountManager:
             margin_change (ExtendedDecimal): The change in margin used.
         """
         self.margin_used += margin_change
-        self._update_buying_power()
-
-    def _update_buying_power(self) -> None:
-        """
-        Update the buying power based on current equity and margin used.
-        """
-        self.buying_power = self.get_buying_power()
 
     def update_cash(self, amount: ExtendedDecimal, reason: str) -> None:
         """
@@ -1241,15 +1167,6 @@ class AccountManager:
         self.margin_used = long_margin + short_margin
         logger_main.info(f"Margin used updated. New margin used: {self.margin_used}")
 
-    def get_buying_power(self) -> ExtendedDecimal:
-        """
-        Calculate and return the current buying power.
-
-        Returns:
-            ExtendedDecimal: The current buying power.
-        """
-        return self.equity / self.margin_ratio - self.margin_used
-
     def realize_pnl(self, amount: ExtendedDecimal) -> None:
         """
         Realize PnL and update cash balance.
@@ -1259,6 +1176,7 @@ class AccountManager:
         """
         self.realized_pnl += amount
         self.cash += amount
+        self.equity += amount
         logger_main.info(
             f"Realized PnL: {amount}. New realized PnL: {self.realized_pnl}"
         )
@@ -1269,16 +1187,13 @@ class Position:
         self.symbol: str = symbol
         self.quantity: ExtendedDecimal = ExtendedDecimal("0")
         self.average_price: ExtendedDecimal = ExtendedDecimal("0")
-        self.unrealized_pnl: ExtendedDecimal = ExtendedDecimal("0")
-        self.realized_pnl: ExtendedDecimal = ExtendedDecimal("0")
-        self.last_update_time: datetime = datetime.now()
-        self.cost_basis: ExtendedDecimal = ExtendedDecimal("0")
+        self.total_cost: ExtendedDecimal = ExtendedDecimal("0")
 
     def update_position(
-        self, quantity: ExtendedDecimal, price: ExtendedDecimal, timestamp: datetime
+        self, quantity: ExtendedDecimal, price: ExtendedDecimal
     ) -> None:
         new_quantity = self.quantity + quantity
-        new_cost = self.cost_basis + (quantity * price)
+        new_cost = self.total_cost + (quantity * price)
 
         if new_quantity != ExtendedDecimal("0"):
             self.average_price = new_cost / new_quantity
@@ -1286,8 +1201,7 @@ class Position:
             self.average_price = ExtendedDecimal("0")
 
         self.quantity = new_quantity
-        self.cost_basis = new_cost
-        self.last_update_time = timestamp
+        self.total_cost = new_cost
 
     def calculate_unrealized_pnl(
         self, current_price: ExtendedDecimal
@@ -1331,9 +1245,9 @@ class PositionManager:
         """
         symbol = order.details.ticker
         position = self.get_position(symbol)
-        direction = 1 if order.details.direction == Order.Direction.LONG else -1
+        direction = order.details.direction.value
         quantity = fill_size * ExtendedDecimal(str(direction))
-        position.update_position(quantity, execution_price, order.details.timestamp)
+        position.update_position(quantity, execution_price)
 
         logger_main.info(f"Updated position for {symbol}: {position}")
 
@@ -1404,14 +1318,19 @@ class PositionManager:
             for symbol in self.positions
         )
 
-    def get_total_unrealized_pnl(self) -> ExtendedDecimal:
+    def get_total_unrealized_pnl(
+        self, current_prices: Dict[str, ExtendedDecimal]
+    ) -> ExtendedDecimal:
         """
         Get the total unrealized PnL across all positions.
 
         Returns:
             ExtendedDecimal: The total unrealized PnL.
         """
-        return sum(position.unrealized_pnl for position in self.positions.values())
+        return sum(
+            position.calculate_unrealized_pnl(current_prices[position.symbol])
+            for position in self.positions.values()
+        )
 
     def get_total_realized_pnl(self) -> ExtendedDecimal:
         return sum(position.realized_pnl for position in self.positions.values())
