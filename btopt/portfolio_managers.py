@@ -182,11 +182,6 @@ class OrderManager:
             ]
             sorted_orders = self._sort_orders(orders, bar)
 
-            if sorted_orders:
-                logger_main.warning(
-                    f"\n{bar.timestamp} | High: {bar.high} | Low: {bar.low}\nOrders to Process [{len(sorted_orders)}]: \n+ ORDERS: {''.join(f'\n{order}' for order in sorted_orders)}\n\n"
-                )
-
             for order in sorted_orders:
                 if not order.is_active:
                     continue
@@ -742,43 +737,6 @@ class TradeManager:
             bar (Bar): The current price bar.
             close_size (ExtendedDecimal): The size of the position to close.
         """
-        # execution_price = order.get_last_fill_price()
-        # exit_details = OrderDetails(
-        #     ticker=trade.ticker,
-        #     direction=Order.Direction.SHORT
-        #     if trade.direction > Order.Direction.LONG
-        #     else Order.Direction.LONG,
-        #     size=abs(close_size),
-        #     price=execution_price,
-        #     exectype=Order.ExecType.MARKET,
-        #     timestamp=bar.timestamp,
-        #     timeframe=bar.timeframe,
-        #     strategy_id=trade.entry_order.details.strategy_id,
-        # )
-        # exit_order = Order(
-        #     f"EXIT_PARTIAL_{uuid.uuid3(trade.entry_order.id, "EXIT_PARTIAL")}",
-        #     exit_details,
-        # )
-
-        # if close_size > trade.current_size:
-        #     logger_main.warning(
-        #         "Attempted to close more than the current trade size. Closing entire trade."
-        #     )
-        #     close_size = trade.current_size
-
-        # trade.close(exit_order, execution_price, bar, close_size)
-
-        # if trade.current_size == ExtendedDecimal("0"):
-        #     symbol = trade.ticker
-        #     self.open_trades[symbol].remove(trade)
-        #     if not self.open_trades[symbol]:
-        #         del self.open_trades[symbol]
-        #     self.closed_trades.append(trade)
-        #     self._updated_trades.append(trade)
-
-        # else:
-        #     trade.update(bar)
-
         execution_price = order.get_last_fill_price()
 
         if close_size > trade.current_size:

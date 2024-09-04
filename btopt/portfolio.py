@@ -342,26 +342,12 @@ class Portfolio:
             timestamp (datetime): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
-
-        if len(self.order_manager.orders) > 0:
-            logger_main.warning(
-                "\n----- PROCESSING PENDING ORDERS -----\n"
-                + f"ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n"
-                + f"TRADES: {''.join(f'{trade}\n' for trade in self.trade_manager.open_trades.values())}\n"
-            )
-
         # Get the executed orders
         executed_orders = self.order_manager.process_orders(timestamp, market_data)
         for order in executed_orders:
             self._execute_order(
                 order, market_data[order.details.ticker][order.details.timeframe]
             )
-
-        logger_main.warning(
-            "\n----- AFTER PROCESSING ORDERS -----\n"
-            + f"ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n"
-            + f"TRADES: {''.join(f'{trade}\n' for trade in self.trade_manager.open_trades.values())}\n"
-        )
 
     def _execute_order(self, order: Order, bar: Bar) -> Tuple[bool, Optional[Trade]]:
         """
