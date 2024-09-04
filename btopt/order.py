@@ -214,6 +214,8 @@ class BracketGroup(OrderGroup):
         self.take_profit_order_id: Optional[str] = None
         self.stop_loss_order_id: Optional[str] = None
 
+        self.entry_status = None
+
     @property
     def entry_order(self) -> Optional["Order"]:
         if (not self.manager) or (not self.entry_order_id):
@@ -239,10 +241,12 @@ class BracketGroup(OrderGroup):
     def entry_order(self, order: "Order"):
         if order is None:
             self.entry_order_id = None
+            self.entry_status = None
 
         elif isinstance(order, Order):
             # Store the order id
             self.entry_order_id = order.id
+            self.entry_status = order.status
 
         else:
             logger_main.log_and_raise(
@@ -356,6 +360,8 @@ class BracketGroup(OrderGroup):
         """Handle the event when an order in the group is cancelled."""
         cancelled_orders = []
         if cancelled_order == self.entry_order:
+            self.entry_status = Order.Status.CANCELED
+
             # Cancel the children orders
             if self.stop_loss_order:
                 self.stop_loss_order.cancel()
@@ -374,23 +380,25 @@ class BracketGroup(OrderGroup):
 
     def on_order_rejected(self, rejected_order: "Order") -> None:
         """Handle the event when an order in the group is rejected."""
-        cancelled_orders = []
+        rejected_orders = []
         if rejected_order == self.entry_order:
+            self.entry_status = Order.Status.REJECTED
+
             # Cancel the children orders
             if self.stop_loss_order:
                 self.stop_loss_order.cancel()
-                cancelled_orders.append(self.stop_loss_order)
+                rejected_orders.append(self.stop_loss_order)
                 logger_main.info(
                     f"Cancelled stop loss order of bracket group [{self.id}]: {self.stop_loss_order.id}"
                 )
             if self.take_profit_order:
                 self.take_profit_order.cancel()
-                cancelled_orders.append(self.take_profit_order)
+                rejected_orders.append(self.take_profit_order)
                 logger_main.info(
                     f"Cancelled take profit order of bracket group [{self.id}]: {self.take_profit_order.id}"
                 )
 
-        return cancelled_orders
+        return rejected_orders
 
     def activate(self) -> None:
         """Activate the bracket order group."""
@@ -433,15 +441,17 @@ class BracketGroup(OrderGroup):
     def on_order_filled(self, filled_order: "Order") -> List["Order"]:
         """Handle the event when an order in the group is filled."""
         if filled_order == self.entry_order:
+            self.entry_status = Order.Status.FILLED
             return self.activate_child_orders()
         elif filled_order in [self.take_profit_order, self.stop_loss_order]:
             return [self.cancel_remaining_child_order(filled_order)]
 
     def get_status(self) -> str:
         """Get the overall status of the order group."""
-        if not self.orders:
+        if not (self.entry_order_id or self.orders):
             return "Empty"
-        if (self.entry_order.status == Order.Status.FILLED) and (
+
+        if (self.entry_status == Order.Status.FILLED) and (
             (
                 self.take_profit_order is not None
                 and self.take_profit_order.status == Order.Status.FILLED
@@ -452,7 +462,7 @@ class BracketGroup(OrderGroup):
             )
         ):
             return "Filled"
-        if self.entry_order.status in [Order.Status.CANCELED, Order.Status.REJECTED]:
+        if self.entry_status in [Order.Status.CANCELED, Order.Status.REJECTED]:
             return "Cancelled/Rejected"
         return "Active" if self.active else "Inactive"
 

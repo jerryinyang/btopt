@@ -92,6 +92,8 @@ class Portfolio:
             timestamp (datetime): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
+
+        # untested/unconfirmed
         self._process_pending_orders(timestamp, market_data)
         self._update_open_trades(market_data)
         self._update_positions_and_account(market_data)
@@ -330,7 +332,7 @@ class Portfolio:
         Returns:
             True if the order was successfully cancelled, False otherwise.
         """
-        return self.order_manager.cancel_order(order_id)
+        return self.order_manager.cancel_order_by_id(order_id)
 
     def _process_pending_orders(
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
@@ -342,9 +344,9 @@ class Portfolio:
             timestamp (datetime): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
-        # Get the executed orders
-        executed_orders = self.order_manager.process_orders(timestamp, market_data)
-        for order in executed_orders:
+        # Process the pending orders; get the executed orders
+        filled_orders = self.order_manager.process_orders(timestamp, market_data)
+        for order in filled_orders:
             self._execute_order(
                 order, market_data[order.details.ticker][order.details.timeframe]
             )

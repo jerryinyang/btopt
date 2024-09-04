@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -139,7 +139,7 @@ class OrderManager:
         logger_main.info(f"Created Bracket group: {bracket_group.id}")
         return bracket_group
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order_by_id(self, order_id: str) -> bool:
         """
         Cancel an existing order.
 
@@ -154,7 +154,7 @@ class OrderManager:
 
         order = self.orders[order_id]
         order.cancel()
-        self._handle_order_group(order)
+        self._handle_order_group_fill(order)
         self.updated_orders.append(order)
         return True
 
@@ -196,8 +196,20 @@ class OrderManager:
                     self._cancel_order(order)
                     processed_orders.append(order)
 
-        self._cleanup_completed_orders()
+        self.cleanup_completed_orders_and_groups()
         return processed_orders
+
+    def _cancel_order(self, order: Order) -> None:
+        """
+        Cancel an order and update its status.
+
+        Args:
+            order (Order): The order to cancel.
+        """
+        order.cancel()
+        self._handle_order_group_fill(order)
+        self.updated_orders.append(order)
+        logger_main.info(f"Cancelled order: {order.id}")
 
     def _sort_orders(self, orders: List[Order], bar: Bar) -> List[Order]:
         """
@@ -341,100 +353,33 @@ class OrderManager:
         updated_orders = bracket_group.on_order_filled(filled_order)
         self.updated_orders.extend(updated_orders)
 
-    # NOT TESTED YET
-    def update_order_group(self, group_id: str, status: str) -> None:
+    def cleanup_completed_orders_and_groups(self) -> None:
         """
-        Update the status of an order group.
-
-        Args:
-            group_id (str): The ID of the order group to update.
-            status (str): The new status of the order group.
+        Remove completed (filled, cancelled, or rejected) orders from pending orders.
         """
-        if group_id in self.order_groups:
-            group = self.order_groups[group_id]
-            if status == "Active":
-                group.activate()
-            elif status == "Inactive":
-                group.deactivate()
-            logger_main.info(f"Updated order group {group_id} status to {status}")
-        else:
-            logger_main.warning(f"Order group not found: {group_id}")
 
-    def get_order_group(self, group_id: str) -> Optional[OrderGroup]:
-        """
-        Get an order group by its ID.
+        self.orders = {
+            id: order
+            for id, order in self.orders.items()
+            if order.status
+            not in [
+                Order.Status.FILLED,
+                Order.Status.CANCELED,
+                Order.Status.REJECTED,
+            ]
+        }
 
-        Args:
-            group_id (str): The ID of the order group to retrieve.
-
-        Returns:
-            Optional[OrderGroup]: The order group if found, None otherwise.
-        """
-        return self.order_groups.get(group_id)
-
-    def handle_order_update(self, order: Order) -> None:
-        """
-        Handle updates to an order, including its impact on the order group.
-
-        Args:
-            order (Order): The updated order.
-        """
-        self.updated_orders.append(order)
-        if order.order_group:
-            group = order.order_group
-            if order.status == Order.Status.FILLED:
-                group.on_order_filled(order)
-            elif order.status == Order.Status.CANCELED:
-                group.on_order_cancelled(order)
-            elif order.status == Order.Status.REJECTED:
-                group.on_order_rejected(order)
-
-    def _get_current_price(self, symbol: str) -> ExtendedDecimal:
-        """
-        Get the current price for a symbol. This method should be implemented
-        to fetch the most recent price from the market data or a price feed.
-        """
-        # Implementation depends on how you're storing/accessing current market data
-        pass
-
-    def cancel_group(self, group_id: str) -> None:
-        """
-        Cancel all orders in a group.
-
-        Args:
-            group_id (str): The ID of the order group to be cancelled.
-        """
-        if group_id in self.order_groups:
-            group = self.order_groups[group_id]
-            for order in group.orders:
-                order.cancel()
-            logger_main.info(f"Cancelled order group: {group_id}")
-        else:
-            logger_main.warning(f"Order group not found: {group_id}")
-
-    def get_order(self, order_id: str) -> Optional[Order]:
-        """
-        Retrieve an order by its ID.
-
-        Args:
-            order_id (str): The ID of the order to retrieve.
-
-        Returns:
-            Optional[Order]: The Order object if found, None otherwise.
-        """
-        return self.orders.get(order_id)
-
-    def get_group(self, group_id: str) -> Optional[OrderGroup]:
-        """
-        Retrieve an order group by its ID.
-
-        Args:
-            group_id (str): The ID of the order group to retrieve.
-
-        Returns:
-            Optional[OrderGroup]: The OrderGroup object if found, None otherwise.
-        """
-        return self.order_groups.get(group_id)
+        self.order_groups = {
+            id: group
+            for id, group in self.order_groups.items()
+            if group.get_status()
+            not in [
+                "Empty",
+                "Filled",
+                "Cancelled/Rejected",
+            ]
+        }
+        logger_main.info("Cleaned up completed orders and groups")
 
     def get_active_orders(self) -> List[Order]:
         """
@@ -458,204 +403,11 @@ class OrderManager:
             if group.get_status() == "Active"
         ]
 
-    def cleanup_completed_orders_and_groups(self) -> None:
-        # Remove filled, cancelled and rejected order groups
-        for order_id, order in self.orders.items():
-            if order.status in [
-                Order.Status.FILLED,
-                Order.Status.CANCELED,
-                Order.Status.REJECTED,
-            ]:
-                del self.orders[order_id]
-                logger_main.info(f"Order {order_id} completed and removed.")
-
-        # Remove filled, cancelled and rejected order groups
-        for group_id, group in self.order_groups.items():
-            if group.get_status() in ["Filled", "Cancelled/Rejected"]:
-                del self.order_groups[group_id]
-                logger_main.info(f"Order group {group_id} completed and removed.")
-
-        logger_main.info("Cleaned up completed orders and groups")
-
     def get_updated_orders(self) -> List[Order]:
         return self.updated_orders
 
     def clear_updated_orders(self) -> None:
         self.updated_orders.clear()
-
-    def modify_order(self, order_id: str, new_details: Dict[str, Any]) -> bool:
-        """
-        Modify an existing order.
-
-        Args:
-            order_id (str): The ID of the order to be modified.
-            new_details (Dict[str, Any]): A dictionary containing the new details for the order.
-
-        Returns:
-            bool: True if the order was successfully modified, False otherwise.
-        """
-        if order_id not in self.orders:
-            return False
-
-        order = self.orders[order_id]
-        for key, value in new_details.items():
-            if hasattr(order.details, key):
-                setattr(order.details, key, value)
-
-        self._update_order_group(order)
-        self.updated_orders.append(order)
-        return True
-
-    def _check_margin_requirements(self, order: Order) -> bool:
-        """
-        Check if there's sufficient margin to execute the order.
-
-        Args:
-            order (Order): The order to check.
-
-        Returns:
-            bool: True if there's sufficient margin, False otherwise.
-        """
-        # Implementation depends on the specific margin requirements of your system
-        pass
-
-    def _calculate_fill_size(
-        self, order: Order, execution_price: ExtendedDecimal, bar: Bar
-    ) -> ExtendedDecimal:
-        """
-        Calculate the fill size for an order based on the order type and current market conditions.
-
-        Args:
-            order (Order): The order being executed.
-            execution_price (ExtendedDecimal): The price at which the order is being executed.
-            bar (Bar): The current price bar.
-
-        Returns:
-            ExtendedDecimal: The calculated fill size.
-        """
-        # Implementation depends on your specific order execution logic
-        pass
-
-    def _update_order_group(self, order: Order) -> None:
-        """
-        Update the order group when an order is modified.
-
-        Args:
-            order (Order): The order that was modified.
-        """
-        if order.order_group:
-            order.order_group.update_order(order)
-
-    def _cancel_order(self, order: Order) -> None:
-        """
-        Cancel an order and update its status.
-
-        Args:
-            order (Order): The order to cancel.
-        """
-        order.cancel()
-        self.updated_orders.append(order)
-        logger_main.info(f"Cancelled order: {order.id}")
-
-    def _cleanup_completed_orders(self) -> None:
-        """
-        Remove completed (filled, cancelled, or rejected) orders from pending orders.
-        """
-
-        self.orders = {
-            id: order
-            for id, order in self.orders.items()
-            if order.status
-            not in [
-                Order.Status.FILLED,
-                Order.Status.CANCELED,
-                Order.Status.REJECTED,
-            ]
-        }
-
-    # DEPRECATED
-    def execute_order(
-        self, order: Order, execution_price: ExtendedDecimal, bar: Bar
-    ) -> Tuple[bool, Optional[Trade]]:
-        """
-        Execute an order and handle all aspects of order processing.
-
-        Args:
-            order (Order): The order to execute.
-            execution_price (ExtendedDecimal): The price at which the order is executed.
-            bar (Bar): The current price bar.
-
-        Returns:
-            Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
-            and the resulting Trade object if applicable.
-
-        This method handles:
-        - Margin requirement checks
-        - Different order types (market, limit, stop)
-        - Partial fill logic
-        - Trade reversal handling
-        """
-        if not self._check_margin_requirements(order):
-            return False, None
-
-        fill_size = self._calculate_fill_size(order, execution_price, bar)
-        if fill_size == ExtendedDecimal("0"):
-            return False, None
-
-        trade = self._create_or_update_trade(order, execution_price, fill_size, bar)
-        self._update_order_status(order, fill_size)
-        self._handle_order_group(order)
-
-        return True, trade
-
-    def _create_or_update_trade(
-        self,
-        order: Order,
-        execution_price: ExtendedDecimal,
-        fill_size: ExtendedDecimal,
-        bar: Bar,
-    ) -> Trade:
-        """
-        Create a new trade or update an existing one based on the executed order.
-
-        Args:
-            order (Order): The executed order.
-            execution_price (ExtendedDecimal): The price at which the order was executed.
-            fill_size (ExtendedDecimal): The size of the order fill.
-            bar (Bar): The current price bar.
-
-        Returns:
-            Trade: The created or updated Trade object.
-        """
-        # Implementation depends on your trade management logic
-        pass
-
-    def _update_order_status(self, order: Order, fill_size: ExtendedDecimal) -> None:
-        """
-        Update the status of an order after execution.
-
-        Args:
-            order (Order): The order to update.
-            fill_size (ExtendedDecimal): The size of the order fill.
-        """
-        if fill_size == order.details.size:
-            order.status = Order.Status.FILLED
-        elif fill_size > ExtendedDecimal("0"):
-            order.status = Order.Status.PARTIALLY_FILLED
-        self.updated_orders.append(order)
-
-    def _handle_order_group(self, order: Order) -> None:
-        """
-        Handle updates to the order group associated with an order.
-
-        Args:
-            order (Order): The order that was updated.
-        """
-        if order.order_group:
-            if order.status == Order.Status.FILLED:
-                order.order_group.on_order_filled(order)
-            elif order.status == Order.Status.CANCELED:
-                order.order_group.on_order_cancelled(order)
 
 
 class TradeManager:
