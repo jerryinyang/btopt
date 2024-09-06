@@ -145,10 +145,12 @@ class Trade:
 
         # Check if the exit is allowed on this bar
         if exit_bar.timestamp <= self.execution_bar_timestamp:
-            logger_main.warning(
-                f"Attempted to close trade {self.id} on the same bar it was created. Skipping closure."
-            )
-            return
+            # Apply bar formation assumption algorithm
+            if not self._valid_same_bar_exit(exit_price, exit_bar):
+                logger_main.warning(
+                    f"Attempted to close trade {self.id} on the same bar it was created, and doesn't meet the bar-formation condition. Skipping closure."
+                )
+                return
 
         # Calculate P&L for this exit
         exit_pnl = self._calculate_pnl(exit_price, size)
@@ -183,6 +185,11 @@ class Trade:
         logger_main.info(
             f"Trade {self.id} {'closed' if self.status == self.Status.CLOSED else 'partially closed'}: "
             f"exit price {exit_price}, size {size}, remaining size {self.current_size}"
+        )
+
+    def _valid_same_bar_exit(self, exit_price: ExtendedDecimal, bar: Bar):
+        return (bar.close > bar.open and exit_price > self.entry_price) or (
+            bar.close < bar.open and exit_price < self.entry_price
         )
 
     def _calculate_pnl(
