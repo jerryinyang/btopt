@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -18,11 +19,11 @@ from .order import (
 from .portfolio_managers import (
     AccountManager,
     OrderManager,
+    Position,
     PositionManager,
     RiskManager,
     TradeManager,
 )
-from .reporter import Reporter
 from .trade import Trade
 from .types import EngineType
 from .util.ext_decimal import ExtendedDecimal
@@ -57,14 +58,13 @@ class Portfolio:
         self.engine = engine
         self.order_manager = OrderManager()
         self.trade_manager = TradeManager(commission_rate)
-        self.account_manager = AccountManager(initial_capital, margin_ratio)
         self.position_manager = PositionManager()
+        self.account_manager = AccountManager(initial_capital, margin_ratio)
         self.risk_manager = RiskManager(
             symbols=engine._dataview.symbols,
             **risk_manager_config,
         )
 
-        self.reporter: Optional[Reporter] = None
         self.metrics = pd.DataFrame(
             columns=[
                 "timestamp",
@@ -84,89 +84,19 @@ class Portfolio:
         self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
     ) -> None:
         """
-        Update the portfolio state based on current market data.
-
-        This method coordinates updates across all manager components, processes orders,
-        handles delayed trade creations, and updates metrics.
+        Update the portfolio state based on the current market data.
 
         Args:
             timestamp (datetime): The current timestamp.
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
-        # Process orders using the order manager
-        filled_orders: List[Order] = self.order_manager.process_orders(
-            timestamp, market_data
-        )
 
-        # Handle filled orders
-        for order in filled_orders:
-            self._handle_filled_order(order, market_data)
-
-        # Update positions and account
+        # untested/unconfirmed
+        self._process_pending_orders(timestamp, market_data)
+        self._update_open_trades(market_data)
         self._update_positions_and_account(market_data)
-
-        # Update metrics
-        self._update_metrics(timestamp)
-
-        # Check for margin call
-        if self.risk_manager.check_margin_call(
-            self.account_manager.equity, self.account_manager.margin_used
-        ):
-            self._handle_margin_call(market_data)
-
-    def _handle_filled_order(
-        self, order: Order, market_data: Dict[str, Dict[Timeframe, Bar]]
-    ) -> None:
-        """
-        Handle a filled order by updating positions, trades, and account state.
-
-        This method processes a filled order, updates the portfolio state, and manages any associated order groups.
-
-        Args:
-            order (Order): The filled order to be handled.
-            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data for all symbols and timeframes.
-
-        Raises:
-            ValueError: If the order's symbol is not found in the market data.
-        """
-        symbol: str = order.details.ticker
-
-        # Ensure the symbol exists in the market data
-        if symbol not in market_data:
-            logger_main.log_and_raise(
-                ValueError(f"Symbol {symbol} not found in market data")
-            )
-
-        current_bar: Bar = market_data[symbol][order.details.timeframe]
-        execution_price: ExtendedDecimal = (
-            order.get_last_fill_price() or current_bar.close
-        )
-
-        # Update position
-        self.position_manager.update_position(order, execution_price)
-
-        # Calculate and update account for the trade
-        filled_size: ExtendedDecimal = order.get_filled_size()
-        cost: ExtendedDecimal = execution_price * filled_size
-        commission: ExtendedDecimal = cost * self.trade_manager.commission_rate
-        self.account_manager.update_cash(
-            -cost - commission, f"Order execution for {symbol}"
-        )
-
-        # Create or update trade
-        if order.details.direction == Order.Direction.LONG:
-            self.trade_manager.create_trade(order, execution_price, current_bar)
-        else:
-            self._close_trades(order, execution_price, current_bar)
-
-        # Handle order group updates
-        self.order_manager.handle_order_update(order)
-
-        # Log the filled order details
-        logger_main.info(
-            f"Filled order: {order.id}, Symbol: {symbol}, "
-            f"Price: {execution_price}, Size: {filled_size}"
-        )
+        self._update_metrics(timestamp, market_data)
+        self._check_and_handle_margin_call(market_data)
 
     def _close_trades(
         self, order: Order, execution_price: ExtendedDecimal, bar: Bar
@@ -200,61 +130,66 @@ class Portfolio:
         Update positions and account state based on current market data.
 
         Args:
-            market_data: The current market data for all symbols and timeframes.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
         current_prices = {
             symbol: data[min(data.keys())].close for symbol, data in market_data.items()
         }
 
-        # Update unrealized PnL for all positions
-        for symbol, position in self.position_manager.get_all_positions().items():
-            self.position_manager.update_unrealized_pnl(symbol, current_prices[symbol])
+        long_value = self.position_manager.get_long_position_value(current_prices)
+        short_value = self.position_manager.get_short_position_value(current_prices)
 
-        # Update account equity
-        total_unrealized_pnl = self.position_manager.get_total_unrealized_pnl()
-        self.account_manager.update_equity(total_unrealized_pnl)
+        unrealized_pnl = self.position_manager.get_total_unrealized_pnl(current_prices)
+        self.account_manager.update_equity(unrealized_pnl)
+        self.account_manager.update_margin_used(long_value, short_value)
 
-    def _update_metrics(self, timestamp: datetime) -> None:
+    def _update_metrics(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> None:
         """
         Update portfolio metrics.
 
         Args:
-            timestamp: The current timestamp.
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
         equity = self.account_manager.equity
-        asset_value = self.position_manager.get_long_position_value(
-            self._get_current_prices()
-        )
-        liabilities = self.position_manager.get_short_position_value(
-            self._get_current_prices()
-        )
+        current_prices = {
+            symbol: data[min(data.keys())].close for symbol, data in market_data.items()
+        }
 
-        new_row = pd.DataFrame(
+        asset_value = self.position_manager.get_long_position_value(current_prices)
+        liabilities = self.position_manager.get_short_position_value(current_prices)
+        open_pnl = self.position_manager.get_total_unrealized_pnl(current_prices)
+        closed_pnl = self.account_manager.realized_pnl
+        portfolio_return = self._calculate_return(equity)
+
+        new_metrics = pd.DataFrame(
             {
                 "timestamp": [timestamp],
                 "cash": [self.account_manager.cash],
                 "equity": [equity],
                 "asset_value": [asset_value],
                 "liabilities": [liabilities],
-                "open_pnl": [self.position_manager.get_total_unrealized_pnl()],
-                "closed_pnl": [self.position_manager.get_total_realized_pnl()],
-                "portfolio_return": [self._calculate_return(equity)],
+                "open_pnl": [open_pnl],
+                "closed_pnl": [closed_pnl],
+                "portfolio_return": [portfolio_return],
             }
         )
-
         if self.metrics.empty:
-            self.metrics = new_row
-        self.metrics = pd.concat([self.metrics, new_row], ignore_index=True).fillna(0)
+            self.metrics = new_metrics
+
+        self.metrics = pd.concat([self.metrics, new_metrics], ignore_index=True)
 
     def _calculate_return(self, current_equity: ExtendedDecimal) -> float:
         """
         Calculate the portfolio return based on the current equity.
 
         Args:
-            current_equity: The current portfolio equity.
+            current_equity (ExtendedDecimal): The current portfolio equity.
 
         Returns:
-            The calculated portfolio return.
+            float: The calculated portfolio return.
         """
         if len(self.metrics) > 0:
             previous_equity = self.metrics.iloc[-1]["equity"]
@@ -265,17 +200,24 @@ class Portfolio:
 
     # region Order Management
 
-    def create_order(self, order_details: OrderDetails) -> Order:
+    def create_order(
+        self, order_details: OrderDetails, activated: bool = True
+    ) -> Optional[Order]:
         """
         Create a new order and add it to the order manager.
 
         Args:
             order_details (OrderDetails): The details of the order to be created.
+            activated (bool): Controls if the order should be activated or deactivated
 
         Returns:
-            Order: The created Order object.
+            Optional[Order]: The created Order object, or None if margin requirements are not met.
         """
-        return self.order_manager.create_order(order_details)
+        if self._check_margin_requirements(order_details):
+            return self.order_manager.create_order(order_details, activated=activated)
+        else:
+            logger_main.warning(f"Insufficient margin to create order: {order_details}")
+            return None
 
     def create_oco_order(
         self, oco_details: OCOOrderDetails
@@ -324,18 +266,14 @@ class Portfolio:
             Tuple[Order, Optional[Order], Optional[Order], BracketGroup]: A tuple containing the entry order,
             take profit order (if specified), stop loss order (if specified), and the BracketGroup.
         """
-        entry_order = self.order_manager.create_order(bracket_details.entry_order)
+        entry_order = self.create_order(bracket_details.entry_order)
         take_profit_order = (
-            self.order_manager.create_order(
-                bracket_details.take_profit_order, activated=False
-            )
+            self.create_order(bracket_details.take_profit_order, activated=False)
             if bracket_details.take_profit_order
             else None
         )
         stop_loss_order = (
-            self.order_manager.create_order(
-                bracket_details.stop_loss_order, activated=False
-            )
+            self.create_order(bracket_details.stop_loss_order, activated=False)
             if bracket_details.stop_loss_order
             else None
         )
@@ -345,7 +283,9 @@ class Portfolio:
         )
 
         logger_main.warning(
-            f"\n----- CREATED BRACKET ORDER -----\nENTRY: {bracket_group.entry_order.is_active}\nLIMIT: {bracket_group.take_profit_order.is_active}\nSTOP: {bracket_group.stop_loss_order.is_active}\n\n"
+            f"\n----- CREATED BRACKET ORDER -----\nENTRY: {bracket_group.entry_order.is_active}\n"
+            + f"LIMIT: {bracket_group.take_profit_order.is_active}\nSTOP: {bracket_group.stop_loss_order.is_active}\n"
+            + f"PENDING ORDERS: {''.join(f'{order} | {order.is_active}\n' for order in self.order_manager.orders.values())}\n\n"
         )
         return entry_order, take_profit_order, stop_loss_order, bracket_group
 
@@ -355,10 +295,10 @@ class Portfolio:
     ) -> Union[
         Tuple[Order, Order, OCOGroup],
         Tuple[List[Order], OCAGroup],
-        Tuple[Order, Order, Order, BracketGroup],
+        Tuple[Order, Optional[Order], Optional[Order], BracketGroup],
     ]:
         """
-        Create a complex order based on the type of order details provided.
+        Create a complex order (OCO, OCA, or Bracket) and add it to the order manager.
 
         Args:
             order_details: Either OCOOrderDetails, OCAOrderDetails, or BracketOrderDetails.
@@ -390,7 +330,88 @@ class Portfolio:
         Returns:
             True if the order was successfully cancelled, False otherwise.
         """
-        return self.order_manager.cancel_order(order_id)
+        return self.order_manager.cancel_order_by_id(order_id)
+
+    def _process_pending_orders(
+        self, timestamp: datetime, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> None:
+        """
+        Process all pending orders based on current market data.
+
+        Args:
+            timestamp (datetime): The current timestamp.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+        """
+        # Process the pending orders; get the executed orders
+        filled_orders = self.order_manager.process_orders(timestamp, market_data)
+        for order in filled_orders:
+            self._execute_order(
+                order, market_data[order.details.ticker][order.details.timeframe]
+            )
+
+    def _execute_order(self, order: Order, bar: Bar) -> Tuple[bool, Optional[Trade]]:
+        """
+        Execute an order and update all relevant components.
+
+        Args:
+            order (Order): The order to execute.
+            bar (Bar): The current price bar for the order's symbol and timeframe.
+
+        Returns:
+            Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
+            and the resulting Trade object if applicable.
+        """
+
+        symbol = order.details.ticker
+        direction = order.details.direction
+        execution_price = order.get_last_fill_price() or bar.close
+        fill_size = order.get_last_fill_size()
+        current_position = self.position_manager.get_position(symbol).quantity
+
+        # If the order will lead to a new trade
+        new_quantity = fill_size * direction.value
+        if current_position - new_quantity:
+            # Check risk limits
+            if not self.risk_manager.check_risk_limits(
+                order,
+                fill_size,
+                self.account_manager.equity,
+                self.position_manager.get_all_positions(),
+            ):
+                self._reject_order(order, "Risk limits breached")
+                return False, None
+
+        # Update trade
+        trade = self.trade_manager.manage_trade(
+            order,
+            bar,
+            self.position_manager.get_position(order.details.ticker),
+        )
+
+        # Update position
+        self.position_manager.update_position(order, execution_price, fill_size)
+
+        # Update account
+        self._update_account_on_execution(order, execution_price)
+
+        logger_main.info(
+            f"Executed order: {order.id}, Symbol: {symbol}, "
+            f"Price: {execution_price}, Size: {fill_size}"
+        )
+
+        return True, trade
+
+    def _reject_order(self, order: Order, reason: str) -> None:
+        """
+        Reject an order and update its status.
+
+        Args:
+            order (Order): The order to be rejected.
+            reason (str): The reason for rejection.
+        """
+        order.status = Order.Status.REJECTED
+        self.order_manager.updated_orders.append(order)
+        logger_main.warning(f"Order {order.id} rejected: {reason}")
 
     # endregion
 
@@ -400,20 +421,15 @@ class Portfolio:
         """
         Close all open positions in the portfolio.
 
-        This method delegates the task of closing all positions to the PositionManager,
-        and then processes the resulting orders.
-
         Args:
             timestamp (datetime): The current timestamp for order creation and processing.
         """
-        close_orders = self.position_manager.generate_close_all_orders(
-            timestamp,
-            self.engine.default_timeframe,
-            self._get_current_prices(),
-        )
-
-        for order in close_orders:
-            self._handle_filled_order(order, self._create_market_data_for_order(order))
+        for symbol, position in self.position_manager.positions.items():
+            if position != ExtendedDecimal("0"):
+                close_order = self._create_market_order_to_close(
+                    symbol, abs(position.quantity)
+                )
+                self._execute_order(close_order, self.engine.get_current_data(symbol))
 
         logger_main.info("All positions have been closed.")
 
@@ -447,26 +463,43 @@ class Portfolio:
         Get the current position size for a given symbol.
 
         Args:
-            symbol: The symbol to check.
+            symbol (str): The symbol to check.
 
         Returns:
-            The current position size (positive for long, negative for short).
+            ExtendedDecimal: The current position size (positive for long, negative for short, 0 for no position).
         """
         position = self.position_manager.get_position(symbol)
-        return position.quantity if position else ExtendedDecimal("0")
+        return position.quantity
 
-    def get_all_positions(self) -> Dict[str, ExtendedDecimal]:
+    def get_all_positions(self) -> Dict[str, Position]:
         """
         Get all current positions.
 
         Returns:
-            A dictionary mapping symbols to their current position sizes.
+            Dict[str, Position]: A dictionary mapping symbols to their current Position objects.
         """
         return self.position_manager.get_all_positions()
 
     # endregion
 
     # region Account Management
+    def _update_account_on_execution(
+        self, order: Order, execution_price: ExtendedDecimal
+    ) -> None:
+        """
+        Update the account after an order execution.
+
+        Args:
+            order (Order): The executed order.
+            execution_price (ExtendedDecimal): The price at which the order was executed.
+        """
+        cost = execution_price * order.details.size
+        commission = cost * self.trade_manager.commission_rate
+        self.account_manager.update_cash(
+            (cost * order.details.direction.value * -1) - commission,
+            f"Order execution for {order.details.ticker}",
+        )
+        self.account_manager.update_margin(cost * self.account_manager.margin_ratio)
 
     def get_account_value(self) -> ExtendedDecimal:
         """
@@ -501,53 +534,57 @@ class Portfolio:
         """
         return self.trade_manager.get_closed_trades(strategy_id)
 
+    def _update_open_trades(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
+        """
+        Update all open trades based on current market data.
+
+        Args:
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+        """
+        self.trade_manager.update_open_trades(market_data)
+
     # endregion
 
     # region Portfolio State and Reporting
 
-    def get_portfolio_state(self) -> Dict[str, Any]:
+    def get_portfolio_state(
+        self, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> Dict[str, Any]:
         """
         Get the current state of the portfolio.
 
         Returns:
-            A dictionary containing the current portfolio state.
+            Dict[str, Any]: A dictionary containing the current portfolio state,
+            including detailed position information.
         """
+        positions_info = {
+            symbol: {
+                "quantity": position.quantity,
+                "average_price": position.average_price,
+                "unrealized_pnl": position.unrealized_pnl,
+                "realized_pnl": position.realized_pnl,
+                "last_update_time": position.last_update_time,
+                "cost_basis": position.total_cost,
+            }
+            for symbol, position in self.position_manager.get_all_positions().items()
+        }
+        current_prices = {
+            symbol: data[min(data.keys())].close for symbol, data in market_data.items()
+        }
+
         return {
             "cash": self.account_manager.cash,
             "equity": self.account_manager.equity,
-            "long_position_value": self.position_manager.get_long_position_value(
-                self._get_current_prices()
-            ),
-            "short_position_value": self.position_manager.get_short_position_value(
-                self._get_current_prices()
-            ),
-            "open_trades": self.trade_manager.get_open_trades(),
-            "closed_trades_count": len(self.trade_manager.get_closed_trades()),
-            "pending_orders": self.order_manager.get_active_orders(),
-            "realized_pnl": self.position_manager.get_total_realized_pnl(),
-            "unrealized_pnl": self.position_manager.get_total_unrealized_pnl(),
             "margin_used": self.account_manager.margin_used,
-            "buying_power": self.account_manager.buying_power,
-            "positions": self.position_manager.get_all_positions(),
+            "buying_power": self.account_manager.get_buying_power(),
+            "realized_pnl": self.account_manager.realized_pnl,
+            "unrealized_pnl": self.position_manager.get_total_unrealized_pnl(
+                current_prices
+            ),
+            "positions": positions_info,
+            "open_trades": self.trade_manager.get_open_trades(),
+            "pending_orders": self.order_manager.get_pending_orders(),
         }
-
-    def set_reporter(self, reporter: Reporter) -> None:
-        """
-        Set the Reporter instance for this portfolio.
-
-        Args:
-            reporter: The Reporter instance to use.
-        """
-        self.reporter = reporter
-
-    def generate_report(self) -> None:
-        """
-        Generate a performance report using the associated Reporter.
-        """
-        if self.reporter:
-            self.reporter.generate_performance_report()
-        else:
-            logger_main.warning("No Reporter set. Unable to generate report.")
 
     def get_metrics_data(self) -> pd.DataFrame:
         """
@@ -557,29 +594,6 @@ class Portfolio:
             The complete metrics DataFrame.
         """
         return self.metrics
-
-    def calculate_performance_metrics(self) -> Dict[str, float]:
-        """
-        Calculate various performance metrics for the portfolio.
-
-        Returns:
-            A dictionary containing calculated performance metrics.
-        """
-        if self.reporter:
-            metrics = self.reporter.calculate_performance_metrics()
-            metrics.update(
-                {
-                    "var": self.reporter.calculate_var(),
-                    "cvar": self.reporter.calculate_cvar(),
-                    "current_drawdown": self.get_current_drawdown(),
-                }
-            )
-            return metrics
-        else:
-            logger_main.warning(
-                "No Reporter set. Unable to calculate performance metrics."
-            )
-            return {}
 
     def get_trade_history(self) -> List[Dict[str, Any]]:
         """
@@ -599,34 +613,6 @@ class Portfolio:
         """
         return [order.to_dict() for order in self.order_manager.get_all_orders()]
 
-    def get_current_drawdown(self) -> float:
-        """
-        Calculate the current drawdown of the portfolio.
-
-        Returns:
-            The current drawdown as a percentage.
-        """
-        if self.reporter:
-            return self.reporter.get_current_drawdown()
-        else:
-            logger_main.warning(
-                "No Reporter set. Unable to calculate current drawdown."
-            )
-            return 0.0
-
-    def get_drawdown_details(self) -> pd.DataFrame:
-        """
-        Get detailed information about drawdowns.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing drawdown details.
-        """
-        if self.reporter:
-            return self.reporter.get_drawdown_details()
-        else:
-            logger_main.warning("No Reporter set. Unable to get drawdown details.")
-            return pd.DataFrame()
-
     # endregion
 
     # region Risk Management
@@ -636,73 +622,110 @@ class Portfolio:
             symbol, self.account_manager.equity
         )
 
+    def _check_and_handle_margin_call(
+        self, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> None:
+        """
+        Check for margin call and handle it if necessary.
+
+        Args:
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
+        """
+        if self.risk_manager.check_margin_call(
+            self.account_manager.equity,
+            self.account_manager.margin_used,
+            self.account_manager.margin_ratio,
+        ):
+            self._handle_margin_call(market_data)
+
+    def _check_margin_requirements(self, order_details: OrderDetails) -> bool:
+        """
+        Check if there's sufficient margin to execute the order, using the RiskManager.
+
+        This method delegates the margin and risk checks to the RiskManager,
+        which provides a comprehensive assessment of the order's viability.
+
+        Args:
+            order_details (OrderDetails): The details of the order to check.
+
+        Returns:
+            bool: True if the order passes margin and risk checks, False otherwise.
+        """
+        order = Order(
+            str(uuid.uuid4()), order_details
+        )  # Create a temporary Order object
+        account_value = self.account_manager.equity
+        current_positions = self.position_manager.get_all_positions()
+
+        if self.risk_manager.check_margin_requirements(
+            order, account_value, current_positions
+        ):
+            logger_main.info(
+                f"Margin and risk checks passed for order: {order_details}"
+            )
+            return True
+        else:
+            logger_main.warning(f"Order failed margin or risk checks: {order_details}")
+            return False
+
     def _handle_margin_call(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
         """
-        Handle a margin call by gradually reducing positions until the margin requirement is met.
+        Handle a margin call by reducing positions until margin requirements are met.
+
+        Args:
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
-        logger_main.warning("Margin call triggered. Attempting to resolve...")
+        current_prices = {
+            symbol: data[min(data.keys())].close for symbol, data in market_data.items()
+        }
+        positions_to_reduce = self.risk_manager.handle_margin_call(
+            self.position_manager.positions,
+            current_prices,
+            self.trade_manager.get_open_trades(),
+            self.account_manager.equity,
+            self.account_manager.margin_used,
+            self.account_manager.margin_ratio,
+        )
 
-        while self.risk_manager.check_margin_call(
-            self.account_manager.equity, self.account_manager.margin_used
-        ):
-            current_prices = self._get_current_prices()
-            position_to_reduce = self.risk_manager.select_position_to_reduce(
-                self.position_manager.get_all_positions(),
-                current_prices,
-                self.trade_manager.get_open_trades(),
+        for symbol, reduce_amount in positions_to_reduce:
+            close_order = self._create_market_order_to_close(symbol, reduce_amount)
+            self._execute_order(
+                close_order, market_data[symbol][min(market_data[symbol].keys())]
             )
 
-            if position_to_reduce is None:
-                logger_main.log_and_raise(
-                    "Unable to resolve margin call. No suitable positions to reduce."
-                )
-                break
-
-            symbol, reduce_size = position_to_reduce
-            close_order = self._create_market_order_to_close(symbol, reduce_size)
-            self._handle_filled_order(close_order, market_data)
-
-            logger_main.info(
-                f"Reduced position in {symbol} by {reduce_size} to address margin call."
-            )
-
-        if not self.risk_manager.check_margin_call(
-            self.account_manager.equity, self.account_manager.margin_used
-        ):
-            logger_main.info("Margin call resolved successfully.")
-        else:
-            logger_main.warning(
-                "Margin call could not be fully resolved. Account remains under margin call."
-            )
-
-        self._notify_margin_call_status()
+        logger_main.info("Margin call handled. Positions have been reduced.")
 
     def _create_market_order_to_close(
         self, symbol: str, size: ExtendedDecimal
     ) -> Order:
-        """Create a market order to close a position."""
+        """
+        Create a market order to close a position.
+
+        Args:
+            symbol (str): The symbol of the position to close.
+            size (ExtendedDecimal): The size of the position to close.
+
+        Returns:
+            Order: A market order to close the position.
+        """
         current_position = self.position_manager.get_position(symbol)
         direction = (
             Order.Direction.SHORT
             if current_position.quantity > 0
             else Order.Direction.LONG
         )
+        bar = self.engine.get_current_data(symbol)
         order_details = OrderDetails(
             ticker=symbol,
             direction=direction,
             size=abs(size),
-            price=None,  # Market order
+            price=bar.close,
             exectype=Order.ExecType.MARKET,
             timestamp=self.engine._current_timestamp,
             timeframe=self.engine.default_timeframe,
-            strategy_id="MARGIN_CALL",
+            strategy_id="CLOSE_POSITION",
         )
         return self.create_order(order_details)
-
-    def _notify_margin_call_status(self) -> None:
-        """Notify about the margin call status. This could be extended to send emails, alerts, etc."""
-        # Implementation depends on your notification system
-        pass
 
     def update_risk_parameters(self, **kwargs: Any) -> None:
         """
@@ -712,6 +735,13 @@ class Portfolio:
             **kwargs: Risk management parameters to update.
         """
         self.risk_manager.update_parameters(**kwargs)
+
+    def _notify_margin_call_status(self) -> None:
+        """
+        Notify about the margin call status.
+        """
+        # Implementation depends on your notification system
+        logger_main.warning("Margin call occurred and has been handled.")
 
     # endregion
 

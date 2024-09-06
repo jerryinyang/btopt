@@ -24,7 +24,6 @@ from .portfolio_managers import (
     RiskManager,
     TradeManager,
 )
-from .reporter import Reporter
 from .trade import Trade
 from .types import EngineType
 from .util.ext_decimal import ExtendedDecimal
@@ -66,7 +65,6 @@ class Portfolio:
             **risk_manager_config,
         )
 
-        self.reporter: Optional[Reporter] = None
         self.metrics = pd.DataFrame(
             columns=[
                 "timestamp",
@@ -140,9 +138,9 @@ class Portfolio:
 
         long_value = self.position_manager.get_long_position_value(current_prices)
         short_value = self.position_manager.get_short_position_value(current_prices)
-
         unrealized_pnl = self.position_manager.get_total_unrealized_pnl(current_prices)
-        self.account_manager.update_equity(unrealized_pnl)
+
+        self.account_manager.update_unrealized_pnl(unrealized_pnl)
         self.account_manager.update_margin_used(long_value, short_value)
 
     def _update_metrics(
@@ -155,10 +153,12 @@ class Portfolio:
             timestamp (datetime): The current timestamp.
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
-        equity = self.account_manager.equity
+
         current_prices = {
             symbol: data[min(data.keys())].close for symbol, data in market_data.items()
         }
+
+        equity = self.account_manager.equity
 
         asset_value = self.position_manager.get_long_position_value(current_prices)
         liabilities = self.position_manager.get_short_position_value(current_prices)
@@ -364,55 +364,51 @@ class Portfolio:
             and the resulting Trade object if applicable.
         """
 
+        symbol = order.details.ticker
         execution_price = order.get_last_fill_price() or bar.close
         fill_size = order.get_last_fill_size()
 
-        # Check risk limits
-        if not self.risk_manager.check_risk_limits(
-            order,
-            fill_size,
-            self.account_manager.equity,
-            self.position_manager.get_all_positions(),
-        ):
-            self._reject_order(order, "Risk limits breached")
-            return False, None
+        old_position = self.position_manager.get_position(symbol).copy()
 
-        # Calculate cost
-        symbol = order.details.ticker
-        direction = order.details.direction
+        # Check risk limits / margin requirements
+        is_new_trade, is_reversal = self._check_if_new_trade(order)
+        if is_new_trade:
+            new_size = fill_size
 
-        cost = execution_price * fill_size
-        commission = cost * self.trade_manager.commission_rate
-        current_position = self.position_manager.get_position(symbol).quantity
+            # When reversing, check margin requirement for only the new size
+            if is_reversal:
+                new_size = fill_size + old_position.quantity
 
-        is_reversal = (current_position > 0 and direction == Order.Direction.SHORT) or (
-            current_position < 0 and direction == Order.Direction.LONG
+            # Check risk limits
+            if not self.risk_manager.check_risk_limits(
+                order,
+                new_size,
+                self.account_manager.equity,
+                self.position_manager.get_all_positions(),
+            ):
+                self._reject_order(order, "Risk limits breached")
+                return False, None
+
+        # Update the position
+        self.position_manager.update_position(order, execution_price, fill_size)
+        new_position = self.position_manager.get_position(symbol)
+
+        # Calculate realized PnL from position
+        realized_pnl = self._calculate_realized_pnl(
+            old_position, new_position, execution_price
         )
-
-        if is_reversal:
-            # Recalculate cost and commission for the remaining order size (if any)
-            remaining_size = order.get_remaining_size()
-            cost = execution_price * remaining_size
-            commission = cost * self.trade_manager.commission_rate
 
         # Update trade
         trade = self.trade_manager.manage_trade(
             order,
             bar,
-            self.position_manager.get_position(order.details.ticker),
+            old_position,
         )
-
-        # Update position
-        self.position_manager.update_position(order, execution_price, fill_size)
 
         # Update account
-        self.account_manager.update_cash(
-            (cost * direction.value * -1) - commission,
-            f"Order execution for {symbol}",
-        )
-
+        self._update_account_on_execution(order, execution_price, realized_pnl)
         logger_main.info(
-            f"Executed order: {order.id}, Symbol: {order.details.ticker}, "
+            f"Executed order: {order.id}, Symbol: {symbol}, "
             f"Price: {execution_price}, Size: {fill_size}"
         )
 
@@ -429,6 +425,63 @@ class Portfolio:
         order.status = Order.Status.REJECTED
         self.order_manager.updated_orders.append(order)
         logger_main.warning(f"Order {order.id} rejected: {reason}")
+
+    def _calculate_realized_pnl(
+        self,
+        old_position: Position,
+        new_position: Position,
+        execution_price: ExtendedDecimal,
+    ) -> ExtendedDecimal:
+        """
+        Calculate the realized PnL from a position change.
+
+        Args:
+            old_position (Position): The position before the order execution.
+            new_position (Position): The position after the order execution.
+            execution_price (ExtendedDecimal): The price at which the order was executed.
+
+        Returns:
+            ExtendedDecimal: The realized PnL.
+        """
+        if old_position.quantity == 0:
+            # No prior existing positions
+            return ExtendedDecimal("0")
+
+        closed_quantity = abs(old_position.quantity) - abs(new_position.quantity)
+        if closed_quantity <= 0:
+            # New order increased the position (same direction)
+            return ExtendedDecimal("0")
+
+        # New order closed a portion or all of the position
+        avg_entry_price = old_position.average_price
+        realized_pnl = (
+            (execution_price - avg_entry_price)
+            * closed_quantity
+            * (1 if old_position.quantity > 0 else -1)
+        )
+        return realized_pnl
+
+    def _check_if_new_trade(self, order: Order):
+        # Returns true if the new order is leading to a new trade
+        symbol = order.details.ticker
+        direction = order.details.direction
+        fill_size = order.get_last_fill_size()
+
+        # Check for position expansion or reversal
+        old_position = self.position_manager.get_position(symbol)
+        old_quantity = old_position.quantity
+        new_quantity = fill_size * direction.value
+
+        is_position_expanding = (
+            (old_quantity == 0)
+            or (old_quantity > 0 and (old_quantity + new_quantity > old_quantity))
+            or (old_quantity < 0 and (old_quantity + new_quantity < old_quantity))
+        )
+        is_position_reversing = (
+            old_quantity > 0 and (old_quantity + new_quantity < 0)
+        ) or (old_quantity < 0 and (old_quantity + new_quantity > 0))
+
+        return (is_position_expanding or is_position_reversing, is_position_reversing)
 
     # endregion
 
@@ -500,6 +553,31 @@ class Portfolio:
     # endregion
 
     # region Account Management
+    def _update_account_on_execution(
+        self,
+        order: Order,
+        execution_price: ExtendedDecimal,
+        realized_pnl: ExtendedDecimal,
+    ) -> None:
+        """
+        Update the account after an order execution.
+
+        This method updates the account's cash balance based on the realized PnL and commissions.
+        It does not include the full position value in cash updates.
+
+        Args:
+            order (Order): The executed order.
+            execution_price (ExtendedDecimal): The price at which the order was executed.
+            realized_pnl (ExtendedDecimal): The realized PnL from this order execution.
+        """
+        commission = (
+            execution_price * order.details.size * self.trade_manager.commission_rate
+        )
+        cash_change = realized_pnl - commission
+        self.account_manager.update_cash(
+            cash_change,
+            f"Order execution for {order.details.ticker}: PnL {realized_pnl}, Commission {commission}",
+        )
 
     def get_account_value(self) -> ExtendedDecimal:
         """
@@ -547,7 +625,9 @@ class Portfolio:
 
     # region Portfolio State and Reporting
 
-    def get_portfolio_state(self) -> Dict[str, Any]:
+    def get_portfolio_state(
+        self, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> Dict[str, Any]:
         """
         Get the current state of the portfolio.
 
@@ -566,6 +646,9 @@ class Portfolio:
             }
             for symbol, position in self.position_manager.get_all_positions().items()
         }
+        current_prices = {
+            symbol: data[min(data.keys())].close for symbol, data in market_data.items()
+        }
 
         return {
             "cash": self.account_manager.cash,
@@ -573,32 +656,13 @@ class Portfolio:
             "margin_used": self.account_manager.margin_used,
             "buying_power": self.account_manager.get_buying_power(),
             "realized_pnl": self.account_manager.realized_pnl,
-            "unrealized_pnl": sum(
-                position.unrealized_pnl
-                for position in self.position_manager.get_all_positions().values()
+            "unrealized_pnl": self.position_manager.get_total_unrealized_pnl(
+                current_prices
             ),
             "positions": positions_info,
             "open_trades": self.trade_manager.get_open_trades(),
             "pending_orders": self.order_manager.get_pending_orders(),
         }
-
-    def set_reporter(self, reporter: Reporter) -> None:
-        """
-        Set the Reporter instance for this portfolio.
-
-        Args:
-            reporter: The Reporter instance to use.
-        """
-        self.reporter = reporter
-
-    def generate_report(self) -> None:
-        """
-        Generate a performance report using the associated Reporter.
-        """
-        if self.reporter:
-            self.reporter.generate_performance_report()
-        else:
-            logger_main.warning("No Reporter set. Unable to generate report.")
 
     def get_metrics_data(self) -> pd.DataFrame:
         """
@@ -609,29 +673,6 @@ class Portfolio:
         """
         return self.metrics
 
-    def calculate_performance_metrics(self) -> Dict[str, float]:
-        """
-        Calculate various performance metrics for the portfolio.
-
-        Returns:
-            A dictionary containing calculated performance metrics.
-        """
-        if self.reporter:
-            metrics = self.reporter.calculate_performance_metrics()
-            metrics.update(
-                {
-                    "var": self.reporter.calculate_var(),
-                    "cvar": self.reporter.calculate_cvar(),
-                    "current_drawdown": self.get_current_drawdown(),
-                }
-            )
-            return metrics
-        else:
-            logger_main.warning(
-                "No Reporter set. Unable to calculate performance metrics."
-            )
-            return {}
-
     def get_trade_history(self) -> List[Dict[str, Any]]:
         """
         Get the complete trade history.
@@ -639,7 +680,9 @@ class Portfolio:
         Returns:
             A list of dictionaries, each representing a trade.
         """
-        return [trade.to_dict() for trade in self.trade_manager.get_closed_trades()]
+        return pd.DataFrame(
+            trade.to_dict() for trade in self.trade_manager.get_closed_trades()
+        )
 
     def get_order_history(self) -> List[Dict[str, Any]]:
         """
@@ -648,59 +691,9 @@ class Portfolio:
         Returns:
             A list of dictionaries, each representing an order.
         """
-        return [order.to_dict() for order in self.order_manager.get_all_orders()]
-
-    def get_current_drawdown(self) -> float:
-        """
-        Calculate the current drawdown of the portfolio.
-
-        Returns:
-            The current drawdown as a percentage.
-        """
-        if self.reporter:
-            return self.reporter.get_current_drawdown()
-        else:
-            logger_main.warning(
-                "No Reporter set. Unable to calculate current drawdown."
-            )
-            return 0.0
-
-    def get_drawdown_details(self) -> pd.DataFrame:
-        """
-        Get detailed information about drawdowns.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing drawdown details.
-        """
-        if self.reporter:
-            return self.reporter.get_drawdown_details()
-        else:
-            logger_main.warning("No Reporter set. Unable to get drawdown details.")
-            return pd.DataFrame()
-
-    def get_performance_metrics(self) -> Dict[str, float]:
-        """
-        Get performance metrics using the Reporter.
-
-        Returns:
-            Dict[str, float]: A dictionary of performance metrics.
-        """
-        if self.reporter:
-            return self.reporter.calculate_performance_metrics()
-        else:
-            logger_main.warning(
-                "No Reporter set. Unable to calculate performance metrics."
-            )
-            return {}
-
-    def get_metrics(self) -> pd.DataFrame:
-        """
-        Get the portfolio metrics.
-
-        Returns:
-            pd.DataFrame: The portfolio metrics dataframe.
-        """
-        return self.metrics
+        return pd.DataFrame(
+            order.to_dict() for order in self.order_manager.get_all_orders()
+        )
 
     # endregion
 
@@ -825,6 +818,13 @@ class Portfolio:
         """
         self.risk_manager.update_parameters(**kwargs)
 
+    def _notify_margin_call_status(self) -> None:
+        """
+        Notify about the margin call status.
+        """
+        # Implementation depends on your notification system
+        logger_main.warning("Margin call occurred and has been handled.")
+
     # endregion
 
     # region Symbol Weight Management
@@ -888,33 +888,5 @@ class Portfolio:
             },
         )
         logger_main.info("Portfolio reset to initial state.")
-
-    # endregion
-
-    # region PREVIOUS MODIFICATIONS
-
-    def _update_account_on_execution(
-        self, order: Order, execution_price: ExtendedDecimal
-    ) -> None:
-        """
-        Update the account after an order execution.
-
-        Args:
-            order (Order): The executed order.
-            execution_price (ExtendedDecimal): The price at which the order was executed.
-        """
-        cost = execution_price * order.details.size
-        commission = cost * self.trade_manager.commission_rate
-        self.account_manager.update_cash(
-            -cost - commission, f"Order execution for {order.details.ticker}"
-        )
-        self.account_manager.update_margin(cost * self.account_manager.margin_ratio)
-
-    def _notify_margin_call_status(self) -> None:
-        """
-        Notify about the margin call status.
-        """
-        # Implementation depends on your notification system
-        logger_main.warning("Margin call occurred and has been handled.")
 
     # endregion

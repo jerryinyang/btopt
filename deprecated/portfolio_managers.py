@@ -1,5 +1,4 @@
 import uuid
-from copy import copy
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -429,13 +428,10 @@ class TradeManager:
         """
         Manage trade creation, updates, closures, and reversals.
 
-        This method ensures that opening new trades does not affect cash directly.
-        It only updates the position value and cost basis.
-
         Args:
             order (Order): The order being executed.
             bar (Bar): The current price bar.
-            position (Position): The current position after order execution.
+            position (ExtendedDecimal): The size of the existing position.
 
         Returns:
             Optional[Trade]: The created or updated Trade object, if applicable.
@@ -444,7 +440,11 @@ class TradeManager:
         existing_position = position.quantity
 
         if self._is_trade_reversal(existing_position, order.details.direction):
-            return self._handle_trade_reversal(order, bar, existing_position)
+            return self._handle_trade_reversal(
+                order,
+                bar,
+                existing_position,
+            )
         else:
             return self._create_new_trade(order, fill_size, bar)
 
@@ -782,12 +782,13 @@ class AccountManager:
         self.cash = initial_capital
         self.margin_ratio = margin_ratio
         self.margin_used = ExtendedDecimal("0")
+        self.equity = initial_capital
         self.unrealized_pnl = ExtendedDecimal("0")
         self.realized_pnl = ExtendedDecimal("0")
         self.transaction_log: List[Dict] = []
 
     @property
-    def buying_power(self) -> ExtendedDecimal:
+    def buying_power(self) -> None:
         """
         Calculate and return the current buying power.
 
@@ -795,16 +796,6 @@ class AccountManager:
             ExtendedDecimal: The current buying power.
         """
         return self.equity / self.margin_ratio - self.margin_used
-
-    @property
-    def equity(self) -> ExtendedDecimal:
-        """
-        Calculate and return the current equity.
-
-        Returns:
-            ExtendedDecimal: The current equity.
-        """
-        return self.cash + self.unrealized_pnl
 
     def check_margin_call(self, margin_call_threshold: ExtendedDecimal) -> bool:
         if self.margin_used > ExtendedDecimal("0"):
@@ -836,6 +827,15 @@ class AccountManager:
     def get_transaction_log(self) -> List[Dict]:
         return self.transaction_log
 
+    def update_margin(self, margin_change: ExtendedDecimal) -> None:
+        """
+        Update the margin used.
+
+        Args:
+            margin_change (ExtendedDecimal): The change in margin used.
+        """
+        self.margin_used += margin_change
+
     def update_cash(self, amount: ExtendedDecimal, reason: str) -> None:
         """
         Update the cash balance.
@@ -845,12 +845,20 @@ class AccountManager:
             reason (str): The reason for the cash update.
         """
         self.cash += amount
-        self.realized_pnl += amount
-
-        self._log_transaction("Cash Update", amount, reason)
         logger_main.info(
             f"Cash updated: {amount} due to {reason}. New balance: {self.cash}"
         )
+
+    def update_equity(self, unrealized_pnl: ExtendedDecimal) -> None:
+        """
+        Update the account equity based on unrealized PnL.
+
+        Args:
+            unrealized_pnl (ExtendedDecimal): The current unrealized PnL.
+        """
+        self.unrealized_pnl = unrealized_pnl
+        self.equity = self.cash + self.unrealized_pnl
+        logger_main.info(f"Equity updated. New equity: {self.equity}")
 
     def update_margin_used(
         self, long_value: ExtendedDecimal, short_value: ExtendedDecimal
@@ -869,15 +877,19 @@ class AccountManager:
         self.margin_used = long_margin + short_margin
         logger_main.info(f"Margin used updated. New margin used: {self.margin_used}")
 
-    def update_unrealized_pnl(self, unrealized_pnl: ExtendedDecimal) -> None:
+    def realize_pnl(self, amount: ExtendedDecimal) -> None:
         """
-        Update the unrealized PnL.
+        Realize PnL and update cash balance.
 
         Args:
-            unrealized_pnl (ExtendedDecimal): The current unrealized PnL.
+            amount (ExtendedDecimal): The amount of PnL to realize.
         """
-        self.unrealized_pnl = unrealized_pnl
-        logger_main.info(f"Unrealized PnL updated. New value: {self.unrealized_pnl}")
+        self.realized_pnl += amount
+        self.cash += amount
+        self.equity += amount
+        logger_main.info(
+            f"Realized PnL: {amount}. New realized PnL: {self.realized_pnl}"
+        )
 
 
 class Position:
@@ -893,27 +905,18 @@ class Position:
         new_quantity = self.quantity + quantity
         new_cost = self.total_cost + (quantity * price)
 
-        if new_quantity == ExtendedDecimal("0"):
-            # Position closed
-            self.average_price = ExtendedDecimal("0")
-            self.total_cost = ExtendedDecimal("0")
+        if new_quantity != ExtendedDecimal("0"):
+            self.average_price = new_cost / new_quantity
         else:
-            # Update average price and total cost
-            self.total_cost = new_cost
-            self.average_price = self.total_cost / new_quantity
+            self.average_price = ExtendedDecimal("0")
 
         self.quantity = new_quantity
+        self.total_cost = new_cost
 
     def calculate_unrealized_pnl(
         self, current_price: ExtendedDecimal
     ) -> ExtendedDecimal:
         return (current_price - self.average_price) * self.quantity
-
-    def __repr__(self):
-        return f"Position(symbol='{self.symbol}', quantity={self.quantity})"
-
-    def copy(self):
-        return copy(self)
 
 
 class PositionManager:
@@ -954,8 +957,8 @@ class PositionManager:
         position = self.get_position(symbol)
         direction = order.details.direction.value
         quantity = fill_size * ExtendedDecimal(str(direction))
-
         position.update_position(quantity, execution_price)
+
         logger_main.info(f"Updated position for {symbol}: {position}")
 
     def get_long_position_value(
@@ -1039,6 +1042,9 @@ class PositionManager:
             for position in self.positions.values()
         )
 
+    def get_total_realized_pnl(self) -> ExtendedDecimal:
+        return sum(position.realized_pnl for position in self.positions.values())
+
     def generate_close_orders(
         self, timestamp: datetime, timeframe: Timeframe
     ) -> List[Order]:
@@ -1106,10 +1112,6 @@ class PositionManager:
                 close_orders.append(Order(str(uuid.uuid4()), order_details))
 
         return close_orders
-
-    # Aliases
-    get_asset_values = get_long_position_value
-    get_liabilities = get_short_position_value
 
 
 class RiskManager:

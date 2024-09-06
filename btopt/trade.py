@@ -212,8 +212,10 @@ class Trade:
 
     def _finalize_metrics(self) -> None:
         """Finalizes the trade metrics upon closing or partial closing."""
-        self.metrics.pnl = self.metrics.realized_pnl + self.metrics.unrealized_pnl
+        self.metrics.unrealized_pnl = ExtendedDecimal("0")
+        self.metrics.pnl = self.metrics.realized_pnl
         self.metrics.pnl_percent = self._calculate_pnl_percent(self.metrics.pnl)
+        self._update_runup_drawdown(self.metrics.pnl, self.metrics.pnl_percent)
 
     def duration(self) -> timedelta:
         """Calculates the duration of the trade."""
