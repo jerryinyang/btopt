@@ -492,7 +492,7 @@ class Engine:
 
         if self._is_running:
             logger_main.info("Backtest is already running.")
-            return self.reporter if self.reporter else Reporter(self.portfolio, self)
+            return self.reporter if self.reporter else Reporter(self.portfolio)
 
         if not self._config:
             logger_main.log_and_raise(
@@ -528,7 +528,7 @@ class Engine:
             # self._finalize_backtest()
 
             # Initialize the Reporter with the final portfolio state
-            self.reporter = Reporter(self.portfolio, self)
+            self.reporter = Reporter(self.portfolio)
             logger_main.info("Backtest completed. Reporter initialized.")
 
         except Exception as e:

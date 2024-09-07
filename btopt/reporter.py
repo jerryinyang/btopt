@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 import quantstats_lumi as qs
 
-from .types import EngineType, PortfolioType
+from .types import PortfolioType
 from .util.ext_decimal import ExtendedDecimal
 from .util.log_config import logger_main
 
@@ -20,19 +20,16 @@ class Reporter:
 
     Attributes:
         portfolio (PortfolioType): An instance of the Portfolio class containing trading data.
-        engine (EngineType): An instance of the Engine class managing the trading system.
     """
 
-    def __init__(self, portfolio: PortfolioType, engine: EngineType):
+    def __init__(self, portfolio: PortfolioType):
         """
         Initialize the Reporter instance.
 
         Args:
             portfolio (PortfolioType): The Portfolio instance to report on.
-            engine (EngineType): The Engine instance managing the trading system.
         """
         self.portfolio = portfolio
-        self.engine = engine
 
     # region Data Retrieval
     def _convert_decimal_to_float(self, data: pd.DataFrame) -> pd.DataFrame:
