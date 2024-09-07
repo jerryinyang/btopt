@@ -1,4 +1,6 @@
 import uuid
+from copy import copy
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -217,6 +219,7 @@ class Portfolio:
         """
         if self._check_margin_requirements(order_details):
             return self.order_manager.create_order(order_details, activated=activated)
+
         else:
             logger_main.warning(f"Insufficient margin to create order: {order_details}")
             return None
@@ -365,13 +368,16 @@ class Portfolio:
         """
 
         symbol = order.details.ticker
+        direction = order.details.direction
         execution_price = order.get_last_fill_price() or bar.close
         fill_size = order.get_last_fill_size()
 
         old_position = self.position_manager.get_position(symbol).copy()
 
         # Check risk limits / margin requirements
-        is_new_trade, is_reversal = self._check_if_new_trade(order)
+        is_new_trade, is_reversal = self._check_if_new_trade(
+            symbol, direction, fill_size
+        )
         if is_new_trade:
             new_size = fill_size
 
@@ -403,6 +409,9 @@ class Portfolio:
             order,
             bar,
             old_position,
+        )
+        logger_main.warning(
+            f"\n\nOPEN TRADES: {self.trade_manager.get_open_trades()}\n\n"
         )
 
         # Update account
@@ -461,11 +470,10 @@ class Portfolio:
         )
         return realized_pnl
 
-    def _check_if_new_trade(self, order: Order):
-        # Returns true if the new order is leading to a new trade
-        symbol = order.details.ticker
-        direction = order.details.direction
-        fill_size = order.get_last_fill_size()
+    def _check_if_new_trade(
+        self, symbol: str, direction: Order.Direction, fill_size: ExtendedDecimal
+    ):
+        """Returns true if the new order is leading to a new trade"""
 
         # Check for position expansion or reversal
         old_position = self.position_manager.get_position(symbol)
@@ -733,21 +741,41 @@ class Portfolio:
         Returns:
             bool: True if the order passes margin and risk checks, False otherwise.
         """
-        order = Order(
-            str(uuid.uuid4()), order_details
-        )  # Create a temporary Order object
+
+        details = copy(order_details)
+
+        # Check if the order is a reversal
+        _, is_reversal = self._check_if_new_trade(
+            details.ticker,
+            details.direction,
+            details.size,
+        )
+
+        if is_reversal:
+            details = replace(
+                details,
+                size=abs(
+                    (details.size * details.direction.value)
+                    + self.position_manager.get_position(details.ticker).quantity
+                ),
+            )
+
+        logger_main.warning(
+            f"\n\nORIGINAL SIZE: {order_details.size}\nFINAL SIZE: {details.size}\n\n"
+        )
+
+        order = Order(str(uuid.uuid4()), details)  # Create a temporary Order object
+
         account_value = self.account_manager.equity
         current_positions = self.position_manager.get_all_positions()
 
         if self.risk_manager.check_margin_requirements(
             order, account_value, current_positions
         ):
-            logger_main.info(
-                f"Margin and risk checks passed for order: {order_details}"
-            )
+            logger_main.info(f"Margin and risk checks passed for order: {details}")
             return True
         else:
-            logger_main.warning(f"Order failed margin or risk checks: {order_details}")
+            logger_main.warning(f"Order failed margin or risk checks: {details}")
             return False
 
     def _handle_margin_call(self, market_data: Dict[str, Dict[Timeframe, Bar]]) -> None:
