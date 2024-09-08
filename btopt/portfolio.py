@@ -93,7 +93,6 @@ class Portfolio:
             market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
         """
 
-        # untested/unconfirmed
         self._process_pending_orders(timestamp, market_data)
         self._update_open_trades(market_data)
         self._update_positions_and_account(market_data)
@@ -350,23 +349,24 @@ class Portfolio:
         # Process the pending orders; get the executed orders
         filled_orders = self.order_manager.process_orders(timestamp, market_data)
         for order in filled_orders:
-            self._execute_order(
-                order, market_data[order.details.ticker][order.details.timeframe]
-            )
+            self._execute_order(order, market_data)
 
-    def _execute_order(self, order: Order, bar: Bar) -> Tuple[bool, Optional[Trade]]:
+    def _execute_order(
+        self, order: Order, market_data: Dict[str, Dict[Timeframe, Bar]]
+    ) -> Tuple[bool, Optional[Trade]]:
         """
         Execute an order and update all relevant components.
 
         Args:
             order (Order): The order to execute.
-            bar (Bar): The current price bar for the order's symbol and timeframe.
+            market_data (Dict[str, Dict[Timeframe, Bar]]): The current market data.
 
         Returns:
             Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
             and the resulting Trade object if applicable.
         """
 
+        bar: Bar = market_data[order.details.ticker][order.details.timeframe]
         symbol = order.details.ticker
         direction = order.details.direction
         execution_price = order.get_last_fill_price() or bar.close
@@ -385,11 +385,15 @@ class Portfolio:
             if is_reversal:
                 new_size = fill_size + old_position.quantity
 
+            unrealized_pnl = self.trade_manager.calculate_unrealized_pnl(
+                symbol, execution_price
+            )
+
             # Check risk limits
             if not self.risk_manager.check_risk_limits(
                 order,
                 new_size,
-                self.account_manager.equity,
+                self.account_manager.equity + old_position.total_cost + unrealized_pnl,
                 self.position_manager.get_all_positions(),
             ):
                 self._reject_order(order, "Risk limits breached")
