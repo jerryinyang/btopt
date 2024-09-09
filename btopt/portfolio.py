@@ -385,11 +385,6 @@ class Portfolio:
         # Update the position
         old_position = self.position_manager.get_position(symbol).copy()
 
-        # Execute the orders
-        logger_main.warning(
-            f"\n\n\nCURRENT QUANTITY: {old_position.quantity}\nNEW QUANTITY: {fill_size * direction.value}\nIS EXPANDING: {is_position_expanding}\nIS REVERSING: {is_position_reversing}"
-        )
-
         if not recursive:
             # Split the order into entry and exit sizes
             exit_size = abs(old_position.quantity * -1)  # Reverse the current position
@@ -401,9 +396,6 @@ class Portfolio:
                 exit_order.set_last_fill_size(exit_size)
 
                 # Execute the orders
-                logger_main.warning(
-                    f"\n\nATTEMPTING REVERSE SEQUENCE!!!\nEXIT SIZE: {exit_size}\nENTRY SIZE: {entry_size}\n"
-                )
                 self._execute_order(exit_order, market_data, recursive=True)
                 return self._execute_order(entry_order, market_data, recursive=True)
 
@@ -436,9 +428,6 @@ class Portfolio:
             order,
             bar,
             old_position,
-        )
-        logger_main.warning(
-            f"\n\nOPEN TRADES: {self.trade_manager.get_open_trades()}\n\n"
         )
 
         # Update account
@@ -787,10 +776,6 @@ class Portfolio:
                     + self.position_manager.get_position(details.ticker).quantity
                 ),
             )
-
-        logger_main.warning(
-            f"\n\nORIGINAL SIZE: {order_details.size}\nFINAL SIZE: {details.size}\n\n"
-        )
 
         order = Order(str(uuid.uuid4()), details)  # Create a temporary Order object
 

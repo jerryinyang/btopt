@@ -132,10 +132,6 @@ class NaiveSizer(Sizer):
         # Calculate the position size
         position_size = risk_amount / risk_per_unit
 
-        logger_main.warning(
-            f"<<< CALCULATING POSITION SIZE >>>\nRISK AMOUNT: {risk_amount}\nRISK PER UNIT: {risk_per_unit}\nPOSITION SIZE: {position_size}\n"
-        )
-
         # Apply min and max position size constraints
         position_size = max(
             min(position_size, self.max_position_size), self.min_position_size
