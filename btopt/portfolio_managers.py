@@ -508,7 +508,7 @@ class TradeManager:
         else:
             trade.update(bar)
 
-        self._add_to_updated_trades.append(trade)
+        self._add_to_updated_trades(trade)
 
         logger_main.info(
             f"Partially closed trade {trade.id}. Realized PnL: {trade.get_realized_pnl()}"

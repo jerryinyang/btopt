@@ -846,6 +846,13 @@ class Order:
             return self.fills[-1].timestamp
         return None
 
+    def set_last_fill_size(self, new_size: float) -> None:
+        """Set the price of the last fill."""
+        if self.fills:
+            self.fills[-1].size = new_size
+        else:
+            logger_main.warning("No fills available to update.")
+
     def _apply_slippage(self, price: ExtendedDecimal) -> ExtendedDecimal:
         """
         Apply slippage to the given price if slippage is specified in the order details.

@@ -1,5 +1,5 @@
 import uuid
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -352,7 +352,10 @@ class Portfolio:
             self._execute_order(order, market_data)
 
     def _execute_order(
-        self, order: Order, market_data: Dict[str, Dict[Timeframe, Bar]]
+        self,
+        order: Order,
+        market_data: Dict[str, Dict[Timeframe, Bar]],
+        recursive: bool = False,
     ) -> Tuple[bool, Optional[Trade]]:
         """
         Execute an order and update all relevant components.
@@ -365,26 +368,46 @@ class Portfolio:
             Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
             and the resulting Trade object if applicable.
         """
-
         bar: Bar = market_data[order.details.ticker][order.details.timeframe]
         symbol = order.details.ticker
         direction = order.details.direction
         execution_price = order.get_last_fill_price() or bar.close
         fill_size = order.get_last_fill_size()
 
-        old_position = self.position_manager.get_position(symbol).copy()
+        entry_order = deepcopy(order)
+        exit_order = deepcopy(order)
 
         # Check risk limits / margin requirements
-        is_new_trade, is_reversal = self._check_if_new_trade(
+        is_position_expanding, is_position_reversing = self._check_if_new_trade(
             symbol, direction, fill_size
         )
-        if is_new_trade:
-            new_size = fill_size
 
-            # When reversing, check margin requirement for only the new size
-            if is_reversal:
-                new_size = fill_size + old_position.quantity
+        # Update the position
+        old_position = self.position_manager.get_position(symbol).copy()
 
+        # Execute the orders
+        logger_main.warning(
+            f"\n\n\nCURRENT QUANTITY: {old_position.quantity}\nNEW QUANTITY: {fill_size * direction.value}\nIS EXPANDING: {is_position_expanding}\nIS REVERSING: {is_position_reversing}"
+        )
+
+        if not recursive:
+            # Split the order into entry and exit sizes
+            exit_size = abs(old_position.quantity * -1)  # Reverse the current position
+            entry_size = abs((fill_size * direction.value) + old_position.quantity)
+
+            if is_position_reversing:
+                # Split the order into two orders; exit and entry order; set their sizes
+                entry_order.set_last_fill_size(entry_size)
+                exit_order.set_last_fill_size(exit_size)
+
+                # Execute the orders
+                logger_main.warning(
+                    f"\n\nATTEMPTING REVERSE SEQUENCE!!!\nEXIT SIZE: {exit_size}\nENTRY SIZE: {entry_size}\n"
+                )
+                self._execute_order(exit_order, market_data, recursive=True)
+                return self._execute_order(entry_order, market_data, recursive=True)
+
+        if is_position_expanding:
             unrealized_pnl = self.trade_manager.calculate_unrealized_pnl(
                 symbol, execution_price
             )
@@ -392,8 +415,8 @@ class Portfolio:
             # Check risk limits
             if not self.risk_manager.check_risk_limits(
                 order,
-                new_size,
-                self.account_manager.equity + old_position.total_cost + unrealized_pnl,
+                fill_size,
+                self.account_manager.equity + unrealized_pnl,
                 self.position_manager.get_all_positions(),
             ):
                 self._reject_order(order, "Risk limits breached")
@@ -493,7 +516,7 @@ class Portfolio:
             old_quantity > 0 and (old_quantity + new_quantity < 0)
         ) or (old_quantity < 0 and (old_quantity + new_quantity > 0))
 
-        return (is_position_expanding or is_position_reversing, is_position_reversing)
+        return (is_position_expanding, is_position_reversing)
 
     # endregion
 
@@ -747,6 +770,7 @@ class Portfolio:
         """
 
         details = copy(order_details)
+        order = Order(str(uuid.uuid4()), details)
 
         # Check if the order is a reversal
         _, is_reversal = self._check_if_new_trade(
