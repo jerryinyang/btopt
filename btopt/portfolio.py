@@ -270,12 +270,40 @@ class Portfolio:
             Tuple[Order, Optional[Order], Optional[Order], BracketGroup]: A tuple containing the entry order,
             take profit order (if specified), stop loss order (if specified), and the BracketGroup.
         """
-        entry_order = self.create_order(bracket_details.entry_order)
+
+        entry_detail = bracket_details.entry_order
+        entry_order = self.create_order(entry_detail)
+
+        # Check if the order is a reversal
+        _, is_reversal = self._check_if_new_trade(
+            bracket_details.entry_order.ticker,
+            bracket_details.entry_order.direction,
+            bracket_details.entry_order.size,
+        )
+
+        # For bracket order (and in case of reversals), ensure the exit orders have the same size as the entry
+        if is_reversal:
+            new_size = abs(
+                (entry_detail.size * entry_detail.direction.value)
+                + self.position_manager.get_position(entry_detail.ticker).quantity
+            )
+
+            bracket_details.take_profit_order = replace(
+                bracket_details.take_profit_order,
+                size=new_size,
+            )
+
+            bracket_details.stop_loss_order = replace(
+                bracket_details.stop_loss_order,
+                size=new_size,
+            )
+
         take_profit_order = (
             self.create_order(bracket_details.take_profit_order, activated=False)
             if bracket_details.take_profit_order
             else None
         )
+
         stop_loss_order = (
             self.create_order(bracket_details.stop_loss_order, activated=False)
             if bracket_details.stop_loss_order
@@ -368,13 +396,14 @@ class Portfolio:
             Tuple[bool, Optional[Trade]]: A tuple containing a boolean indicating if the order was executed
             and the resulting Trade object if applicable.
         """
+
         bar: Bar = market_data[order.details.ticker][order.details.timeframe]
         symbol = order.details.ticker
         direction = order.details.direction
         execution_price = order.get_last_fill_price() or bar.close
         fill_size = order.get_last_fill_size()
 
-        entry_order = deepcopy(order)
+        entry_order = order
         exit_order = deepcopy(order)
 
         # Check risk limits / margin requirements
@@ -394,6 +423,7 @@ class Portfolio:
                 # Split the order into two orders; exit and entry order; set their sizes
                 entry_order.set_last_fill_size(entry_size)
                 exit_order.set_last_fill_size(exit_size)
+                exit_order.id = uuid.uuid4()
 
                 # Execute the orders
                 self._execute_order(exit_order, market_data, recursive=True)
@@ -663,10 +693,7 @@ class Portfolio:
             symbol: {
                 "quantity": position.quantity,
                 "average_price": position.average_price,
-                "unrealized_pnl": position.unrealized_pnl,
-                "realized_pnl": position.realized_pnl,
-                "last_update_time": position.last_update_time,
-                "cost_basis": position.total_cost,
+                "total_cost": position.total_cost,
             }
             for symbol, position in self.position_manager.get_all_positions().items()
         }

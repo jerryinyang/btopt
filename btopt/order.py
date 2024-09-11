@@ -438,6 +438,22 @@ class BracketGroup(OrderGroup):
             logger_main.info(f"Cancelled order: {self.take_profit_order.id}")
             return self.take_profit_order
 
+    def cancel_all_orders(self) -> None:
+        return (
+            (
+                self.entry_order is None
+                or self.manager.cancel_order_by_id(self.entry_order_id)
+            )
+            and (
+                self.take_profit_order is None
+                or self.manager.cancel_order_by_id(self.take_profit_order_id)
+            )
+            and (
+                self.stop_loss_order is None
+                or self.manager.cancel_order_by_id(self.stop_loss_order_id)
+            )
+        )
+
     def on_order_filled(self, filled_order: "Order") -> List["Order"]:
         """Handle the event when an order in the group is filled."""
         if filled_order == self.entry_order:
@@ -462,7 +478,10 @@ class BracketGroup(OrderGroup):
             )
         ):
             return "Filled"
-        if self.entry_status in [Order.Status.CANCELED, Order.Status.REJECTED]:
+        if all(
+            order in {None, Order.Status.CANCELED, Order.Status.REJECTED}
+            for order in self.orders
+        ):
             return "Cancelled/Rejected"
         return "Active" if self.active else "Inactive"
 

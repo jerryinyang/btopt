@@ -154,9 +154,7 @@ class OrderManager:
             return False
 
         order = self.orders[order_id]
-        order.cancel()
-        self._handle_order_group_fill(order)
-        self.updated_orders.append(order)
+        self._cancel_order(order)
         return True
 
     def process_orders(
@@ -466,6 +464,13 @@ class TradeManager:
         size = order.get_last_fill_size()
 
         trade.close(order, execution_price, bar, size)
+
+        # For an extra layer of security, cancel all associated exit orders when the trade is closed
+        group = trade.entry_order.order_group
+        if group and isinstance(group, BracketGroup):
+            # Cancel the pending exit orders
+            if not group.cancel_all_orders():
+                logger_main.warning("Failed to cancel")
 
         symbol = trade.ticker
         self.open_trades[symbol].remove(trade)
